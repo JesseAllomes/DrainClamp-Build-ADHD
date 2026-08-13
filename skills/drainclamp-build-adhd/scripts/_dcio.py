@@ -612,3 +612,13 @@ def run_cli(main_fn) -> None:
         fail(str(exc), exc.code)
     except KeyboardInterrupt:
         fail("interrupted", EXIT_INTERNAL)
+    except BrokenPipeError:
+        # `dc_state.py --show | head` closes the pipe early. Python would
+        # otherwise print a traceback at shutdown for a case that is not an
+        # error: the reader simply stopped reading. Detach stdout so the
+        # interpreter has nothing left to flush.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+        sys.exit(EXIT_OK)

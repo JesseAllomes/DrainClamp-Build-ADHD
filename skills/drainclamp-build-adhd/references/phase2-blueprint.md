@@ -117,3 +117,29 @@ Master state and optimizations saved to .agent/drainclamp-state.md. Continuing p
 
 Gate 3 may still run, so this sentence does not claim the code loop has started. On a persistence
 failure, report the failure — never this sentence.
+
+## Ordering milestones
+
+`DC:ROADMAP` takes an optional fifth column, semicolon-separated milestone ids:
+
+```
+| id | goal | files | status | deps |
+| m1 | extract the parser | src/parse.py | done | |
+| m2 | reuse it in the loader | src/load.py | pending | m1 |
+| m3 | delete the old path | src/legacy.py | pending | m2 |
+```
+
+The column is optional and a four-column table means what it always did. What it buys is a
+decision at Gate 5. With several rows pending and nothing to order them, the purge calculus
+can only report `multiple eligible next milestones` and hold — it cannot tell which milestone's
+files to compare against. Dependencies narrow the set to what is startable, and where that
+leaves exactly one row, the overlap is computed and the context is released or kept on
+evidence rather than withheld for want of an ordering.
+
+A dependency naming a milestone that does not exist, a self-dependency, and a cycle are all
+parse errors. None is repaired: a roadmap that silently drops an edge would have the calculus
+order work by a graph nobody wrote.
+
+Dependencies do not disambiguate several *active* milestones. Concurrent agents holding more
+than one milestone in flight is a real state rather than a missing edge, and holding the
+context is the right answer there.

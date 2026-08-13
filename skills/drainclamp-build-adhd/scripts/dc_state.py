@@ -200,7 +200,18 @@ def validate_verify_block(raw: str) -> list[dict]:
 
 
 def parse_roadmap(raw: str) -> list[dict]:
-    """Rows of `| id | goal | files | status |`; header and rule are skipped."""
+    """Rows of `| id | goal | files | status |`, optionally `| deps |`.
+
+    The fifth column is optional and semicolon-separated. A four-column table
+    parses exactly as it always did -- the loop already tolerated extra cells
+    and ignored them -- so existing state files need no migration and the
+    schema does not move.
+
+    Dependencies are what let the purge calculus tell *which* pending milestone
+    comes next. With several pending and nothing to order them, the calculus
+    can only report `multiple eligible next milestones` and hold a context it
+    might have been able to release.
+    """
     rows: list[dict] = []
     for line in raw.splitlines():
         line = line.strip()
@@ -218,8 +229,47 @@ def parse_roadmap(raw: str) -> list[dict]:
                 f"DC:ROADMAP row '{cells[0]}' has status '{cells[3]}'; "
                 f"expected one of {', '.join(sorted(ROADMAP_STATUSES))}"
             )
-        rows.append({"id": cells[0], "goal": cells[1], "files": files, "status": status})
+        deps = [d.strip() for d in cells[4].split(";") if d.strip()] if len(cells) > 4 else []
+        rows.append({"id": cells[0], "goal": cells[1], "files": files,
+                     "status": status, "deps": deps})
+    validate_deps(rows)
     return rows
+
+
+def validate_deps(rows: list[dict]) -> None:
+    """Reject a dependency graph that cannot be satisfied.
+
+    A dependency naming a milestone that does not exist, or a cycle, makes the
+    roadmap unorderable. Both are reported rather than repaired: a roadmap that
+    silently drops an edge is worse than one that refuses to parse, because the
+    calculus would then order milestones by a graph the author never wrote.
+    """
+    known = {r["id"] for r in rows}
+    for row in rows:
+        for dep in row["deps"]:
+            if dep == row["id"]:
+                raise DcError(f"DC:ROADMAP row '{row['id']}' depends on itself")
+            if dep not in known:
+                raise DcError(
+                    f"DC:ROADMAP row '{row['id']}' depends on '{dep}', "
+                    "which is not a milestone in this roadmap"
+                )
+
+    # Iterative peel: whatever cannot be removed is in, or behind, a cycle.
+    remaining = {r["id"]: set(r["deps"]) for r in rows}
+    while True:
+        free = [rid for rid, deps in remaining.items() if not deps]
+        if not free:
+            break
+        for rid in free:
+            del remaining[rid]
+        for deps in remaining.values():
+            deps.difference_update(free)
+    if remaining:
+        raise DcError(
+            "DC:ROADMAP has a dependency cycle involving: "
+            + ", ".join(sorted(remaining))
+        )
 
 
 # --------------------------------------------------------------------------
@@ -452,10 +502,28 @@ def purge_check(state: State, root: Path, context_high: bool) -> tuple[str, str]
     overlap: float | None = None
     target: dict | None = None
 
+    # `deps` narrows the pending set to what is actually startable. Without it
+    # every pending row looks equally eligible and the calculus can only hold.
+    #
+    # It does not disambiguate multiple *active* rows: several milestones
+    # genuinely in flight at once is a real state, not a missing edge, and
+    # holding the context is the correct answer there.
+    done_ids = {r["id"] for r in done}
+    unblocked = [r for r in pending if all(d in done_ids for d in r["deps"])]
+    if not active and len(pending) > 1 and len(unblocked) == 1:
+        pending = unblocked
+
     # Exactly one explicitly identified next milestone, or nothing.
     if len(active) == 1:
         target = active[0]
-    elif len(active) > 1 or (not active and len(pending) > 1):
+    elif len(active) > 1:
+        reason = "multiple milestones active"
+    # There is deliberately no "everything is blocked" branch. With an acyclic
+    # graph -- which validate_deps guarantees -- and no active milestone, some
+    # pending row always has every dependency satisfied, so the state cannot
+    # arise. A branch that cannot fire would only claim a handling it does not
+    # have.
+    elif len(pending) > 1:
         reason = "multiple eligible next milestones"
     elif not active and len(pending) == 1:
         target = pending[0]
