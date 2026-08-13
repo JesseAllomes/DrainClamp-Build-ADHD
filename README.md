@@ -6,7 +6,7 @@ A session gate plus six conditional gates over one repository change, with durab
 context reset. Stdlib-only Python 3. No third-party dependencies.
 
 > **Status: feature complete.** Every gate has a script and a reference, `dc_install.py` installs the
-> skill without ever clobbering what it does not own, and the read-only `dc-scout` subagent ships for
+> skill without ever clobbering what it does not own, and the read-only `dca-scout` subagent ships for
 > hosts that expose one.
 
 ## Why
@@ -43,7 +43,7 @@ question:
 ```
 DRAINCLAMP: what are you working on now?
   (1) - lightyear-qbo (last worked 2026-08-11, 4/7 done)
-  (2) - drainclamp-build (last worked 2026-08-13, 6/6 done)
+  (2) - drainclamp-build-adhd (last worked 2026-08-13, 6/6 done)
   (3) - a new project
   (4) - mark a project complete
   (5) - reopen a completed project
@@ -109,7 +109,7 @@ is unignored you get one warning and nothing else.
 | `dc_audit.py` | Gate 0: five-part freshness test, depth-2 rollups, stack, dead-code candidates |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests |
 | `dc_selftest.py` | Materialises `tests/fixtures/`, runs the whole suite matrix |
-| `dc_install.py` | Links the skill into each host, installs `dc-scout`, refuses to touch anything it does not own |
+| `dc_install.py` | Links the skill into each host, installs `dca-scout`, refuses to touch anything it does not own |
 
 ### Measuring the overhead
 
@@ -118,7 +118,7 @@ assertion rather than a measurement. Local transcripts are the one place the rea
 `dc_tokens.py` reads them after the fact:
 
 ```
-py -3 -B skills/drainclamp-build/scripts/dc_tokens.py
+py -3 -B skills/drainclamp-build-adhd/scripts/dc_tokens.py
 ```
 
 ```
@@ -171,15 +171,15 @@ The repository is its own marketplace. Two commands, no clone:
 
 ```
 /plugin marketplace add JesseAllomes/DrainClamp-Build
-/plugin install drainclamp-build@drainclamp
+/plugin install drainclamp-build-adhd@drainclamp-adhd
 ```
 
-That installs the skill and the `dc-scout` subagent together, and `/plugin update drainclamp-build`
+That installs the skill and the `dca-scout` subagent together, and `/plugin update drainclamp-build-adhd`
 pulls later versions. Claude Code copies the plugin into its own cache, so the install does not
 track a checkout.
 
 Use this **or** `dc_install.py` for Claude Code, not both — two definitions named
-`drainclamp-build` is one too many. `dc_install.py --uninstall --host claude` removes the link
+`drainclamp-build-adhd` is one too many. `dc_install.py --uninstall --host claude` removes the link
 install if you are switching.
 
 ### Direct install (Claude Code, Codex, Grok)
@@ -187,23 +187,23 @@ install if you are switching.
 Clone, then:
 
 ```powershell
-py -3 -B skills/drainclamp-build/scripts/dc_install.py            # every host present
-py -3 -B skills/drainclamp-build/scripts/dc_install.py --check    # what is installed, and is it healthy
-py -3 -B skills/drainclamp-build/scripts/dc_install.py --uninstall
+py -3 -B skills/drainclamp-build-adhd/scripts/dc_install.py            # every host present
+py -3 -B skills/drainclamp-build-adhd/scripts/dc_install.py --check    # what is installed, and is it healthy
+py -3 -B skills/drainclamp-build-adhd/scripts/dc_install.py --uninstall
 ```
 
 A link, so the install tracks the checkout: a junction on Windows (no admin needed), a symlink
 elsewhere. Claude Code discovers skills through `~/.claude/skills/`, Grok through
 `~/.agents/skills/`, and Codex reads `~/.codex/skills/`. A host with no directory of its own is
 skipped rather than created — pass `--host codex` to install where the host is not set up yet.
-Invoke with `/drainclamp-build` (Claude, Grok) or `$drainclamp-build` (Codex).
+Invoke with `/drainclamp-build-adhd` (Claude, Grok) or `$drainclamp-build-adhd` (Codex).
 
 Claude Code reads only `~/.claude/skills/`, and a skill it cannot see fails silently: the install
 reports success and the slash command simply never appears. `--check` is what catches that, so run
 it after installing.
 
 Where the host reads agent definitions — `~/.claude/agents/` for Claude Code — the read-only
-`dc-scout` subagent is copied in alongside. `--no-agent` skips it.
+`dca-scout` subagent is copied in alongside. `--no-agent` skips it.
 
 The scout pins `model: haiku` rather than inheriting the parent's. It has three read-only tools and
 a 50-line report cap, so the expensive judgement stays with the parent and the sweep does not pay
@@ -226,8 +226,8 @@ or `unlink`, and the test suite counts the source tree after every destructive p
 ## Tests
 
 ```powershell
-py -3 -B skills/drainclamp-build/scripts/dc_selftest.py               # the whole matrix
-py -3 -B skills/drainclamp-build/scripts/dc_selftest.py --materialise # fixtures only
+py -3 -B skills/drainclamp-build-adhd/scripts/dc_selftest.py               # the whole matrix
+py -3 -B skills/drainclamp-build-adhd/scripts/dc_selftest.py --materialise # fixtures only
 ```
 
 Or one suite at a time:
