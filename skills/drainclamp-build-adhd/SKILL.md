@@ -111,6 +111,11 @@ Always on. Off only on `stop adhd mode`, confirmed in one line.
 Never written without an explicit request from the user: `AGENTS.md`, `CLAUDE.md`, `.gitignore`,
 `.git/info/exclude`. `.agent/` is created freely; if it is unignored, warn once and move on.
 
+**List before you destroy.** A recursive delete, a directory rename, or a copy that overwrites is
+preceded by listing the exact target path — not the path you believe you created earlier in the
+session. Memory of a tree is not a reading of it, and a rename over a stale copy fails silently:
+the operation succeeds, the tests still pass, and the wrong file ships.
+
 Use a native subagent only when the current host exposes one; otherwise work inline. Never simulate
 one with worktrees or nested CLI processes. Where one exists, `dca-scout` is the read-only scout —
 `Glob`, `Grep`, `Read`, no `Write` — and the parent persists whatever it returns. A scout report

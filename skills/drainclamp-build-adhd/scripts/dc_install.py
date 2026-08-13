@@ -1,7 +1,7 @@
 """Install this skill into each host's skill directory, and never clobber.
 
 A skill directory is shared ground: other people's skills live beside ours, and
-a directory named `drainclamp-build` is not proof that we put it there. So the
+a directory named `drainclamp-build-adhd` is not proof that we put it there. So the
 installer only ever removes or replaces what it can *prove* it owns:
 
   * a link is ours when it resolves to this checkout — the strongest evidence
