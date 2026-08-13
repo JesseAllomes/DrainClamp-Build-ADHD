@@ -48,6 +48,7 @@ unscoped rather than an empty set being reported as a pass.
 | `UNSAFE-COMMAND` / `APPROVAL-REQUIRED` | nothing was executed | 4 |
 | `TIMEOUT` | killed with its process tree | 5 |
 | `NO-CHECKS-RUN` | nothing ran — never green | 6 |
+| `NO-STATE` | no state, no roadmap row, or no decisions; nothing executed — never green | 6 |
 
 ## Reporting a failure
 

@@ -78,3 +78,8 @@ The record is accepted only when the digest matches the entry it was issued for,
 command cannot be swapped for another — editing the entry invalidates its record. An entry that is
 neither allowlisted nor recorded **has not run**, and a tier made only of those reports
 `NO-CHECKS-RUN`, never green.
+
+The same refusal applies one level up: a tier reports `NO-STATE` and executes nothing
+unless Gate 2 left a state file carrying at least one `DC:ROADMAP` row and a non-empty
+`DC:DECISIONS`. A file written from the template satisfies neither — it parses, and
+records nothing. Checks are registered against a plan; an empty plan is not one.

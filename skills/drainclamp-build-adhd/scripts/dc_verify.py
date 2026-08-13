@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import _dcio
+import dc_registry
 import dc_state
 from _dcio import DcError
 
@@ -395,10 +396,16 @@ def select_entries(stored: list[dict], discovered: list[dict],
 
 
 def write_log(agent: Path, tier: str, rows: list[dict], changed: list[str],
-              origin: str) -> Path:
+              origin: str, notes: list[str] | None = None) -> Path:
     stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     lines = [f"# dc_verify {tier} {stamp}",
-             f"# changed: {len(changed)} file(s) ({origin})", ""]
+             f"# changed: {len(changed)} file(s) ({origin})"]
+    # A note explains why a run is not what it appears to be -- an unscoped
+    # tier, or a bypassed gate. It belongs in the artefact that outlives the
+    # terminal, or the only record of the exception is the scrollback.
+    for note in notes or []:
+        lines.append(f"# {note}")
+    lines.append("")
     for row in rows:
         lines.append(f"== {row['id']} [{row['status']}] {row['argv']} (cwd {row['cwd']})")
         if row.get("detail"):
@@ -507,6 +514,44 @@ def stored_entries(root: Path) -> list[dict]:
     return dc_state.validate_verify_block(state.sections["VERIFY"])
 
 
+NO_STATE = "NO-STATE"
+
+
+def state_gap(root: Path) -> str | None:
+    """Why Gate 2 cannot be considered to have run, or None when it has.
+
+    The scripts already refuse to let an absence read as a success: an entry
+    that never executed is `NO-CHECKS-RUN`, a runner that is not installed is
+    `MISSING-REQUIRED`. The gates had no such refusal. A skipped Gate 2 left no
+    trace, so a session could report decisions recorded and milestones planned
+    with nothing on disk to contradict it, and every check would still run and
+    still go green.
+
+    Presence of the file is not the question. A file written from the template
+    parses cleanly and carries an empty roadmap, so a presence check would let
+    exactly the claim this refusal exists to catch -- *the plan is recorded* --
+    pass on a plan that records nothing. What is asserted is what is checked:
+    a roadmap with at least one row, and a decisions section that says
+    something, `no open questions` included.
+
+    Verification is the right place to notice. It is the last gate before work
+    is called done, and it is already the component whose job is reporting what
+    did not happen.
+    """
+    target = dc_registry.state_file(root)
+    if not target.is_file():
+        return f"{target} is absent"
+    try:
+        state = dc_state.State.parse(target.read_text(encoding="utf-8"))
+    except (DcError, OSError) as exc:
+        return f"{target} could not be read as state: {exc}"
+    if not dc_state.parse_roadmap(state.sections.get("ROADMAP", "")):
+        return "DC:ROADMAP has no milestone rows"
+    if not state.sections.get("DECISIONS", "").strip():
+        return "DC:DECISIONS is empty (write `no open questions` when Gate 1 is skipped)"
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="dc_verify.py", description=__doc__)
     parser.add_argument("--root", default=None)
@@ -519,6 +564,8 @@ def main() -> int:
     parser.add_argument("--digest", help="digest issued with the APPROVAL-REQUIRED record")
     parser.add_argument("--status", choices=("pass", "fail"))
     parser.add_argument("--log", help="path to the log of the approved run")
+    parser.add_argument("--allow-no-state", action="store_true",
+                        help="run a tier with no DrainClamp state on disk (standalone use)")
     args = parser.parse_args()
 
     root = _dcio.repo_root(args.root)
@@ -555,7 +602,30 @@ def main() -> int:
         parser.print_help()
         return _dcio.EXIT_OK
 
+    gap = state_gap(root)
+    if gap and not args.allow_no_state:
+        print(f"TIER: {args.tier}  CHECKS: none")
+        print(f"{NO_STATE}  {gap}")
+        print(f"RESULT: NO-CHECKS-RUN (no state) (Gate 2 has not run)  "
+              f"log: {agent / 'verify.log'}")
+        print()
+        print(f"{NO_STATE}  Gate 2 did not run for this repository.")
+        print(f"  gap:      {gap}")
+        print(f"  expected: {dc_registry.state_file(root)}")
+        print("  Nothing was executed. A tier verified against no roadmap and no")
+        print("  recorded decisions cannot report the work as done.")
+        print("  Run Gate 2 (dc_state.py --set ...), or pass --allow-no-state for")
+        print("  a standalone check outside the pipeline.")
+        write_log(agent, args.tier, [], [], "none")
+        return _dcio.EXIT_NO_CHECKS
+
     notes: list[str] = []
+    if gap and args.allow_no_state:
+        # A bypass that leaves no trace is a bypass nobody audits. It goes in
+        # the report and in the log, so a routine --allow-no-state is visible
+        # as the standing exception it has become.
+        notes.append(f"NOTE: {NO_STATE} bypassed with --allow-no-state ({gap}); "
+                     "results are not gated on a plan")
     if origin == "unavailable":
         notes.append("NOTE: no usable change set (non-git, or git unavailable); "
                      "running configured checks unscoped")
@@ -564,7 +634,7 @@ def main() -> int:
     entries, source = select_entries(stored_entries(root), discovered, args.tier)
     if not entries:
         notes.append(f"{UNDISCOVERED}: no configured runner or DC:VERIFY entry for this tier")
-        write_log(agent, args.tier, [], changed, source)
+        write_log(agent, args.tier, [], changed, source, notes)
         emit(args.tier, [], changed, origin, source, notes)
         return _dcio.EXIT_NO_CHECKS
 
@@ -582,7 +652,7 @@ def main() -> int:
             continue
         rows.append(run_entry(entry, root, agent))
 
-    write_log(agent, args.tier, rows, changed, source)
+    write_log(agent, args.tier, rows, changed, source, notes)
     emit(args.tier, rows, changed, origin, source, notes)
     if any(row["status"] == APPROVAL for row in rows):
         print_approval(rows)

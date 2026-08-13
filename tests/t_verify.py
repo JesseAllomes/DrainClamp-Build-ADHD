@@ -30,8 +30,18 @@ def check(name, cond, detail=""):
 
 
 def verify(root, *args):
+    """Run dc_verify against a fixture, outside the gate pipeline.
+
+    Every fixture here exercises the verification engine -- allowlist matching,
+    verdict rules, exit codes, timeouts -- on a repository that has no roadmap
+    and no decisions, because none of that is what these checks are about. The
+    Gate 2 precondition would otherwise answer first and every assertion below
+    would pass or fail for a reason it never meant to test. Gate semantics have
+    their own suite: t_gatestate.py.
+    """
     return subprocess.run(
-        [sys.executable, "-B", str(SCRIPTS / "dc_verify.py"), "--root", str(root), *args],
+        [sys.executable, "-B", str(SCRIPTS / "dc_verify.py"), "--root", str(root),
+         "--allow-no-state", *args],
         capture_output=True, text=True,
     )
 
@@ -191,7 +201,8 @@ subprocess.run(["git", "init", "-q"], cwd=bare, capture_output=True)
 (bare / "src" / "thing.py").write_text("def thing():\n    return 1\n", encoding="utf-8")
 out = verify(bare, "--tier", "milestone")
 check("a repo with no configured runner reports NO-CHECKS-RUN (exit 6)",
-      out.returncode == 6 and "NO-CHECKS-RUN" in out.stdout, f"rc={out.returncode}")
+      out.returncode == 6 and "NO-CHECKS-RUN" in out.stdout
+      and dc_verify.UNDISCOVERED in out.stdout, f"rc={out.returncode}")
 
 (bare / "requirements.txt").write_text("requests==2.31.0\n", encoding="utf-8")
 out = verify(bare, "--tier", "milestone")
