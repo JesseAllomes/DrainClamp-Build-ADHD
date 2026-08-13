@@ -1,0 +1,6 @@
+# Scripts write LF deliberately (_dcio.atomic_write uses newline="\n").
+# Keep the repo LF everywhere so state files round-trip identically on every OS.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

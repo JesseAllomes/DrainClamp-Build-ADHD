@@ -1,0 +1,7 @@
+interface:
+  display_name: "DrainClamp & Build"
+  short_description: "Token-minimal audit, plan, and implement loop with on-disk state"
+  default_prompt: "Use $drainclamp-build to audit, plan, and implement this change."
+
+policy:
+  allow_implicit_invocation: true

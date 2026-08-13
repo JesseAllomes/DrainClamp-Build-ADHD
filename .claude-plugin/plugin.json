@@ -1,0 +1,22 @@
+{
+  "name": "drainclamp-build-adhd",
+  "displayName": "DrainClamp & Build (ADHD)",
+  "version": "1.1.0",
+  "description": "A session gate plus six conditional gates over one repository change, with durable state on disk so the work survives a context reset. Output is shaped for a reader with ADHD. Stdlib-only Python 3, no third-party dependencies.",
+  "author": {
+    "name": "Jesse Allomes",
+    "url": "https://github.com/JesseAllomes"
+  },
+  "homepage": "https://github.com/JesseAllomes/DrainClamp-Build-ADHD",
+  "repository": "https://github.com/JesseAllomes/DrainClamp-Build-ADHD",
+  "license": "MIT",
+  "keywords": [
+    "audit",
+    "context",
+    "refactor",
+    "state",
+    "architecture",
+    "adhd",
+    "accessibility"
+  ]
+}
