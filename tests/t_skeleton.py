@@ -110,9 +110,25 @@ print("=== GATE 4: implement (red -> green) ===")
     + "\n\ndef test_multiply():\n    from src.calc import multiply\n"
       "    assert multiply(3, 4) == 12\n",
     encoding="utf-8")
-red = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q"],
-                     cwd=repo, capture_output=True, text=True)
-check("test is RED before implementation", red.returncode != 0)
+# `python -m pytest` exits non-zero when pytest is missing exactly as it does
+# when a test fails, so `returncode != 0` cannot tell a red test from an absent
+# runner: the RED check below would pass on a machine with no pytest at all,
+# and the GREEN check would then fail for a reason that has nothing to do with
+# the implementation. dc_verify already draws this distinction -- an uninstalled
+# runner is MISSING-REQUIRED, never a pass -- and the harness should not be
+# looser about its own preconditions than the runtime is about the repository's.
+probe = subprocess.run([sys.executable, "-c", "import pytest"],
+                       capture_output=True, text=True)
+pytest_present = probe.returncode == 0
+check("pytest is installed (required for the red-green checks)", pytest_present,
+      "" if pytest_present else "MISSING-REQUIRED: red-green is unverified without it")
+
+if pytest_present:
+    red = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q"],
+                         cwd=repo, capture_output=True, text=True)
+    check("test is RED before implementation", red.returncode != 0)
+else:
+    print("SKIP  test is RED before implementation  (no pytest)")
 
 out = dc("dc_chunk.py", repo, "--symbol", "subtract")
 check("chunk resolves the anchor symbol", out.returncode == 0 and "a - b" in out.stdout)
@@ -122,10 +138,13 @@ check("chunk read is a bounded range, not the whole file",
 (repo / "src/calc.py").write_text(
     (repo / "src/calc.py").read_text(encoding="utf-8")
     + "\n\ndef multiply(a, b):\n    return a * b\n", encoding="utf-8")
-green = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q"],
-                       cwd=repo, capture_output=True, text=True)
-check("test is GREEN after implementation", green.returncode == 0,
-      green.stdout.strip().splitlines()[-1] if green.stdout else "")
+if pytest_present:
+    green = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q"],
+                           cwd=repo, capture_output=True, text=True)
+    check("test is GREEN after implementation", green.returncode == 0,
+          green.stdout.strip().splitlines()[-1] if green.stdout else "")
+else:
+    print("SKIP  test is GREEN after implementation  (no pytest)")
 
 print()
 print("=== GATE 5: reset ===")

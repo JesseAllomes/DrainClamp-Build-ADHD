@@ -49,21 +49,36 @@ except _dcio.DcError as exc:
     transient_ok, err = False, str(exc)
 check("transient external reader is retried through", transient_ok, err)
 
-# 1b. a PERSISTENT holder fails loudly and leaves the old content intact
-stuck = open(target, "r", encoding="utf-8")
-try:
-    _dcio.REPLACE_RETRY_SECONDS = 0.4  # keep the test quick
+# 1b. a PERSISTENT holder fails loudly and leaves the old content intact.
+#
+# This is Windows behaviour and cannot be reproduced elsewhere: os.replace over
+# a file another process holds open raises there, while POSIX permits it and
+# the write correctly succeeds. Asserting it on POSIX would report a platform
+# difference as a defect, which is the same dishonesty as letting an absent
+# runner read as a passing test -- so it is declared unverifiable here rather
+# than failed.
+if os.name == "nt":
+    stuck = open(target, "r", encoding="utf-8")
     try:
-        _dcio.atomic_write(target, "four\n")
-        raised = False
-    except _dcio.DcError as exc:
-        raised = "holding the file open" in str(exc)
-    intact = target.read_text(encoding="utf-8") == "three\n"
-finally:
-    stuck.close()
-    _dcio.REPLACE_RETRY_SECONDS = 5.0
-check("persistent holder raises DcError", raised)
-check("failed write leaves previous content intact", intact)
+        _dcio.REPLACE_RETRY_SECONDS = 0.4  # keep the test quick
+        try:
+            _dcio.atomic_write(target, "four\n")
+            raised = False
+        except _dcio.DcError as exc:
+            raised = "holding the file open" in str(exc)
+        intact = target.read_text(encoding="utf-8") == "three\n"
+    finally:
+        stuck.close()
+        _dcio.REPLACE_RETRY_SECONDS = 5.0
+    check("persistent holder raises DcError", raised)
+else:
+    intact = None
+    print("SKIP  persistent holder raises DcError  "
+          "(POSIX permits replace over an open handle)")
+if intact is None:
+    print("SKIP  failed write leaves previous content intact  (Windows-only)")
+else:
+    check("failed write leaves previous content intact", intact)
 
 # no temp turds left behind, even after the failure
 leftovers = [p.name for p in tmp.iterdir() if p.name.startswith(".state.md")]
