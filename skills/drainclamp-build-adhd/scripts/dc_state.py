@@ -311,13 +311,30 @@ def load(state_path: Path) -> State:
     return State.parse(text)
 
 
-def mutate(state_path: Path, lock_dir: Path, apply_fn) -> int:
-    """Locked read-modify-replace. Returns the committed generation."""
+def mutate(state_path: Path, lock_dir: Path, apply_fn, expect: int | None = None) -> int:
+    """Locked read-modify-replace. Returns the committed generation.
+
+    `expect` is the generation the caller read when it began the work it is
+    about to commit, which is not the same as the generation on disk when it
+    finally writes. The lock already serialises writers, so the recheck below
+    can only catch an edit made outside the lock -- it cannot catch a second
+    agent that read, planned and wrote entirely between this caller's read and
+    its write. In a workflow where an operator alternates between agents on one
+    repository, that window is minutes long, and the losing write is silent:
+    both agents are told they succeeded, and one plan simply ceases to exist.
+
+    Passing `expect` closes it. The comparison is against the generation the
+    caller reasoned from, so a file that has moved on since is refused rather
+    than overwritten.
+    """
     with _dcio.FileLock(lock_dir):
         text = _dcio.read_text(state_path)
         fresh_file = text is None
         state = State.parse(template_text() if fresh_file else text)
         observed = state.generation
+
+        if expect is not None and expect != observed:
+            raise GenerationMismatch(expect, observed)
 
         apply_fn(state)
 
@@ -640,6 +657,9 @@ def main() -> int:
     parser.add_argument("--set", dest="section", choices=SECTIONS)
     parser.add_argument("--file", dest="source")
     parser.add_argument("--append-log", dest="log_entry")
+    parser.add_argument("--expect-generation", dest="expect", type=int, default=None,
+                        help="refuse the write if the file has moved past this "
+                             "generation since you read it")
     parser.add_argument("--purge-check", action="store_true")
     parser.add_argument("--context-high", action="store_true")
     parser.add_argument("--show", action="store_true")
@@ -670,7 +690,7 @@ def main() -> int:
         def apply_set(state: State) -> None:
             state.sections[args.section] = content.strip("\n")
 
-        gen = mutate(state_path, agent, apply_set)
+        gen = mutate(state_path, agent, apply_set, expect=args.expect)
         register(root)
         print(f"DC:{args.section} written (generation {gen})")
         return _dcio.EXIT_OK
@@ -689,7 +709,7 @@ def main() -> int:
             moved["count"] = max(0, before - len(existing))
             state.sections["LOG"] = "\n".join(existing)
 
-        gen = mutate(state_path, agent, apply_log)
+        gen = mutate(state_path, agent, apply_log, expect=args.expect)
         register(root)
         note = f", {moved['count']} archived" if moved["count"] else ""
         print(f"DC:LOG += {new_id} (generation {gen}{note})")

@@ -59,3 +59,21 @@ picture is in `.agent/audit.md`, the machine copy in `.agent/audit.json`.
 Record what the audit found in `DC:ARCH` (Gate 2) as `module → responsibility → entrypoint`, plus
 any optimisation vectors worth keeping. Do not paste the audit output into the conversation — it is
 already on disk.
+
+## Returning to a repository
+
+An agent that left and came back has two stale things, not one: its picture of the code, and
+its picture of the plan. The audit answers the first cheaply — five conditions, a cached
+verdict, and a refresh that reports *why* it refreshed rather than merely that it did. Read
+that reason. `HEAD changed` and `dirty or untracked files changed` mean another writer has
+been here.
+
+The picture of the plan is `.agent/drainclamp-state.md`, and it is re-read, not remembered.
+Where the audit reports a change, resolve the affected paths through `map.tsv` rather than
+opening files to find out what happened. A full rescan on return is the failure this index
+exists to prevent, and it costs thousands of tokens to rebuild what 584 bytes of `audit.md`
+already states.
+
+Where the return ends in a write prepared before the gap, pass `--expect-generation <n>` with
+the generation read at the start of that work. Without it the write silently wins, and the
+other agent's plan is gone while both agents believe they succeeded.
