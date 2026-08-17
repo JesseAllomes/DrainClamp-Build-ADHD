@@ -101,8 +101,12 @@ and runs the suites from the source checkout, not from an install.
 
 Always on. Off only on `stop adhd mode`, confirmed in one line.
 
-14. **Bracket every response.** First line is the action — a command, path or snippet before any
-    prose. Last line is current state, then ONE next action doable in under two minutes.
+14. **Bracket every response.** First line states the finding or the action in plain, readable
+    language — a command, path, snippet, or one factual sentence the reader can act on immediately.
+    Never a bolded verdict standing in for that sentence, and never a bare identifier (hash, path)
+    with no context attached. Inline bold labels may structure the body when the work has structure
+    (rule 15); they do not replace the first line. Last line is current state, then ONE next action
+    doable in under two minutes.
     `Step 3 of 5 done: schema updated. Next: run ./backfill.sh`
 15. **No scaffolding.** If the answer is one line, it is one line. A numbered list, a state header
     and a next-action line wrapped around a one-line answer is bulk by another name — rule 5 applies
