@@ -166,7 +166,7 @@ briefly, then fails loudly. A partial file is never written.
 The repository is its own marketplace. Two commands, no clone:
 
 ```
-/plugin marketplace add JesseAllomes/DrainClamp-Build
+/plugin marketplace add JesseAllomes/DrainClamp-Build-ADHD
 /plugin install drainclamp-build-adhd@drainclamp-adhd
 ```
 
@@ -177,6 +177,27 @@ track a checkout.
 Use this **or** `dc_install.py` for Claude Code, not both — two definitions named
 `drainclamp-build-adhd` is one too many. `dc_install.py --uninstall --host claude` removes the link
 install if you are switching.
+
+### Grok plugin
+
+Grok reads `.grok-plugin/marketplace.json`, not Claude's `"source": "./"` catalog. From
+PowerShell, no clone:
+
+```powershell
+grok plugin marketplace add JesseAllomes/DrainClamp-Build-ADHD
+grok plugin install drainclamp-build-adhd --trust
+grok plugin enable drainclamp-build-adhd
+```
+
+If the source is already added, refresh it first with
+`grok plugin marketplace update DrainClamp-Build-ADHD`. Grok pins as
+`drainclamp-build-adhd@DrainClamp-Build-ADHD` or
+`drainclamp-build-adhd@jesseallomes/drainclamp-build-adhd` — not `@drainclamp-adhd`
+(that qualifier is Claude Code's marketplace id).
+
+Use this **or** `dc_install.py` for Grok, not both. `dc_install.py --uninstall --host grok`
+removes the skill-link install if you are switching. Reload plugins (`r` in the Plugins
+tab) or start a new session after install.
 
 ### Direct install (Claude Code, Codex, Grok)
 

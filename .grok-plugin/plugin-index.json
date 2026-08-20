@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "plugins": {
+    "drainclamp-build-adhd": {
+      "version": "1.2.0",
+      "components": {
+        "skills": [
+          {
+            "name": "drainclamp-build-adhd",
+            "description": "Audit and externalise durable state for substantial repository work requiring broad discovery, material design decisions, multiple milestones, or context resets. Output is shaped for a reader with ADHD."
+          }
+        ],
+        "agents": [
+          {
+            "name": "dca-scout",
+            "description": "Read-only repository scout for DrainClamp & Build. Use when a question needs a broad sweep across many files and only the conclusion is worth bringing back."
+          }
+        ]
+      }
+    }
+  }
+}

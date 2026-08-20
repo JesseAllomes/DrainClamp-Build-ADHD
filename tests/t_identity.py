@@ -76,7 +76,7 @@ SUFFIXED = re.compile(re.escape(NAME) + r"-[a-z0-9]")
 # Only files that carry install identity are scanned. `tests/` is excluded on
 # purpose: a suite that checks duplicate detection has to name a second,
 # non-existent skill to detect, and that name is data, not an identity claim.
-SCANNED = ("skills", "agents", ".claude-plugin", "README.md")
+SCANNED = ("skills", "agents", ".claude-plugin", ".grok-plugin", "README.md")
 
 
 def carries_identity(path: Path) -> bool:
@@ -123,23 +123,32 @@ check("no references to a foreign skill name", not others,
 # Manifests agree
 # --------------------------------------------------------------------------
 
-plugin_dir = ROOT / ".claude-plugin"
-if plugin_dir.is_dir():
+for plugin_dir_name in (".claude-plugin", ".grok-plugin"):
+    plugin_dir = ROOT / plugin_dir_name
+    rel = plugin_dir_name
+    if not plugin_dir.is_dir():
+        check(f"no {rel} directory to check", True, "skipped")
+        continue
     for manifest in sorted(plugin_dir.glob("*.json")):
+        label = f"{rel}/{manifest.name}"
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            check(f"{manifest.name} is valid JSON", False, str(exc))
+            check(f"{label} is valid JSON", False, str(exc))
             continue
-        check(f"{manifest.name} is valid JSON", True)
+        check(f"{label} is valid JSON", True)
         if "plugins" in data:
-            names = [p.get("name") for p in data["plugins"]]
-            check(f"{manifest.name} lists this plugin", NAME in names, str(names))
+            plugins = data["plugins"]
+            if isinstance(plugins, list):
+                names = [p.get("name") for p in plugins]
+            elif isinstance(plugins, dict):
+                names = list(plugins)
+            else:
+                names = []
+            check(f"{label} lists this plugin", NAME in names, str(names))
         else:
-            check(f"{manifest.name} name matches the skill",
+            check(f"{label} name matches the skill",
                   data.get("name") == NAME, str(data.get("name")))
-else:
-    check("no .claude-plugin directory to check", True, "skipped")
 
 # --------------------------------------------------------------------------
 # The agent definition, where one ships

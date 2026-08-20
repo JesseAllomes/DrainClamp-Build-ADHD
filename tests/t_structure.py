@@ -10,6 +10,7 @@ thing or no agent at all.
 These checks are about arrangement, not content. Every other suite runs the
 scripts; this one asserts the tree those scripts are reached through.
 """
+import json
 import re
 import subprocess
 import sys
@@ -81,6 +82,41 @@ check("a scout definition exists at the repository root", bool(scouts), str(scou
 # config, a different artifact that legitimately sits beside the skill.
 nested_scout = sorted(p.name for p in (skill / "agents").glob("*.md")) if (skill / "agents").is_dir() else []
 check("no scout definition nested inside the skill", not nested_scout, str(nested_scout))
+
+# Grok catalogs plugins from `.grok-plugin/marketplace.json`. A Claude-style
+# `"source": "./"` at marketplace root is registered as a source and then
+# silently dropped from the catalog, so `grok plugin install <name>` cannot
+# find the plugin. A URL source (or a subdirectory path) is what Grok indexes.
+grok_market = ROOT / ".grok-plugin" / "marketplace.json"
+check(".grok-plugin/marketplace.json exists", grok_market.is_file())
+if grok_market.is_file():
+    try:
+        grok_data = json.loads(grok_market.read_text(encoding="utf-8"))
+        grok_ok = True
+    except json.JSONDecodeError as exc:
+        grok_data = {}
+        grok_ok = False
+        check(".grok-plugin/marketplace.json is valid JSON", False, str(exc))
+    if grok_ok:
+        check(".grok-plugin/marketplace.json is valid JSON", True)
+
+        def grok_source_indexable(src):
+            if src in (None, "", ".", "./"):
+                return False
+            if isinstance(src, str):
+                return src not in (".", "./")
+            if isinstance(src, dict):
+                if src.get("url"):
+                    return True
+                path = src.get("path")
+                return bool(path) and path not in (".", "./")
+            return False
+
+        entries = grok_data.get("plugins") if isinstance(grok_data, dict) else None
+        sources = [p.get("source") for p in entries] if isinstance(entries, list) else []
+        bad = [s for s in sources if not grok_source_indexable(s)]
+        check("Grok marketplace sources are indexable (not repo-root ./)",
+              bool(sources) and not bad, str(bad if sources else "no plugins"))
 
 # --------------------------------------------------------------------------
 # Every reference the skill declares actually resolves
