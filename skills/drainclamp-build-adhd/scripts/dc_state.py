@@ -40,6 +40,7 @@ ROADMAP_STATUSES = {"pending", "active", "done"}
 PURGE_THRESHOLD = 0.20
 LOG_CAP = 20
 ARCHIVE_NAME = "drainclamp-log-archive.md"
+RESUME_NAME = "drainclamp-resume.md"
 ARCHIVE_HEADER = (
     "<!-- drainclamp-build: log archive; schema=1 -->\n"
     "# DrainClamp log archive\n"
@@ -236,6 +237,36 @@ def parse_roadmap(raw: str) -> list[dict]:
     return rows
 
 
+def resume_text(state: "State", generation: int) -> str:
+    """Render a bounded re-entry projection; the full state remains authoritative."""
+    rows = parse_roadmap(state.sections.get("ROADMAP", ""))
+    done = [r["id"] for r in rows if r["status"] == "done"]
+    active = [r for r in rows if r["status"] == "active"]
+    pending = [r for r in rows if r["status"] == "pending"]
+    finished = ", ".join(done) if done else "none"
+    live = f'{active[0]["id"]}: {active[0]["goal"]}' if active else "none"
+    done_ids = set(done)
+    eligible = [r for r in pending if set(r["deps"]).issubset(done_ids)] or pending
+    if eligible:
+        next_step = f'{eligible[0]["id"]}: {eligible[0]["goal"]}'
+    elif rows and len(done) == len(rows):
+        next_step = "project complete"
+    else:
+        next_step = "no roadmap action available"
+    return (
+        "# DrainClamp resume capsule\n"
+        f"Done: {finished}\n"
+        f"In progress: {live}\n"
+        f"Next: {next_step}\n"
+        f"Generation: {generation}\n"
+    )
+
+
+def write_resume_capsule(agent: Path, state: "State", generation: int) -> None:
+    """Write the small re-entry projection after the authoritative state write."""
+    _dcio.atomic_write(agent / RESUME_NAME, resume_text(state, generation))
+
+
 def validate_deps(rows: list[dict]) -> None:
     """Reject a dependency graph that cannot be satisfied.
 
@@ -398,6 +429,7 @@ def mutate(state_path: Path, lock_dir: Path, apply_fn, expect: int | None = None
 
         committed = observed + 1
         _dcio.atomic_write(state_path, state.render(committed))
+        write_resume_capsule(lock_dir, state, committed)
         return committed
 
 

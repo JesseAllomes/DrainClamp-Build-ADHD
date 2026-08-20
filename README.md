@@ -105,7 +105,7 @@ is unignored you get one warning and nothing else.
 | `dc_state.py` | Schema v1 state, crash-recoverable log rollover, purge calculus, narrow promotion |
 | `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never trusts a corrupt file |
 | `dc_session.py` | Gate S: the project menu, plus `--complete` and `--reopen` |
-| `dc_tokens.py` | On-demand report: skill-loaded sessions vs the rest, from local transcripts. Aggregates only, never transcript text |
+| `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok. Aggregates only, never transcript text |
 | `dc_audit.py` | Gate 0: five-part freshness test, depth-2 rollups, stack, dead-code candidates |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests |
 | `dc_selftest.py` | Materialises `tests/fixtures/`, runs the whole suite matrix |
@@ -121,19 +121,15 @@ assertion rather than a measurement. Local transcripts are the one place the rea
 py -3 -B skills/drainclamp-build-adhd/scripts/dc_tokens.py
 ```
 
-```
-DRAINCLAMP: token usage by session, marker='drainclamp', 31 session(s) scanned
-                 sessions   turns  context/turn  fresh/turn  output/turn
-with skill              9    1424       128,677       2,498          851
-without skill          22    5892       262,201       9,065        1,178
-delta                                    -50.9%      -72.4%       -27.7%
-```
+It reports three exclusive buckets (`none`, `base`, `adhd`) across Claude, Codex and Grok. Claude
+uses session-median context/fresh values; Codex uses the final session token total; Grok remains
+session-level and never invents a cache split. Thin samples are marked `n<3`.
 
-`context/turn` is the whole prompt seen per turn; `fresh/turn` is the part that was not a cache hit.
-The comparison is observational, not controlled — the two sets are different tasks — so it is
-reported with that caveat and never as a benchmark. The script is not wired into any gate and is not
-referenced from `SKILL.md`: a measurement tool that cost context on every invocation would be
-measuring a problem it had joined.
+Use `--claude`, `--codex`, or `--grok` to isolate a host; `--transcripts` aliases `--claude`.
+
+The static table estimates resident `SKILL.md` and paged references (bytes/4; not a host bill).
+
+The comparison is observational, not controlled, and is never a benchmark. The script is not wired into any gate and is not referenced from `SKILL.md`: a measurement tool that costs context on every invocation would be measuring a problem it had joined.
 
 ### The sandbox
 

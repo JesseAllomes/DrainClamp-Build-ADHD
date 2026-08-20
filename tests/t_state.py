@@ -56,6 +56,10 @@ check("CLAUDE.md not created", not (repo / "CLAUDE.md").exists())
 check(".gitignore not created", not (repo / ".gitignore").exists())
 check("unignored .agent warning emitted once",
       "not ignored" in r1.stdout and "not ignored" not in r2.stdout)
+capsule = repo / ".agent" / dc_state.RESUME_NAME
+check("resume capsule emitted", capsule.exists())
+check("resume capsule is bounded", capsule.stat().st_size < 512)
+check("resume capsule carries generation", "Generation: 3" in capsule.read_text(encoding="utf-8"))
 
 # --- schema conformance ---------------------------------------------------
 def parse_fails(text, fragment):
