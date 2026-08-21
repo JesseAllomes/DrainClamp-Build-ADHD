@@ -8,6 +8,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import dc_registry  # noqa: E402
+import dc_session  # noqa: E402
 import dc_state  # noqa: E402
 
 fails = []
@@ -61,6 +62,19 @@ rc, out = session()
 check("menu names both projects", "alpha" in out and "beta" in out)
 check("menu shows roadmap progress", "1/2 done" in out, out.strip().replace("\n", " | "))
 check("menu offers new/complete", "- a new project" in out and "mark a project complete" in out)
+
+# An entry can remain visible while its state becomes unreadable to a more
+# restricted host (for example, a Windows sandbox ACL). Progress is optional;
+# the session menu itself must remain available.
+read_text = dc_session._dcio.read_text
+try:
+    def denied(_path):
+        raise PermissionError(13, "permission denied")
+
+    dc_session._dcio.read_text = denied
+    check("unreadable state suppresses progress", dc_session.progress(str(alpha)) == "")
+finally:
+    dc_session._dcio.read_text = read_text
 
 # 3. touch never resurrects a completed project
 dc_registry.set_status(beta, "complete", home)

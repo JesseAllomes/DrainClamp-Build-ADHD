@@ -2,7 +2,7 @@
   "version": 1,
   "plugins": {
     "drainclamp-build-adhd": {
-      "version": "1.2.0",
+      "version": "1.2.1",
       "components": {
         "skills": [
           {

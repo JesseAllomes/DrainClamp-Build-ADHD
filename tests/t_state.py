@@ -12,6 +12,11 @@ import _dcio  # noqa: E402
 import dc_state  # noqa: E402
 
 fails = []
+TEST_ENV = dict(os.environ)
+TEST_ENV.setdefault(
+    "DRAINCLAMP_HOME",
+    str(Path(tempfile.mkdtemp(prefix="dcstate-registry-"))),
+)
 
 
 def check(name, cond, detail=""):
@@ -23,7 +28,7 @@ def check(name, cond, detail=""):
 def run(root, *args):
     return subprocess.run(
         [sys.executable, "-B", str(SCRIPTS / "dc_state.py"), "--root", str(root), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=TEST_ENV,
     )
 
 

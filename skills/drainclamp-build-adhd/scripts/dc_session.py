@@ -25,7 +25,13 @@ from _dcio import DcError
 
 def progress(root: str) -> str:
     """`n/N done` from the project's roadmap, or '' when it cannot be read."""
-    text = _dcio.read_text(dc_registry.state_file(root))
+    try:
+        text = _dcio.read_text(dc_registry.state_file(root))
+    except OSError:
+        # The registry is only a cache. A project can outlive the permissions
+        # of the host rendering this menu (notably a Windows sandbox ACL), so
+        # inaccessible progress must not make the session gate unusable.
+        return ""
     if text is None:
         return ""
     try:
