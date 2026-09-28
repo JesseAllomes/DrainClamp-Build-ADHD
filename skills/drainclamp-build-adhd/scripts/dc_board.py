@@ -49,8 +49,7 @@ FALLBACK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <p>board.html is missing next to dc_board.py. The API is running.</p></body></html>"""
 
 
-def project_id(root: str) -> str:
-    return hashlib.sha1(dc_registry._key(root).encode("utf-8")).hexdigest()[:10]
+project_id = dc_registry.project_id
 
 
 def _entries(home: str | None) -> list[dict]:

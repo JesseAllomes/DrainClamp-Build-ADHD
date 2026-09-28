@@ -13,6 +13,7 @@ would point work at the wrong repository.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -26,6 +27,11 @@ HOME_ENV = "DRAINCLAMP_HOME"
 DIR_NAME = ".drainclamp"
 REGISTRY_NAME = "projects.json"
 STATUSES = ("active", "complete")
+
+
+def project_id(root: Path | str) -> str:
+    """Stable short id for a project root, shared by the board and the effort cache."""
+    return hashlib.sha1(_key(root).encode("utf-8")).hexdigest()[:10]
 
 
 def home_dir(home: Path | str | None = None) -> Path:
