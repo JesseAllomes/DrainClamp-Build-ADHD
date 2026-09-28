@@ -1,6 +1,7 @@
 # Gate 5 — Reset
 
-Runs at a **real milestone boundary**, never mid-milestone.
+Runs at a **real milestone boundary**. Inside a milestone, the only boundary is a finished chunk
+(see "Chunk boundaries").
 
 ## 1. Write state back first
 
@@ -65,8 +66,27 @@ DRAINCLAMP: Resumed from .agent/drainclamp-state.md. Context reset confirmed.
 This requires host evidence or an explicit fresh-session signal — never self-assertion in the same
 session that recommended the purge.
 
-Resume reads **only** `.agent/drainclamp-state.md`. Never auto-load
-`.agent/drainclamp-log-archive.md`; it exists for human forensics, not for context.
+Resume reads **only** `.agent/drainclamp-state.md`, then `dc_project.py next` for the current
+chunk. Never auto-load `.agent/drainclamp-log-archive.md` or earlier chunk notes; they exist for
+human forensics, not for context.
+
+## Chunk boundaries
+
+`dc_project.py chunk done` runs the same calculus between the finished chunk and the next open
+chunk in the milestone. It compares their **targets** by path, so two symbols of one file overlap.
+
+| Output | Say |
+|---|---|
+| `PURGE (chunk overlap NN%)` or `PURGE (chunk context-high; ...)` | its `DRAINCLAMP:` line, then `Run /compact now, then resume with dc_project.py next.` (host support unknown: `Start a fresh session and resume with dc_project.py next.`) |
+| `HOLD (chunk ...)` | its `DRAINCLAMP:` line; continue with the next chunk |
+| `all chunks done` | close the milestone: section 1, then `--purge-check` |
+
+- The chunk tick is the save: the sidecar already holds the note, and `next` rebuilds the resume
+  view from it. No state-file write is needed mid-milestone.
+- The same rules hold: unknown is never `PURGE`, and `--context-high` is your judgement, not a
+  measurement.
+- A chunk `PURGE` is a recommendation. Several small chunks in a row over different files will
+  each say `PURGE`; judge whether reloading context costs more than it saves.
 
 ## Failure interaction
 

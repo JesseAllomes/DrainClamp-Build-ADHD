@@ -200,6 +200,29 @@ def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     return sorted(found), "working tree"
 
 
+def tree_fingerprint(root: Path) -> str | None:
+    """HEAD plus the content of every changed file, outside `.agent/`.
+
+    A host-approved record vouches for the tree it ran against, not only the
+    command. Without this a record kept passing a tier after the code it
+    tested had changed. None when git cannot say, so no record can match.
+    """
+    head = git_lines(root, "rev-parse", "HEAD")
+    changed, how = changed_files(root, None)
+    if how == "unavailable":
+        return None
+    parts = {"head": head[0] if head else "", "files": {}}
+    for rel in changed:
+        if rel == ".agent" or rel.startswith(".agent/"):
+            continue
+        try:
+            parts["files"][rel] = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+        except OSError:
+            parts["files"][rel] = "gone"
+    canonical = json.dumps(parts, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 # --------------------------------------------------------------------------
 # Discovery — configured, not merely present
 # --------------------------------------------------------------------------
@@ -297,11 +320,12 @@ def load_records(agent: Path) -> dict:
 
 
 def save_record(agent: Path, entry_id: str, digest: str, status: str,
-                log: str | None) -> None:
+                log: str | None, tree: str | None = None) -> None:
     with _dcio.FileLock(agent):
         records = load_records(agent)
         records[entry_id] = {
             "digest": digest,
+            "tree": tree,
             "status": status,
             "when": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "log": log or "",
@@ -344,9 +368,12 @@ def run_entry(entry: dict, root: Path, agent: Path) -> dict:
         record = load_records(agent).get(entry["id"])
         digest = digest_for(argv, cwd)
         if record and record.get("digest") == digest:
-            row.update(status=PASS if record.get("status") == "pass" else FAIL,
-                       detail=f"host-approved record from {record.get('when', '?')}")
-            return row
+            tree = tree_fingerprint(root)
+            if tree is not None and record.get("tree") == tree:
+                row.update(status=PASS if record.get("status") == "pass" else FAIL,
+                           detail=f"host-approved record from {record.get('when', '?')}")
+                return row
+            row["stale"] = f"record from {record.get('when', '?')} is for a different tree"
         row.update(status=APPROVAL, detail=digest)
         return row
 
@@ -500,6 +527,8 @@ def print_approval(rows: list[dict]) -> None:
         print(f"  argv:   {json.dumps(row['argv'])}")
         print(f"  cwd:    {row['cwd']}")
         print(f"  digest: {row['detail']}")
+        if row.get("stale"):
+            print(f"  stale:  {row['stale']}; record again after this run")
         print("  Run it through the host's own approval path, then record the outcome:")
         print(f"  dc_verify.py --record {row['id']} --digest {row['detail']} "
               "--status pass|fail --log <path>")
@@ -587,8 +616,9 @@ def main() -> int:
                 "claims to satisfy; nothing was recorded.",
                 _dcio.EXIT_UNSAFE_COMMAND,
             )
-        save_record(agent, args.record_id, expected, args.status, args.log)
-        print(f"RECORDED {args.record_id} {args.status} {expected}")
+        tree = tree_fingerprint(root)
+        save_record(agent, args.record_id, expected, args.status, args.log, tree)
+        print(f"RECORDED {args.record_id} {args.status} {expected} tree={tree or 'unknown'}")
         return _dcio.EXIT_OK
 
     changed, origin = changed_files(root, args.base)

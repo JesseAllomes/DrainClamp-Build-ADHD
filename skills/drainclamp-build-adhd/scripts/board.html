@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title>Projects board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#f1f3f5; --sheet:#ffffff; --sunk:#e6eaee; --ink:#15202b; --muted:#5d6b79; --rule:#d3dae1; --rule-2:#b9c3cd;
+  --mark:#d9531e; --on-mark:#fff; --mark-soft:#fbe6dc;
+  --live:#1d7f5f; --live-soft:#dcefe7; --warn:#9a6700; --warn-soft:#f5ead2; --danger:#b42f2f; --danger-soft:#f7e1e1; --focus:#2f6fdf;
+  --work:"IBM Plex Sans",system-ui,sans-serif; --data:"IBM Plex Mono",ui-monospace,monospace;
+  --display:"Barlow Condensed","Arial Narrow",sans-serif;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#10161c; --sheet:#171f27; --sunk:#1e2832; --ink:#e4eaf0; --muted:#90a0af; --rule:#28343f; --rule-2:#3a4855;
+  --mark:#f06a34; --on-mark:#1a0d06; --mark-soft:#3a2016; --live:#44c194; --live-soft:#15302a; --warn:#e2a640; --warn-soft:#352a14;
+  --danger:#f06a6a; --danger-soft:#3a1c1c; --focus:#6c9cff; color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --paper:#10161c; --sheet:#171f27; --sunk:#1e2832; --ink:#e4eaf0; --muted:#90a0af; --rule:#28343f; --rule-2:#3a4855;
+  --mark:#f06a34; --on-mark:#1a0d06; --mark-soft:#3a2016; --live:#44c194; --live-soft:#15302a; --warn:#e2a640; --warn-soft:#352a14;
+  --danger:#f06a6a; --danger-soft:#3a1c1c; --focus:#6c9cff; color-scheme:dark;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--work)}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer}
+a{color:inherit}
+[hidden]{display:none !important}
+.mono{font-family:var(--data)}
+.muted{color:var(--muted)}
+h1,h2,h3,h4,p{margin:0}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* app chrome */
+.top{max-width:1120px;margin:0 auto;padding:var(--s4) 16px 0;display:flex;align-items:center;gap:var(--s3)}
+.brand{font:600 11px var(--data);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-decoration:none}
+.brand b{color:var(--mark);font-weight:600}
+.top .sp{flex:1}
+.page{max-width:1120px;margin:0 auto;padding:var(--s5) 16px var(--s7)}
+.toast{position:fixed;left:50%;bottom:var(--s5);transform:translateX(-50%);z-index:30;max-width:min(560px,calc(100% - 32px));background:var(--ink);color:var(--sheet);padding:var(--s2) var(--s4);border-radius:6px;font-size:14px;box-shadow:0 6px 24px #0003}
+.toast.bad{background:var(--danger);color:#fff}
+.notice{background:var(--sheet);border:1px solid var(--rule);border-left:4px solid var(--warn);border-radius:6px;padding:var(--s4) var(--s5);max-width:72ch}
+.notice h2{font:700 22px/1.1 var(--display);margin-bottom:var(--s2)}
+.notice code{font:13px var(--data);background:var(--sunk);padding:1px 5px;border-radius:3px}
+.empty{padding:var(--s6) var(--s5);color:var(--muted);text-align:center}
+
+/* type */
+.eyebrow{font:600 11px var(--data);letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.h-display{font:800 40px/1 var(--display);letter-spacing:-.005em;overflow-wrap:anywhere}
+.h-sub{font:700 17px/1.2 var(--display);letter-spacing:.02em}
+
+/* health flag */
+.health{display:inline-flex;align-items:center;gap:6px;font:600 12px var(--work);padding:2px 0;white-space:nowrap}
+.health::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+.health.on{color:var(--live)} .health.risk{color:var(--warn)} .health.off{color:var(--danger)} .health.none,.health.done{color:var(--muted)}
+.health.none::before{background:transparent;border:1.5px solid currentColor}
+
+/* small horizontal line (home) */
+.trk{display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));--dot:14px}
+.trk .st{position:relative;display:flex;justify-content:center}
+.trk .st::before{content:"";position:absolute;top:calc(var(--dot)/2 - 1.5px);right:50%;width:100%;height:3px;background:var(--rule)}
+.trk .st:first-child::before{display:none}
+.trk .st.done::before,.trk .st.cur::before{background:var(--ink)}
+.trk .dot{position:relative;z-index:1;width:var(--dot);height:var(--dot);border-radius:50%;background:var(--sheet);border:3px solid var(--rule-2)}
+.trk .st.done .dot{background:var(--ink);border-color:var(--ink)}
+.trk .st.cur .dot{background:var(--mark);border-color:var(--mark);box-shadow:0 0 0 3px var(--mark-soft)}
+
+/* home + completed */
+.portfolio{display:flex;align-items:baseline;justify-content:space-between;gap:var(--s4);flex-wrap:wrap;margin-bottom:var(--s4)}
+.portfolio p{color:var(--muted)} .portfolio p b{color:var(--ink);font-weight:600}
+.homebar{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);flex-wrap:wrap;margin-bottom:var(--s4)}
+.pages{display:flex;gap:var(--s5);border-bottom:1px solid var(--rule)}
+.pages a{padding:var(--s2) 0;font-weight:600;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
+.pages a[aria-current="page"]{color:var(--ink);border-color:var(--mark)}
+.pages a span{font:12px var(--data);margin-left:4px}
+.phead,.prow{display:grid;grid-template-columns:minmax(0,1fr) 110px 200px 70px 100px;gap:var(--s5);align-items:center}
+.phead{padding:0 var(--s5) var(--s2);font:600 11px var(--data);letter-spacing:.06em;color:var(--muted)}
+.phead span:nth-child(n+4){text-align:right}
+.plist{background:var(--sheet);border:1px solid var(--rule);border-radius:8px}
+.prow{padding:var(--s4) var(--s5);border-top:1px solid var(--rule);text-decoration:none;color:inherit}
+.prow:first-child,.crow:first-child{border-top:none}
+.prow:hover{background:var(--sunk)}
+.n{font-weight:600;overflow-wrap:anywhere}
+.u{font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.u.bad{color:var(--danger);white-space:normal}
+.num{text-align:right;font:700 20px/1 var(--display)}
+.num small{display:block;font:12px var(--data);color:var(--danger);margin-top:2px}
+.chead,.crow{display:grid;grid-template-columns:minmax(0,1fr) 120px 90px 90px 110px 90px;gap:var(--s5);align-items:center}
+.chead{padding:0 var(--s5) var(--s2);font:600 11px var(--data);letter-spacing:.06em;color:var(--muted)}
+.chead span:nth-child(n+3){text-align:right}
+.crow{padding:var(--s4) var(--s5);border-top:1px solid var(--rule)}
+.crow .n a{text-decoration:none} .crow .n a:hover{text-decoration:underline}
+.crow .u{white-space:normal}
+.crow .d{font:12px var(--data);color:var(--muted)}
+.crow .btn{justify-self:end}
+
+/* buttons + small forms */
+.btn{border:1px solid var(--rule-2);background:var(--sheet);padding:6px 12px;border-radius:4px;font-size:13px;font-weight:500;text-decoration:none;display:inline-block;line-height:1.4}
+.btn:hover{border-color:var(--ink)}
+.btn.primary{background:var(--ink);color:var(--sheet);border-color:var(--ink)}
+.btn.go{background:var(--mark);color:var(--on-mark);border-color:var(--mark);font-weight:600;padding:8px 16px;font-size:14px}
+.btn.sm{padding:3px 9px;font-size:12px}
+.btn.ghost{background:transparent}
+.btn.armed{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.linkbtn{border:none;background:none;color:var(--focus);padding:0;font-size:14px;font-weight:500;margin-top:var(--s2)}
+.linkbtn.sm{font-size:12px;margin-top:var(--s1)}
+.inl{display:flex;gap:var(--s2);flex-wrap:wrap;margin-top:var(--s2);align-items:flex-end}
+.inl input,.inl select,.inl textarea,.grid-form input,.grid-form select,.grid-form textarea{border:1px solid var(--rule-2);background:var(--paper);border-radius:4px;padding:5px var(--s2);color:var(--ink);min-width:0;font-size:14px}
+.inl input[type=text],.inl textarea{flex:1 1 180px}
+.inl input[type=number]{width:90px}
+.inl label,.grid-form label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:2px}
+.grid-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s2);margin-top:var(--s2)}
+.grid-form .wide{grid-column:1/-1}
+.grid-form .acts{grid-column:1/-1;display:flex;gap:var(--s2);justify-content:flex-end}
+.grid-form textarea{min-height:60px;resize:vertical}
+
+/* project header */
+.hdr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--s5);padding:var(--s4) 0 var(--s4);align-items:end;border-bottom:2px solid var(--ink)}
+.hdr .sum{margin-top:var(--s2);color:var(--muted);max-width:72ch}
+.hdr .upd{margin-top:var(--s3);font-size:14px;display:flex;gap:var(--s3);align-items:baseline;flex-wrap:wrap}
+.hdr .upd time{font:12px var(--data);color:var(--muted)}
+.hdr .acts{display:flex;flex-direction:column;align-items:flex-end;gap:var(--s3)}
+.hdr .meter{font:12px var(--data);color:var(--muted);text-align:right}
+.hdr .meter .bar{width:220px;max-width:100%;height:6px;background:var(--rule);margin-top:6px;border-radius:3px;overflow:hidden}
+.hdr .meter .bar i{display:block;height:100%;background:var(--ink)}
+.crumb{font:600 11px var(--data);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-decoration:none}
+.crumb:hover{color:var(--ink)}
+.confirm{margin-top:var(--s4);background:var(--sheet);border:1px solid var(--rule-2);border-left:4px solid var(--warn);border-radius:6px;padding:var(--s4) var(--s5)}
+.confirm h3{font:700 18px var(--display)}
+.confirm ul{margin:var(--s2) 0 var(--s3);padding-left:18px;font-size:14px}
+.confirm textarea{width:100%;min-height:60px;margin-top:var(--s2);border:1px solid var(--rule-2);background:var(--paper);border-radius:4px;padding:var(--s2) var(--s3);resize:vertical;color:var(--ink)}
+.confirm .row{display:flex;gap:var(--s2);justify-content:flex-end;margin-top:var(--s3)}
+.confirm .fine{font-size:12px;color:var(--muted);margin-top:var(--s2)}
+
+/* vertical line */
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:var(--s6);margin-top:var(--s5)}
+.vline{list-style:none;margin:0;padding:0}
+.tokfoot{font:12px var(--data);color:var(--muted);margin:0 0 var(--s5) 44px}
+.vline > li{position:relative;padding:0 0 var(--s5) 44px}
+.vline > li::before{content:"";position:absolute;left:10px;top:24px;bottom:0;width:3px;background:var(--rule)}
+.vline > li.done::before{background:var(--ink)}
+.vline > li:last-child::before{display:none}
+.vline .vd{position:absolute;left:0;top:2px;width:23px;height:23px;border-radius:50%;border:3px solid var(--rule-2);background:var(--paper)}
+.vline > li.done .vd{background:var(--ink);border-color:var(--ink)}
+.vline > li.cur .vd{background:var(--mark);border-color:var(--mark);box-shadow:0 0 0 5px var(--mark-soft)}
+.vline .mh{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--s3);align-items:baseline}
+.vline .mh .id{font:12px var(--data);color:var(--muted)}
+.vline .mh .g{font:700 20px/1.2 var(--display)}
+.vline > li.pending .mh .g{color:var(--muted);font-weight:600}
+.vline .mh .c{font:12px var(--data);color:var(--muted);display:flex;align-items:center;gap:var(--s2);white-space:nowrap}
+.vline .mh .pc{width:60px;height:4px;background:var(--rule);border-radius:2px;overflow:hidden}
+.vline .mh .pc i{display:block;height:100%;background:var(--ink)}
+.vline > li.cur .mh .pc i{background:var(--mark)}
+.vline .inner{margin-top:var(--s3);background:var(--sheet);border:1px solid var(--rule);border-radius:8px;padding:var(--s2) var(--s4)}
+.vline details summary{margin-top:var(--s2);font-size:13px;color:var(--muted);cursor:pointer}
+.vline .hint{margin-top:var(--s2);font-size:13px;color:var(--muted)}
+.vline .hint code{font:12px var(--data);background:var(--sunk);padding:1px 4px;border-radius:3px}
+
+.run{list-style:none;margin:0;padding:0}
+.run li{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:var(--s3);padding:var(--s3) 0;border-top:1px solid var(--rule);align-items:start}
+.run li:first-child{border-top:none}
+.tick{width:20px;height:20px;margin-top:2px;border:2px solid var(--rule-2);border-radius:50%;background:var(--sheet);padding:0;display:grid;place-items:center}
+.tick:hover{border-color:var(--ink)}
+.run li.done .tick{background:var(--ink);border-color:var(--ink)}
+.run li.done .tick::after{content:"";width:6px;height:10px;border:solid var(--sheet);border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
+.run li.next .tick{border-color:var(--mark);border-width:6px}
+.run .t{font-weight:500;overflow-wrap:anywhere}
+.run .cid{font:12px var(--data);color:var(--muted);font-weight:400;margin-right:2px}
+.run li.done .t{color:var(--muted)}
+.run .note{font-size:13px;color:var(--muted);margin-top:2px}
+.run .note::before{content:"Done: ";font-family:var(--data);font-size:12px}
+.run .tg{font:12px var(--data);color:var(--muted);white-space:nowrap;text-align:right}
+.run li.next{background:linear-gradient(90deg,var(--mark-soft),transparent 60%);margin:0 calc(-1*var(--s3));padding-left:var(--s3);padding-right:var(--s3);border-radius:4px}
+.run li.next .t{font-weight:600}
+.run .flag{display:block;margin-top:var(--s1);font-size:13px;color:var(--danger)}
+.run .flag::before{content:"● ";font-size:10px}
+
+/* side column */
+.side > * + *{margin-top:var(--s5)}
+.side .h-sub{margin-bottom:var(--s2)}
+.qa{display:grid;grid-template-columns:minmax(0,1fr) auto;border:1px solid var(--rule-2);background:var(--sheet);border-radius:6px;overflow:hidden}
+.qa .kind{grid-column:1/-1;display:flex;border-bottom:1px solid var(--rule)}
+.qa .kind button{flex:1;border:none;background:transparent;padding:var(--s2);font-size:13px;font-weight:500;color:var(--muted)}
+.qa .kind button[aria-pressed="true"]{background:var(--ink);color:var(--sheet)}
+.qa input{border:none;background:transparent;padding:var(--s3);min-width:0;outline-offset:-2px}
+.qa .go{border:none;background:var(--mark);color:var(--on-mark);padding:0 var(--s4);font-weight:600}
+.reg{width:100%;border-collapse:collapse;font-size:14px}
+.reg th{text-align:left;font:600 11px var(--data);letter-spacing:.06em;color:var(--muted);padding:var(--s2) var(--s2) var(--s2) 0;border-bottom:1px solid var(--rule-2)}
+.reg td{padding:var(--s2) var(--s2) var(--s2) 0;border-bottom:1px solid var(--rule);vertical-align:top;overflow-wrap:anywhere}
+.reg .id{font:12px var(--data);color:var(--muted);width:30px}
+.reg .where{font:12px var(--data);color:var(--muted);white-space:nowrap}
+.st-open{color:var(--danger);font-weight:600;font-size:13px}
+.st-fixed{color:var(--live);font-size:13px}
+.reg .fix{display:block;font-size:13px;color:var(--muted)}
+.reg .linkbtn{display:block}
+.imp{list-style:none;margin:0;padding:0}
+.imp li{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:var(--s2);padding:var(--s2) 0;border-bottom:1px solid var(--rule);font-size:14px}
+.imp input{margin:3px 0 0}
+.imp .k{font:12px var(--data);color:var(--muted)}
+.imp li.done span:nth-child(2){color:var(--muted);text-decoration:line-through}
+.figs{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3) var(--s4)}
+.fig{font:800 30px/1 var(--display)}
+.fig small{font:500 12px var(--work);color:var(--muted);display:block;margin-top:var(--s1)}
+.eq{font:12px var(--data);color:var(--muted);margin-top:var(--s2)}
+.tools{display:flex;gap:var(--s2);flex-wrap:wrap;margin-top:var(--s3)}
+.sess{list-style:none;margin:var(--s2) 0 0;padding:0;font-size:13px}
+.sess li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:var(--s2);padding:var(--s1) 0;border-bottom:1px solid var(--rule);align-items:center}
+.sess .m{font:12px var(--data);color:var(--muted)}
+.side details summary{font-size:13px;color:var(--muted);cursor:pointer;margin-top:var(--s3)}
+
+/* rundown (Profile) */
+.rundown{margin-top:var(--s7);border-top:2px solid var(--ink);padding-top:var(--s5)}
+.rd-head{display:flex;justify-content:space-between;align-items:end;gap:var(--s4);flex-wrap:wrap;margin-bottom:var(--s5)}
+.rd-head p{color:var(--muted);margin-top:var(--s1)}
+.rd-actions{display:flex;gap:var(--s2)}
+.pill-plan{font:600 11px var(--data);letter-spacing:.04em;color:var(--warn)}
+.check{display:grid;grid-template-columns:18px minmax(0,1fr);gap:var(--s2);padding:var(--s2) 0;border-top:1px solid var(--rule);font-size:14px}
+.check:first-of-type{border-top:none}
+.check .i{width:16px;height:16px;border-radius:50%;margin-top:3px;display:grid;place-items:center;background:var(--live)}
+.check .i::after{content:"";width:4px;height:8px;border:solid var(--sheet);border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
+.check.planned .i{background:transparent;border:2px dashed var(--warn)}
+.check.planned .i::after{display:none}
+.check .d{display:block;font-size:13px;color:var(--muted);margin-top:1px}
+.check .edits{display:flex;gap:var(--s2);margin-top:var(--s1)}
+.ba{display:grid;grid-template-columns:70px minmax(0,1fr) 110px;gap:var(--s3);align-items:center;font-size:13px;margin-top:var(--s2)}
+.ba .track{height:14px}
+.ba .b{display:block;height:14px;border-radius:2px;background:var(--rule-2)}
+.ba .b.after{background:var(--live)}
+.ba .v{font:12px var(--data);color:var(--muted);text-align:right;white-space:nowrap}
+.sheet{display:grid;grid-template-columns:200px minmax(0,1fr);background:var(--sheet);border:1px solid var(--rule);border-radius:8px}
+.sheet > .k{padding:var(--s5);border-top:1px solid var(--rule);font:700 17px/1.2 var(--display);letter-spacing:.02em}
+.sheet > .v{padding:var(--s5);border-top:1px solid var(--rule);border-left:1px solid var(--rule);min-width:0}
+.sheet > .k:first-child,.sheet > .k:first-child + .v{border-top:none}
+.sheet > .k small{display:block;font:12px var(--work);color:var(--muted);margin-top:var(--s1);letter-spacing:0}
+.feat{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4) var(--s5)}
+.feat h4{font-weight:600;font-size:15px;overflow-wrap:anywhere}
+.feat p{font-size:14px;color:var(--muted);margin-top:2px}
+.feat .pri{font:11px var(--data);color:var(--muted);margin-left:var(--s1);font-weight:400}
+.safe{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5)}
+.safe h4{font:600 11px var(--data);letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin-bottom:var(--s1)}
+.eff{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s4);margin-bottom:var(--s4)}
+
+/* new project form */
+.form{background:var(--sheet);border:1px solid var(--rule);border-radius:8px}
+.fsec{display:grid;grid-template-columns:240px minmax(0,1fr);border-top:1px solid var(--rule)}
+.fsec:first-child{border-top:none}
+.fsec > .k{padding:var(--s5)}
+.fsec > .k h3{font:700 18px/1.2 var(--display);letter-spacing:.02em}
+.fsec > .k h3 span{font:500 12px var(--data);color:var(--muted);margin-right:var(--s2)}
+.fsec > .k p{font-size:13px;color:var(--muted);margin-top:var(--s1)}
+.fsec > .k p.feeds{font:11px var(--data);letter-spacing:.02em;color:var(--mark);margin-top:var(--s2)}
+.fsec > .v{padding:var(--s5);border-left:1px solid var(--rule);display:grid;gap:var(--s4);min-width:0}
+.fld > label,.fld > .lbl{display:block;font-weight:600;font-size:14px}
+.fld label em,.fld .lbl em{font-style:normal;font-weight:400;color:var(--muted);font-size:13px;margin-left:var(--s1)}
+.fld .hint{font-size:13px;color:var(--muted);margin-top:2px}
+.fld input[type=text],.fld input[type=number],.fld textarea,.fld select{width:100%;margin-top:var(--s2);border:1px solid var(--rule-2);background:var(--paper);border-radius:4px;padding:var(--s2) var(--s3);color:var(--ink)}
+.fld textarea{min-height:72px;resize:vertical;line-height:1.5}
+.fld .path{font:12px var(--data);color:var(--muted);margin-top:var(--s1);overflow-wrap:anywhere}
+.nums{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3)}
+.nums input{width:100%;margin-top:var(--s1);border:1px solid var(--rule-2);background:var(--paper);border-radius:4px;padding:var(--s2) var(--s3);color:var(--ink)}
+.nums2{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3)}
+.mini{display:block;font-size:12px;color:var(--muted)}
+.preview{font-size:14px;background:var(--live-soft);border-radius:4px;padding:var(--s2) var(--s3)}
+.preview b{font-weight:600}
+.boxes{display:flex;gap:var(--s2) var(--s4);flex-wrap:wrap;margin-top:var(--s2);font-size:14px}
+.boxes label{font-weight:400;display:flex;gap:6px;align-items:center}
+.srow,.rrow,.rhead{display:grid;gap:var(--s2);margin-top:var(--s2)}
+.srow{grid-template-columns:minmax(0,.8fr) minmax(0,1.5fr) 96px 32px}
+.rrow,.rhead{grid-template-columns:minmax(0,1.3fr) 84px 84px minmax(0,1.5fr) 32px}
+.rhead{font:600 11px var(--data);letter-spacing:.06em;color:var(--muted)}
+.srow input,.srow select,.rrow input,.rrow select{border:1px solid var(--rule-2);background:var(--paper);border-radius:4px;padding:var(--s2);color:var(--ink);min-width:0}
+.srow .x,.rrow .x{border:1px solid var(--rule-2);background:transparent;border-radius:4px;color:var(--muted)}
+.ffoot{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:var(--s4);flex-wrap:wrap;padding:var(--s3) var(--s5);background:var(--sheet);border-top:2px solid var(--ink);border-radius:0 0 8px 8px}
+.ffoot p{font-size:13px;color:var(--muted)}
+.ffoot .row{display:flex;gap:var(--s2)}
+.done-card{margin-top:var(--s4);background:var(--sheet);border:1px solid var(--rule);border-left:4px solid var(--live);border-radius:6px;padding:var(--s4) var(--s5)}
+.done-card h3{font:700 20px var(--display)}
+.done-card ol{margin:var(--s2) 0 var(--s3);padding-left:20px;font-size:14px}
+.done-card code{font:13px var(--data);background:var(--sunk);padding:1px 5px;border-radius:3px;overflow-wrap:anywhere}
+
+@media (max-width:860px){
+  .cols,.sheet,.feat,.safe,.fsec,.nums,.grid-form{grid-template-columns:1fr}
+  .nums2,.srow,.rrow{grid-template-columns:1fr 1fr}
+  .rhead{display:none}
+  .sheet > .v{border-left:none;border-top:none;padding-top:0}
+  .fsec > .v{border-left:none;padding-top:0}
+  .eff{grid-template-columns:1fr 1fr}
+  .phead,.chead{display:none}
+  .prow,.crow{grid-template-columns:1fr;gap:var(--s2)}
+  .num{text-align:left}
+  .crow .btn{justify-self:start}
+  .hdr{grid-template-columns:1fr}
+  .hdr .meter,.hdr .acts{text-align:left;align-items:flex-start}
+  .h-display{font-size:34px}
+  .run li{grid-template-columns:28px minmax(0,1fr)}
+  .run .tg{grid-column:2;text-align:left;white-space:normal}
+}
+@media (prefers-reduced-motion:no-preference){.prow,.btn,.tick{transition:background-color .12s,border-color .12s}}
+</style>
+</head>
+<body>
+<header class="top"><a class="brand" href="#/active"><b>DrainClamp</b> board</a><span class="sp"></span>
+  <button class="btn ghost sm" id="theme" type="button">Light / dark</button></header>
+<main class="page" id="app" aria-live="polite"><p class="muted">Loading...</p></main>
+<div class="toast" id="toast" role="status" hidden></div>
+<script>
+"use strict";
+/* Mirrors of dc_project.py constants the page needs to draw forms. */
+const AREAS = ["Security", "Data retention", "Guardrails", "Confirmation checks", "Testing"];
+const HEALTH = {on: "On track", risk: "At risk", off: "Off track"};
+const MOSCOW = ["Must", "Should", "Could", "Won't"];
+const LEVELS = ["Low", "Med", "High"];
+const DATA_KINDS = ["Personal information", "Financial", "Health", "Credentials or keys", "None of these"];
+const CHARTER_TEXT = ["name", "purpose", "sponsor", "stakeholders", "current_state", "objectives",
+  "success", "out_of_scope", "milestones", "security", "retention", "assumptions", "never",
+  "approvals", "acceptance"];
+const DRAFT_KEY = "dc_charter_draft";
+
+const $ = s => document.querySelector(s);
+const app = $("#app");
+const esc = v => String(v ?? "").replace(/[&<>"']/g,
+  c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+};
+
+/* The per-run token arrives once in the URL; keep it for reloads, then drop it from the address bar. */
+const TOKEN = (() => {
+  const fromUrl = new URLSearchParams(location.search).get("t");
+  let t = fromUrl;
+  try { if (fromUrl) sessionStorage.setItem("dc_t", fromUrl); else t = sessionStorage.getItem("dc_t"); } catch {}
+  if (fromUrl) history.replaceState(null, "", location.pathname + location.hash);
+  return t || "";
+})();
+
+class ApiError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+async function api(path, body) {
+  const opt = {method: body ? "POST" : "GET", headers: {"X-DC-Token": TOKEN}, cache: "no-store"};
+  if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  let r;
+  try { r = await fetch(path, opt); }
+  catch { throw new ApiError(0, "The board server is not running. Start it again with dc_board.py serve."); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(r.status, j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+/* ---------- formatting ---------- */
+const isNum = v => typeof v === "number" && isFinite(v);
+const money = n => isNum(n) ? (n < 0 ? "-$" : "$") + Math.abs(Math.round(n)).toLocaleString("en-AU") : "-";
+// New tokens = input + cache writes + output. Cache reads are shown only in the title.
+const tok = n => !isNum(n) ? "-" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+const tokCell = (d, key) => { const c = d.data.tokens && (key.includes("/") ? d.data.tokens.chunks : d.data.tokens.milestones)[key];
+  return c && c.calls ? {txt: tok(c.fresh + c.output) + " tok", title: `${c.calls} calls, ${tok(c.fresh)} input + cache writes, ${tok(c.output)} output, ${tok(c.read)} cache reads`} : null; };
+const hours = n => isNum(n) ? (Math.abs(n) >= 10 ? Math.round(n) : Math.round(n * 10) / 10) + " h" : "-";
+function payback(years) {
+  if (!isNum(years)) return "-";
+  const w = years * 52;
+  if (w < 1) return "under a week";
+  if (w < 9) return Math.round(w) + (Math.round(w) === 1 ? " week" : " weeks");
+  if (years < 2) return Math.round(years * 12) + " months";
+  return (Math.round(years * 10) / 10) + " years";
+}
+function date(iso, withYear = true) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return d.toLocaleDateString("en-AU", withYear ? {day: "2-digit", month: "short", year: "numeric"}
+                                                : {day: "numeric", month: "short"});
+}
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + "s")}`;
+const base = p => String(p).split("::")[0].split(/[\\/]/).pop();
+
+/* ---------- page state ---------- */
+const S = {list: null, detail: null, edit: false, open: {}, arm: null, logKind: "error"};
+let toastTimer;
+function say(msg, bad) {
+  const t = $("#toast");
+  t.textContent = msg; t.className = "toast" + (bad ? " bad" : ""); t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 7000 : 3000);
+}
+function fatal(e) {
+  const noToken = !TOKEN || e?.status === 403;
+  app.innerHTML = `<div class="notice"><h2>${noToken ? "This link has no valid token" : "Something went wrong"}</h2>
+    <p>${noToken ? "The board only answers the link printed when it starts. Run <code>python dc_board.py serve --open</code> and use that link."
+                 : esc(e?.message || e)}</p></div>`;
+}
+
+/* ---------- theme ---------- */
+(() => { const t = store.get("dc_theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; })();
+$("#theme").onclick = () => {
+  const r = document.documentElement;
+  const dark = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme:dark)").matches;
+  r.dataset.theme = dark ? "light" : "dark";
+  store.set("dc_theme", r.dataset.theme);
+};
+
+/* ---------- router ---------- */
+async function route() {
+  const [page, arg] = location.hash.replace(/^#\/?/, "").split("/");
+  S.edit = false; S.open = {}; S.arm = null;
+  if (!TOKEN) return fatal();
+  try {
+    if (page === "p" && arg) return await loadProject(decodeURIComponent(arg));
+    S.list = await api("/api/projects");
+    if (page === "completed") renderList("complete");
+    else if (page === "new") renderNew();
+    else renderList("active");
+  } catch (e) { fatal(e); }
+  window.scrollTo(0, 0);
+}
+addEventListener("hashchange", route);
+
+async function loadProject(id) {
+  S.detail = await api("/api/project?id=" + encodeURIComponent(id));
+  renderProject();
+}
+
+/* One edit through dc_project.apply_op; the page always re-reads afterwards. */
+async function op(name, args, keepOpen) {
+  const d = S.detail;
+  let ok = false;
+  try {
+    const r = await api("/api/op", {id: d.id, rev: d.data.rev, op: name, args});
+    say(r.message); ok = true;
+  } catch (e) {
+    say(e.status === 409 ? "This project changed somewhere else, so the page reloaded. Try again." : e.message, true);
+  }
+  S.open = ok ? (keepOpen || {}) : S.open; S.arm = null;
+  try { await loadProject(d.id); } catch (e) { fatal(e); }
+  return ok;
+}
+
+async function setStatus(id, rev, status, note) {
+  try { const r = await api("/api/status", {id, rev, status, note}); say(r.message); return true; }
+  catch (e) { say(e.status === 409 ? "This project changed somewhere else. Reload and try again." : e.message, true); return false; }
+}
+
+/* ---------- Active and Completed ---------- */
+function track(rm, cur) {
+  if (!rm.total) return `<span class="muted mono" style="font-size:12px">no roadmap</span>`;
+  return `<div class="trk" style="--n:${rm.total}" role="img" aria-label="${rm.done} of ${rm.total} milestones done">${
+    Array.from({length: rm.total}, (_, i) =>
+      `<div class="st ${i < rm.done ? "done" : (cur && i === rm.done ? "cur" : "")}"><span class="dot"></span></div>`).join("")}</div>`;
+}
+function healthTag(h, done) {
+  if (done) return `<span class="health done">Complete</span>`;
+  const st = h && HEALTH[h.state] ? h.state : "none";
+  return `<span class="health ${st}">${HEALTH[st] || "No update"}</span>`;
+}
+function pagesBar(which, act, done) {
+  return `<div class="homebar"><nav class="pages" aria-label="Pages">
+    <a href="#/active" ${which === "active" ? 'aria-current="page"' : ""}>Active<span>${act}</span></a>
+    <a href="#/completed" ${which === "complete" ? 'aria-current="page"' : ""}>Completed<span>${done}</span></a></nav>
+    <a class="btn go" href="#/new">+ Start new project</a></div>`;
+}
+function renderList(which) {
+  const all = S.list.projects;
+  const act = all.filter(p => p.status !== "complete"), done = all.filter(p => p.status === "complete");
+  const total = f => all.reduce((a, p) => a + (isNum(f(p)) ? f(p) : 0), 0);
+  const built = total(p => p.summary?.build_minutes) / 60;
+  const hrs = total(p => p.summary?.savings?.annual_hours), cost = total(p => p.summary?.savings?.annual_cost);
+  const head = `<div class="portfolio"><h1 class="h-display">${which === "active" ? "Projects" : "Completed"}</h1>
+    <p><b>${act.length}</b> active, <b>${done.length}</b> completed | <b>${hours(built)}</b> built | saving <b>${hours(hrs)}</b> and <b>${money(cost)}</b> a year</p></div>`
+    + pagesBar(which, act.length, done.length);
+  document.title = which === "active" ? "Projects board" : "Completed | Projects board";
+  if (which === "active") {
+    app.innerHTML = head + (act.length ? `
+      <div class="phead" aria-hidden="true"><span>PROJECT</span><span>HEALTH</span><span>PROGRESS</span><span>LEFT</span><span>$ / YR</span></div>
+      <div class="plist">${act.map(p => {
+        const s = p.summary || {}, left = p.roadmap.total - p.roadmap.done;
+        const u = p.error ? `<div class="u bad">Can't read this project: ${esc(p.error)}</div>`
+          : `<div class="u">${p.milestone_goal ? "Next: " + esc(p.milestone_goal) : p.roadmap.total ? "All milestones done" : "No roadmap yet: run Gate 2"}</div>`;
+        return `<a class="prow" href="#/p/${esc(p.id)}"><div><div class="n">${esc(p.name)}</div>${u}</div>
+          ${healthTag(s.health)}<div>${track(p.roadmap, !!p.milestone)}</div>
+          <div class="num"><span class="sr">Milestones left: </span>${left}${s.errors_open ? `<small>${s.errors_open} err</small>` : ""}</div>
+          <div class="num"><span class="sr">Saved a year: </span>${money(s.savings?.annual_cost)}</div></a>`;
+      }).join("")}</div>`
+      : `<div class="plist"><p class="empty">No active projects. Start one here, or run <span class="mono">/drainclamp-build-adhd</span> in a repository.</p></div>`);
+    return;
+  }
+  app.innerHTML = head + (done.length ? `
+    <div class="chead" aria-hidden="true"><span>PROJECT</span><span>COMPLETED</span><span>MILESTONES</span><span>BUILD</span><span>$ / YR</span><span></span></div>
+    <div class="plist">${done.map(p => {
+      const s = p.summary || {};
+      return `<div class="crow"><div><div class="n"><a href="#/p/${esc(p.id)}">${esc(p.name)}</a></div>
+        <div class="u">${esc(s.completed?.note || "")}</div></div>
+        <span class="d">${date(s.completed?.at || p.last)}</span><span class="num">${p.roadmap.done}/${p.roadmap.total}</span>
+        <span class="num">${hours((s.build_minutes || 0) / 60)}</span><span class="num">${money(s.savings?.annual_cost)}</span>
+        <button class="btn" type="button" data-act="reopen" data-id="${esc(p.id)}" data-rev="${s.rev ?? 0}">Reopen</button></div>`;
+    }).join("")}</div>`
+    : `<div class="plist"><p class="empty">Nothing completed yet.</p></div>`);
+}
+
+/* ---------- project page ---------- */
+function renderProject() {
+  const d = S.detail, data = d.data, sm = d.summary, rows = d.roadmap;
+  const doneN = rows.filter(r => r.status === "done").length;
+  const summary = data.profile.summary || d.charter?.purpose || "";
+  const h = data.health;
+  document.title = `${d.name} | Projects board`;
+  const complete = d.status === "complete";
+  const acts = complete
+    ? `<span class="health done">Completed ${date(data.completed?.at)}</span>
+       <button class="btn" type="button" data-act="reopen-here">Reopen</button>`
+    : `<button class="btn" type="button" data-act="open" data-k="mc" aria-expanded="${!!S.open.mc}">Mark complete</button>`;
+  app.innerHTML = `<a class="crumb" href="${complete ? "#/completed" : "#/active"}">&larr; ${complete ? "Completed" : "Projects"}</a>
+   <div class="hdr"><div><h1 class="h-display">${esc(d.name)}</h1>
+     <p class="sum">${summary ? esc(summary) : "No summary yet. Add one in the rundown below."}</p>
+     <div class="upd">${healthTag(h, complete)}${h?.update ? `<span>${esc(h.update)}</span>` : ""}${h?.at ? `<time datetime="${esc(h.at)}">${date(h.at, false)}</time>` : ""}
+       ${complete ? "" : `<button class="linkbtn sm" type="button" data-act="open" data-k="health">${h ? "Post update" : "Set health"}</button>`}</div>
+     ${S.open.health ? healthForm(h) : ""}</div>
+    <div class="acts">${acts}<div class="meter">${doneN} of ${rows.length} milestones<div class="bar"><i style="width:${rows.length ? doneN / rows.length * 100 : 0}%"></i></div></div></div></div>
+   ${S.open.mc && !complete ? confirmBox(d) : ""}
+   <div class="cols"><div>${vline(d)}</div><aside class="side" aria-label="Register">${side(d)}</aside></div>
+   ${rundown(d)}`;
+}
+
+function healthForm(h) {
+  return `<form class="inl" data-form="health" data-okey="health"><label>Health<select name="state">${Object.entries(HEALTH).map(([k, v]) =>
+      `<option value="${k}" ${h?.state === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+    <input type="text" name="update" maxlength="4000" placeholder="One line: where it stands" aria-label="Update">
+    <button class="btn sm primary">Post</button><button class="btn sm ghost" type="button" data-act="close" data-k="health">Cancel</button></form>`;
+}
+
+function confirmBox(d) {
+  const notDone = d.roadmap.filter(r => r.status !== "done");
+  const left = (d.data.chunks[d.milestone] || []).filter(c => !c.done).length;
+  const errs = d.data.errors.filter(e => e.status !== "fixed").length;
+  const items = [];
+  if (notDone.length) items.push(`${plural(notDone.length, "milestone")} not done (${notDone.map(r => esc(r.id)).join(", ")})`);
+  if (left) items.push(`${plural(left, "chunk")} left in ${esc(d.milestone)}`);
+  if (errs) items.push(`<span style="color:var(--danger)">${plural(errs, "open error")}</span>`);
+  return `<form class="confirm" data-form="complete" data-okey="mc" role="region" aria-label="Confirm completion">
+    <h3>Mark ${esc(d.name)} complete?</h3>
+    ${items.length ? `<ul>${items.map(i => `<li>${i}</li>`).join("")}</ul>` : `<p style="margin:var(--s2) 0 var(--s3);font-size:14px">Every milestone is done and nothing is open.</p>`}
+    <label class="fld"><span style="font-weight:600;font-size:14px">Closing note</span> <em class="muted" style="font-style:normal;font-size:13px">optional, shown on the Completed page</em>
+      <textarea name="note" maxlength="160" placeholder="e.g. Handed to Finance; runs on the 3rd each month."></textarea></label>
+    <div class="row"><button class="btn" type="button" data-act="close" data-k="mc">Keep working</button>
+      <button class="btn primary">${items.length ? "Complete anyway" : "Mark complete"}</button></div>
+    <p class="fine">Moves it to Completed and records it in the DrainClamp project list, so the session menu shows it as complete next time. Reopen at any time.</p></form>`;
+}
+
+function vline(d) {
+  if (!d.roadmap.length) return `<p class="muted">No roadmap yet. Run <span class="mono">/drainclamp-build-adhd</span> in this repository: Gate 2 writes the milestones.</p>`;
+  return `<ol class="vline">${d.roadmap.map(r => {
+    const cs = d.data.chunks[r.id] || [];
+    const dn = cs.filter(c => c.done).length;
+    const pct = cs.length ? Math.round(dn / cs.length * 100) : (r.status === "done" ? 100 : 0);
+    const cls = r.status === "done" ? "done" : r.status === "active" ? "cur" : "pending";
+    const live = r.status === "active" || r.id === d.milestone;
+    const mt = tokCell(d, r.id);
+    let body = "";
+    if (live) body = cs.length ? `<div class="inner">${runList(d, r.id, cs)}</div>`
+      : `<p class="hint">Not split yet. Claude adds chunks of 25 minutes or less when work starts: <code>dc_project.py chunk add</code>.</p>`;
+    else if (cs.length) body = `<details><summary>${r.status === "done" ? `${plural(cs.length, "chunk")} done` : `${plural(cs.length, "chunk")} planned`}</summary><div class="inner">${runList(d, r.id, cs)}</div></details>`;
+    return `<li class="${cls}"><span class="vd" aria-hidden="true"></span><div class="mh"><span class="id">${esc(r.id)}</span><span class="g">${esc(r.goal)}</span>
+      <span class="c">${mt ? `<span title="${esc(mt.title)}">${mt.txt}</span> | ` : ""}${cs.length ? `${pct}%<span class="pc"><i style="width:${pct}%"></i></span>` : r.status === "done" ? "done" : "not chunked"}</span></div>${body}</li>`;
+  }).join("")}</ol>${tokFoot(d.data.tokens)}`;
+}
+
+function tokFoot(t) {
+  if (!t || !t.at) return "";
+  const out = t.outside && t.outside.calls ? `, ${tok(t.outside.fresh + t.outside.output)} outside chunks` : "";
+  return `<p class="tokfoot" title="${esc(t.coverage || "")}">Tokens from Claude transcripts, measured ${esc(date(t.at))}${out}. Refresh: <code>dc_tokens.py --project . --save</code></p>`;
+}
+
+function runList(d, mid, cs) {
+  const nx = mid === d.milestone ? cs.find(c => !c.done) : null;
+  return `<ol class="run">${cs.map(c => {
+    const errs = d.data.errors.filter(e => e.status !== "fixed" && e.milestone === mid && e.chunk === c.id);
+    const key = `note:${mid}/${c.id}`;
+    const files = [...new Set((c.targets || []).map(base))];
+    const ct = tokCell(d, `${mid}/${c.id}`);
+    const tg = [c === nx ? "next" : "", c.est_min ? `~${c.est_min} min` : "", ct ? ct.txt : "",
+      files.length ? esc(files[0]) + (files.length > 1 ? ` +${files.length - 1}` : "") : ""].filter(Boolean).join(" | ");
+    const noteUi = S.open[key]
+      ? `<form class="inl" data-form="note" data-okey="${esc(key)}" data-m="${esc(mid)}" data-c="${esc(c.id)}"><input type="text" name="note" maxlength="160" value="${esc(c.note)}" placeholder="What was done (one line)" aria-label="What was done">
+          <button class="btn sm primary">Save</button><button class="btn sm ghost" type="button" data-act="close" data-k="${esc(key)}">Skip</button></form>`
+      : c.done ? `<button class="linkbtn sm" type="button" data-act="open" data-k="${esc(key)}">${c.note ? "Edit note" : "+ What was done"}</button>` : "";
+    return `<li class="${c.done ? "done" : ""} ${c === nx ? "next" : ""}">
+      <button class="tick" type="button" data-act="tick" data-m="${esc(mid)}" data-c="${esc(c.id)}" data-done="${c.done ? 1 : 0}"
+        aria-label="${c.done ? "Reopen" : "Finish"} ${esc(c.id)}: ${esc(c.goal)}"></button>
+      <div><div class="t"><span class="cid">${esc(c.id)}</span> ${esc(c.goal)}</div>${c.note ? `<div class="note">${esc(c.note)}</div>` : ""}
+        ${errs.map(e => `<span class="flag">${esc(e.id)}: ${esc(e.summary)}</span>`).join("")}${noteUi}</div>
+      <span class="tg" title="${esc((c.targets || []).join("\n"))}">${tg}</span></li>`;
+  }).join("")}</ol>`;
+}
+
+function armBtn(key, label, act, attrs) {
+  const armed = S.arm === key;
+  return `<button class="btn sm ${armed ? "armed" : "ghost"}" type="button" data-act="${armed ? act : "arm"}" data-k="${esc(key)}" ${attrs}>${armed ? "Sure? Delete" : label}</button>`;
+}
+
+function side(d) {
+  const data = d.data, sv = d.summary.savings;
+  const errs = [...data.errors].sort((a, b) => (a.status === "fixed") - (b.status === "fixed"));
+  const todos = [...data.todos].sort((a, b) => a.done - b.done);
+  const kind = S.logKind;
+  const qa = `<form class="qa" data-form="log"><div class="kind" role="group" aria-label="Log type">
+      <button type="button" data-act="kind" data-kind="error" aria-pressed="${kind === "error"}">Error</button>
+      <button type="button" data-act="kind" data-kind="todo" aria-pressed="${kind === "todo"}">Improvement</button></div>
+    <input type="text" name="text" maxlength="4000" required aria-label="${kind === "error" ? "What went wrong" : "What could be better"}"
+      placeholder="${kind === "error" ? "What went wrong? (Enter to log)" : "What could be better? (Enter to add)"}"><button class="go">Log</button></form>`;
+  const errTable = errs.length ? `<table class="reg"><thead><tr><th>ID</th><th>ERROR</th><th>WHERE</th><th>STATUS</th></tr></thead><tbody>${errs.map(e => {
+      const fixKey = `fix:${e.id}`;
+      const fix = e.status === "fixed" ? (e.fix ? `<span class="fix">Fix: ${esc(e.fix)}</span>` : "")
+        : S.open[fixKey] ? `<form class="inl" data-form="fix" data-okey="${esc(fixKey)}" data-id="${esc(e.id)}"><input type="text" name="fix" required maxlength="4000" placeholder="How it was fixed" aria-label="Fix for ${esc(e.id)}"><button class="btn sm primary">Save</button><button class="btn sm ghost" type="button" data-act="close" data-k="${esc(fixKey)}">Cancel</button></form>`
+        : `<button class="linkbtn sm" type="button" data-act="open" data-k="${esc(fixKey)}">Mark fixed</button>`;
+      return `<tr><td class="id">${esc(e.id)}</td><td>${esc(e.summary)}${e.cause ? `<span class="fix">Cause: ${esc(e.cause)}</span>` : ""}${fix}</td>
+        <td class="where">${esc([e.milestone, e.chunk].filter(Boolean).join("/") || "-")}</td>
+        <td>${e.status === "fixed" ? '<span class="st-fixed">Fixed</span>' : '<span class="st-open">Open</span>'}</td></tr>`;
+    }).join("")}</tbody></table>` : `<p class="muted" style="font-size:14px">No errors logged.</p>`;
+  const impList = todos.length ? `<ul class="imp">${todos.map(t => `<li class="${t.done ? "done" : ""}">
+      <input type="checkbox" data-act="todo" data-id="${esc(t.id)}" ${t.done ? "checked" : ""} aria-label="${esc(t.text)}">
+      <span>${esc(t.text)}</span><span class="k">${esc(t.milestone || "")}</span></li>`).join("")}</ul>`
+    : `<p class="muted" style="font-size:14px">Nothing yet.</p>`;
+  const sessions = data.time;
+  const value = `<div class="figs"><div class="fig">${hours(sv.annual_hours)}<small>saved / yr (est.)</small></div>
+      <div class="fig">${money(sv.annual_cost)}<small>per year (est.)</small></div>
+      <div class="fig">${hours(sv.realised_hours)}<small>realised so far${sv.realised_runs ? ` (${plural(sv.realised_runs, "run")})` : ""}</small></div>
+      <div class="fig">${payback(sv.payback_years)}<small>payback</small></div></div>
+    <p class="eq">${hours(d.summary.build_minutes / 60)} built over ${plural(sessions.length, "session")}${isNum(sv.hourly_rate) ? ` | $${esc(sv.hourly_rate)}/h` : " | no hourly rate set"}</p>
+    <div class="tools"><button class="btn sm" type="button" data-act="open" data-k="sv">${isNum(sv.baseline_min) ? "Edit figures" : "Set figures"}</button>
+      <button class="btn sm" type="button" data-act="open" data-k="run">Log a run</button>
+      <button class="btn sm" type="button" data-act="open" data-k="time">Add time</button></div>
+    ${S.open.sv ? `<form class="grid-form" data-form="savings" data-okey="sv">
+      <label>Minutes per run before<input type="number" name="baseline_min" min="0" step="any" required value="${esc(sv.baseline_min ?? "")}"></label>
+      <label>Minutes per run after<input type="number" name="new_min" min="0" step="any" required value="${esc(sv.new_min ?? "")}"></label>
+      <label>Runs per year<input type="number" name="runs_per_year" min="0" step="any" required value="${esc(sv.runs_per_year ?? "")}"></label>
+      <label>Hourly rate<input type="number" name="hourly_rate" min="0" step="any" value="${esc(data.savings.hourly_rate ?? "")}" placeholder="${isNum(sv.hourly_rate) ? "default " + esc(sv.hourly_rate) : "none"}"></label>
+      <label class="wide">Note<input type="text" name="note" maxlength="4000" value="${esc(sv.note || "")}"></label>
+      <div class="acts"><button class="btn sm ghost" type="button" data-act="close" data-k="sv">Cancel</button><button class="btn sm primary">Save</button></div></form>` : ""}
+    ${S.open.run ? `<form class="grid-form" data-form="run" data-okey="run">
+      <label>Runs<input type="number" name="count" min="1" step="1" value="1" required></label>
+      <label>Minutes each<input type="number" name="minutes" min="0" step="any" placeholder="${esc(sv.new_min ?? "")}"></label>
+      <label class="wide">Note<input type="text" name="note" maxlength="4000" placeholder="e.g. September run"></label>
+      <div class="acts"><button class="btn sm ghost" type="button" data-act="close" data-k="run">Cancel</button><button class="btn sm primary">Log</button></div></form>` : ""}
+    ${S.open.time ? `<form class="grid-form" data-form="time" data-okey="time">
+      <label>Minutes<input type="number" name="minutes" min="1" step="any" required></label>
+      <label>Note<input type="text" name="note" maxlength="4000" placeholder="e.g. planning call"></label>
+      <div class="acts"><button class="btn sm ghost" type="button" data-act="close" data-k="time">Cancel</button><button class="btn sm primary">Add</button></div></form>` : ""}
+    ${sessions.length || data.runs.length ? `<details ${S.open.log ? "open" : ""} data-k="log"><summary>Time and runs</summary><ul class="sess">
+      ${[...sessions].reverse().map(s => `<li><span>${date(s.start)} <span class="m">${esc(s.source)}${s.note ? " | " + esc(s.note) : ""}</span></span>
+        <span class="m">${Math.round((new Date(s.end) - new Date(s.start)) / 60000)} min</span>${armBtn("time:" + s.id, "Delete", "deltime", `data-id="${esc(s.id)}"`)}</li>`).join("")}
+      ${[...data.runs].reverse().map(r => `<li><span>${date(r.at)} <span class="m">run x${esc(r.count)}${r.note ? " | " + esc(r.note) : ""}</span></span>
+        <span class="m">${isNum(r.minutes) ? esc(r.minutes) + " min" : ""}</span>${armBtn("run:" + r.id, "Delete", "delrun", `data-id="${esc(r.id)}"`)}</li>`).join("")}</ul></details>` : ""}`;
+  return `${qa}<div><h2 class="h-sub">Errors</h2>${errTable}</div>
+    <div><h2 class="h-sub">Improvements</h2>${impList}</div>
+    <div><h2 class="h-sub">Value</h2>${value}</div>`;
+}
+
+/* ---------- rundown (Profile style) ---------- */
+function rundown(d) {
+  const p = d.data.profile, sv = d.summary.savings, ed = S.edit;
+  const guards = p.safeguards, inPlace = guards.filter(g => g.status === "in").length;
+  const blank = !p.summary && !p.features.length && !guards.length;
+  const buildH = d.summary.build_minutes / 60;
+  const beforeAfter = isNum(sv.baseline_min) && isNum(sv.new_min) && sv.baseline_min > 0
+    ? `<div class="ba"><span>Before</span><span class="track"><span class="b" style="width:100%"></span></span><span class="v">${esc(sv.baseline_min)} min / run</span></div>
+       <div class="ba"><span>After</span><span class="track"><span class="b after" style="width:${Math.min(sv.new_min / sv.baseline_min * 100, 100)}%"></span></span><span class="v">${esc(sv.new_min)} min / run</span></div>` : "";
+  const eqBits = [isNum(sv.runs_per_year) ? `${esc(sv.runs_per_year)} runs a year` + (isNum(sv.hourly_rate) ? ` at $${esc(sv.hourly_rate)}/h` : "") : "",
+    `build ${hours(buildH)} over ${plural(d.data.time.length, "session")}`,
+    sv.realised_runs ? `realised so far: ${hours(sv.realised_hours)} from ${plural(sv.realised_runs, "run")}` : ""].filter(Boolean);
+  const utility = ed ? `<form data-form="summary"><div class="fld"><textarea name="text" maxlength="4000" aria-label="Utility summary" placeholder="What it does, and for whom. One or two sentences.">${esc(p.summary)}</textarea></div>
+      <div class="inl"><button class="btn sm primary">Save summary</button></div></form>`
+    : `<p style="max-width:70ch">${p.summary ? esc(p.summary) : '<span class="muted">No summary yet.</span>'}</p>`;
+  const features = p.features.length || ed ? `<div class="feat">${p.features.map(f => ed
+      ? `<form data-form="feature" data-id="${esc(f.id)}" class="grid-form" style="margin:0"><label class="wide">Name<input type="text" name="name" required maxlength="4000" value="${esc(f.name)}"></label>
+          <label class="wide">What it does<textarea name="what" maxlength="4000">${esc(f.what)}</textarea></label>
+          <div class="acts">${armBtn("feature:" + f.id, "Delete", "delfeature", `data-id="${esc(f.id)}"`)}<button class="btn sm primary">Save</button></div></form>`
+      : `<div><h4>${esc(f.name)}${f.priority ? `<span class="pri">${esc(f.priority)}</span>` : ""}</h4><p>${esc(f.what)}</p></div>`).join("")}
+      ${ed ? `<form data-form="feature-add" class="grid-form" style="margin:0"><label class="wide">New feature<input type="text" name="name" required maxlength="4000" placeholder="Name"></label>
+          <label class="wide">What it does<textarea name="what" maxlength="4000"></textarea></label><div class="acts"><button class="btn sm">Add feature</button></div></form>` : ""}</div>`
+    : `<p class="muted">No features listed.</p>`;
+  const byArea = AREAS.map(a => [a, guards.filter(g => g.area === a)]).filter(([, l]) => l.length || ed);
+  const safeguards = byArea.length ? `<div class="safe">${byArea.map(([a, l]) => `<div><h4>${esc(a)}</h4>${l.map(g => `
+      <div class="check ${g.status === "in" ? "" : "planned"}"><span class="i" aria-hidden="true"></span><span>${esc(g.control)} ${g.status === "in" ? '<span class="sr">(in place)</span>' : '<span class="pill-plan">PLANNED</span>'}
+        ${g.detail ? `<span class="d">${esc(g.detail)}</span>` : ""}${g.prevents ? `<span class="d">Prevents: ${esc(g.prevents)}</span>` : ""}
+        ${ed ? `<span class="edits"><button class="btn sm" type="button" data-act="sgstatus" data-id="${esc(g.id)}" data-to="${g.status === "in" ? "plan" : "in"}">${g.status === "in" ? "Mark planned" : "Mark in place"}</button>${armBtn("sg:" + g.id, "Delete", "delsg", `data-id="${esc(g.id)}"`)}</span>` : ""}</span></div>`).join("")
+      || '<p class="muted" style="font-size:13px">None yet.</p>'}</div>`).join("")}</div>` : `<p class="muted">No safeguards recorded.</p>`;
+  const sgAdd = ed ? `<form data-form="sg-add" class="grid-form" style="margin-top:var(--s4)">
+      <label>Area<select name="area">${AREAS.map(a => `<option>${esc(a)}</option>`).join("")}</select></label>
+      <label>Status<select name="status"><option value="plan">Planned</option><option value="in">In place</option></select></label>
+      <label class="wide">Control<input type="text" name="control" required maxlength="4000" placeholder="e.g. Card numbers masked to the last 4 digits"></label>
+      <label>Detail<input type="text" name="detail" maxlength="4000"></label><label>Prevents<input type="text" name="prevents" maxlength="4000"></label>
+      <div class="acts"><button class="btn sm">Add safeguard</button></div></form>` : "";
+  return `<section class="rundown" aria-labelledby="rd-title"><div class="rd-head"><div><div class="eyebrow">Rundown</div>
+      <h2 class="h-display" id="rd-title" style="font-size:34px">What this is and what it's worth</h2>
+      <p>Generated from the project record. Edit any line; copy it into an email or a review.</p></div>
+    <div class="rd-actions">${blank && d.charter ? `<button class="btn" type="button" data-act="seed">Fill from charter</button>` : ""}
+      <button class="btn" type="button" data-act="edit" aria-pressed="${ed}">${ed ? "Done editing" : "Edit"}</button>
+      <button class="btn primary" type="button" data-act="copy">Copy as text</button></div></div>
+    <div class="sheet">
+      <div class="k">Utility<small>what it does, for whom</small></div><div class="v">${utility}</div>
+      <div class="k">Efficiency<small>cost-benefit, per year</small></div><div class="v">
+        <div class="eff"><div class="fig">${hours(sv.annual_hours)}<small>saved a year</small></div><div class="fig">${money(sv.annual_cost)}<small>saved a year</small></div>
+          <div class="fig">${money(sv.build_cost)}<small>to build (time)</small></div><div class="fig">${payback(sv.payback_years)}<small>payback</small></div></div>
+        ${beforeAfter}<p class="eq">${eqBits.join(" | ")}</p></div>
+      <div class="k">Features<small>${plural(p.features.length, "function")}</small></div><div class="v">${features}</div>
+      <div class="k">Safeguards<small>${inPlace} in place, ${guards.length - inPlace} planned</small></div><div class="v">${safeguards}${sgAdd}</div>
+    </div></section>`;
+}
+
+function rundownText(d) {
+  const p = d.data.profile, sv = d.summary.savings, g = p.safeguards;
+  const out = [d.name, "", "Utility", p.summary || d.charter?.purpose || "-", "", "Efficiency"];
+  out.push(`${hours(sv.annual_hours)} and ${money(sv.annual_cost)} saved a year; build ${money(sv.build_cost)} (${hours(d.summary.build_minutes / 60)}); payback ${payback(sv.payback_years)}.`);
+  if (isNum(sv.baseline_min)) out.push(`Before ${sv.baseline_min} min per run, after ${sv.new_min} min, ${sv.runs_per_year} runs a year.`);
+  if (sv.realised_runs) out.push(`Realised so far: ${hours(sv.realised_hours)} from ${plural(sv.realised_runs, "run")}.`);
+  out.push("", `Features (${p.features.length})`);
+  p.features.forEach(f => out.push(`- ${f.name}${f.what ? ": " + f.what : ""}`));
+  out.push("", `Safeguards (${g.filter(x => x.status === "in").length} in place, ${g.filter(x => x.status !== "in").length} planned)`);
+  AREAS.forEach(a => {
+    const l = g.filter(x => x.area === a);
+    if (!l.length) return;
+    out.push(a);
+    l.forEach(x => out.push(`  [${x.status === "in" ? "x" : " "}] ${x.control}${x.prevents ? " (prevents: " + x.prevents + ")" : ""}`));
+  });
+  return out.join("\n");
+}
+
+/* ---------- new project (charter) ---------- */
+function slugify(name) {
+  const s = String(name).toLowerCase().replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return s.slice(0, 63).replace(/-+$/, "");
+}
+const TA = (name, label, opt, hint, ph, rows) => `<div class="fld"><label for="f-${name}">${label}${opt ? "<em>optional</em>" : ""}</label>${hint ? `<p class="hint">${hint}</p>` : ""}
+  <textarea id="f-${name}" name="${name}" rows="${rows || 3}" maxlength="4000" placeholder="${esc(ph)}" ${opt ? "" : "required"}></textarea></div>`;
+const IN = (name, label, hint, ph) => `<div class="fld"><label for="f-${name}">${label}<em>optional</em></label>${hint ? `<p class="hint">${hint}</p>` : ""}
+  <input type="text" id="f-${name}" name="${name}" maxlength="4000" placeholder="${esc(ph)}"></div>`;
+const SEC = (n, title, why, feeds, body) => `<div class="fsec"><div class="k"><h3><span>${n}</span>${title}</h3><p>${why}</p><p class="feeds">Feeds: ${feeds}</p></div><div class="v">${body}</div></div>`;
+const opts = (list, sel) => list.map(x => `<option ${x === sel ? "selected" : ""}>${esc(x)}</option>`).join("");
+const scopeRow = (r = {}) => `<div class="srow"><input type="text" name="feature" maxlength="4000" value="${esc(r.feature)}" placeholder="Feature or deliverable" aria-label="Feature">
+  <input type="text" name="what" maxlength="4000" value="${esc(r.what)}" placeholder="What it does" aria-label="What it does">
+  <select name="priority" aria-label="Priority">${opts(MOSCOW, r.priority || "Must")}</select><button type="button" class="x" data-act="delrow" aria-label="Remove row">&times;</button></div>`;
+const riskRow = (r = {}) => `<div class="rrow"><input type="text" name="risk" maxlength="4000" value="${esc(r.risk)}" placeholder="What could go wrong" aria-label="Risk">
+  <select name="likelihood" aria-label="Likelihood">${opts(LEVELS, r.likelihood || "Med")}</select>
+  <select name="impact" aria-label="Impact">${opts(LEVELS, r.impact || "Med")}</select>
+  <input type="text" name="guardrail" maxlength="4000" value="${esc(r.guardrail)}" placeholder="Guardrail or mitigation" aria-label="Guardrail"><button type="button" class="x" data-act="delrow" aria-label="Remove row">&times;</button></div>`;
+
+function renderNew() {
+  document.title = "New project | Projects board";
+  const roots = S.list.project_roots || [], rate = S.list.hourly_rate;
+  app.innerHTML = `<a class="crumb" href="#/active">&larr; Projects</a>
+  <div class="portfolio" style="margin-top:var(--s3)"><div><div class="eyebrow">Projects / New</div><h1 class="h-display">Project charter</h1></div>
+    <p>Based on the PMI project charter. Only <b>name</b> and <b>purpose</b> are required. Blanks become questions Claude asks at Gate 1.</p></div>
+  ${roots.length ? "" : `<div class="notice" style="margin-bottom:var(--s4)"><h2>No project folders set</h2><p>Add the folders new projects may go in to <code>~/.drainclamp/config.json</code>, for example <code>{"project_roots": ["C:\\\\Users\\\\you\\\\Projects"]}</code>, then reload.</p></div>`}
+  <form class="form" data-form="create" novalidate>
+  ${SEC(1, "Project details", "Who owns it and who it's for.", "registry, rundown",
+    `<div class="fld"><label for="f-name">Project name</label><input type="text" id="f-name" name="name" required maxlength="4000" placeholder="e.g. Leave Balance Alerts"></div>
+     <div class="nums2"><div class="fld"><label for="f-location">Location</label><select id="f-location" name="location">${roots.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join("")}</select>
+       <p class="hint">Only folders listed in ~/.drainclamp/config.json are offered.</p></div>
+       <div class="fld"><label for="f-folder">Folder name</label><input type="text" id="f-folder" name="folder" maxlength="63" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" placeholder="from the name">
+       <p class="path" id="f-path"></p></div></div>
+     <div class="nums2">${IN("sponsor", "Sponsor", "Who asked for it or signs it off?", "e.g. Payroll Manager")}${IN("stakeholders", "Stakeholders", "Who uses it or is affected?", "e.g. People managers, HR, Payroll")}</div>`)}
+  ${SEC(2, "Purpose and business case", "Why this project, and why now.", "rundown utility, DC:ARCH",
+    TA("purpose", "Purpose", 0, "What does it do, and for whom? One or two sentences.", "e.g. Emails managers when a staff member's leave balance goes over 8 weeks.", 2) +
+    TA("current_state", "Current state", 1, "How is it done today, by whom, and what does it cost?", "e.g. Payroll exports balances monthly and checks them by eye in Excel.", 2))}
+  ${SEC(3, "Objectives and success criteria", "SMART: specific, measurable, achievable, relevant, time-bound.", "value, DC:ROADMAP exit, Mark complete",
+    TA("objectives", "Objectives", 1, "One per line, each with a number and a date.", "Cut the monthly leave check from 90 to 5 minutes by 30 Nov", 3) +
+    `<div class="fld"><span class="lbl">Measured value<em>optional</em></span><p class="hint">The baseline for time and cost saved.</p><div class="nums">
+      <label><span class="mini">Minutes per run now</span><input type="number" name="baseline_min" min="0" step="any"></label>
+      <label><span class="mini">Minutes after</span><input type="number" name="new_min" min="0" step="any"></label>
+      <label><span class="mini">Runs per year</span><input type="number" name="runs_per_year" min="0" step="any"></label>
+      <label><span class="mini">Hourly rate</span><input type="number" name="hourly_rate" min="0" step="any" placeholder="${isNum(rate) ? "default " + esc(rate) : ""}"></label></div></div>
+     <p class="preview" id="f-preview" hidden></p>` +
+    TA("success", "Success criteria (done means)", 1, "What must be true to mark the project complete?", "e.g. Runs unattended for two months with no missed or wrong alerts.", 2))}
+  ${SEC(4, "Scope", "Features ranked with MoSCoW, plus what is deliberately left out.", "DC:ROADMAP milestones, rundown features",
+    `<div class="fld"><span class="lbl">In scope<em>optional</em></span><p class="hint">Must = launch fails without it. Won't = agreed not this time.</p>
+      <div id="f-scope">${scopeRow()}${scopeRow()}</div><button type="button" class="linkbtn" data-act="addscope">+ Add feature</button></div>` +
+    TA("out_of_scope", "Out of scope", 1, "One per line. Stops scope creep later.", "Changing leave balances in payroll", 2))}
+  ${SEC(5, "Deliverables and milestones", "The big steps. Claude breaks each into chunks of 25 minutes or less.", "DC:ROADMAP (draft)",
+    TA("milestones", "Milestones", 1, "One per line, in order. Leave blank and Claude drafts them from the scope.", "Import and validate the export", 4))}
+  ${SEC(6, "Requirements and constraints", "Security, data handling and anything fixed in advance.", "DC:DECISIONS, rundown safeguards",
+    `<div class="fld"><span class="lbl">Data it touches<em>optional</em></span><div class="boxes">${DATA_KINDS.map(k => `<label><input type="checkbox" name="data" value="${esc(k)}"> ${esc(k)}</label>`).join("")}</div></div>` +
+    TA("security", "Security", 1, "Where are logins or keys kept? Who can open the inputs and outputs?", "e.g. Read-only payroll report; no stored logins.", 2) +
+    TA("retention", "Data retention", 1, "What is kept, where, for how long, and what is deleted after each run?", "e.g. Monthly export kept 7 years with payroll records.", 2) +
+    TA("assumptions", "Assumptions and constraints", 1, "What are you taking as given? What can't change?", "e.g. Payroll export format stays the same.", 2))}
+  ${SEC(7, "Risks and guardrails", "Risk register: what could go wrong, how likely, how bad, and the guardrail that stops it.", "guardrail checks, rundown safeguards",
+    `<div class="fld"><span class="lbl">Risks<em>optional</em></span><div class="rhead" aria-hidden="true"><span>RISK</span><span>LIKELIHOOD</span><span>IMPACT</span><span>GUARDRAIL</span><span></span></div>
+      <div id="f-risks">${riskRow()}</div><button type="button" class="linkbtn" data-act="addrisk">+ Add risk</button></div>` +
+    TA("never", "It must never...", 1, "Hard limits, one per line. Claude writes a check for each.", "change a leave balance", 2))}
+  ${SEC(8, "Approvals and confirmation checks", "Who signs off, and which actions need a person to say yes first.", "confirmation checks, Gate 4",
+    TA("approvals", "Needs a yes before...", 1, "One per line.", "sending the first batch of alerts each month", 2))}
+  ${SEC(9, "Verification and acceptance", "How you'll prove each objective is met.", "DC:VERIFY checks",
+    TA("acceptance", "Acceptance tests", 1, "Name the check, sample file or command, one per line.", "Run against the August export: exactly 6 alerts", 3))}
+   <div class="ffoot"><p id="f-foot">Creates the folder with git and <span class="mono">.agent/</span>, saves this charter as the brief, and adds the project to the DrainClamp project list.</p>
+     <div class="row"><button type="button" class="btn" data-act="draft">Save draft</button><button class="btn go" ${roots.length ? "" : "disabled"}>Create project</button></div></div>
+  </form><div id="f-done"></div>`;
+  const f = app.querySelector("form[data-form=create]");
+  restoreDraft(f);
+  f.addEventListener("input", () => charterPreview(f));
+  charterPreview(f);
+}
+
+function charterPreview(f) {
+  const E = f.elements, folder = E.folder.value.trim() || slugify(E.name.value), loc = E.location?.value || "";
+  const sep = loc.includes("\\") ? "\\" : "/";
+  $("#f-path").innerHTML = folder ? `${esc(loc.replace(/[\\/]+$/, ""))}${esc(sep)}<b>${esc(folder)}</b>` : "";
+  E.folder.placeholder = slugify(E.name.value) || "from the name";
+  const n = k => E[k].value === "" ? null : Number(E[k].value);
+  const b = n("baseline_min"), a = n("new_min"), runs = n("runs_per_year");
+  const r = n("hourly_rate") ?? S.list.hourly_rate;
+  const pv = $("#f-preview");
+  if (isNum(b) && isNum(a) && isNum(runs)) {
+    const h = (b - a) * runs / 60;
+    pv.innerHTML = `About <b>${hours(h)}</b>${isNum(r) ? ` and <b>${money(h * r)}</b>` : ""} saved a year.`;
+    pv.hidden = false;
+  } else pv.hidden = true;
+}
+
+function charterFrom(f) {
+  const E = f.elements, c = {};
+  CHARTER_TEXT.forEach(k => { c[k] = (E[k]?.value || "").trim(); });
+  const rows = (sel, keys) => [...f.querySelectorAll(sel)].map(r => Object.fromEntries(keys.map(k => [k, r.querySelector(`[name=${k}]`).value.trim()])));
+  c.scope = rows(".srow", ["feature", "what", "priority"]).filter(r => r.feature);
+  c.risks = rows(".rrow", ["risk", "likelihood", "impact", "guardrail"]).filter(r => r.risk);
+  c.data = [...f.querySelectorAll("[name=data]:checked")].map(x => x.value);
+  const n = k => E[k].value === "" ? null : Number(E[k].value);
+  c.value = {baseline_min: n("baseline_min"), new_min: n("new_min"), runs_per_year: n("runs_per_year"), hourly_rate: n("hourly_rate")};
+  return c;
+}
+
+function restoreDraft(f) {
+  let dr;
+  try { dr = JSON.parse(store.get(DRAFT_KEY) || "null"); } catch { dr = null; }
+  if (!dr || typeof dr !== "object") return;
+  const c = dr.charter || {}, E = f.elements;
+  CHARTER_TEXT.forEach(k => { if (E[k] && typeof c[k] === "string") E[k].value = c[k]; });
+  if (typeof dr.folder === "string") E.folder.value = dr.folder;
+  if (dr.location && [...E.location.options].some(o => o.value === dr.location)) E.location.value = dr.location;
+  if (Array.isArray(c.scope) && c.scope.length) $("#f-scope").innerHTML = c.scope.map(scopeRow).join("") + scopeRow();
+  if (Array.isArray(c.risks) && c.risks.length) $("#f-risks").innerHTML = c.risks.map(riskRow).join("") + riskRow();
+  (c.data || []).forEach(v => { const box = [...f.querySelectorAll("[name=data]")].find(x => x.value === v); if (box) box.checked = true; });
+  Object.entries(c.value || {}).forEach(([k, v]) => { if (E[k] && isNum(v)) E[k].value = v; });
+  say("Draft restored.");
+}
+
+async function createProject(f) {
+  const E = f.elements;
+  if (!E.name.value.trim() || !E.purpose.value.trim()) {
+    say("Name and purpose are required.", true);
+    (E.name.value.trim() ? E.purpose : E.name).focus();
+    return;
+  }
+  if (!f.checkValidity()) { f.reportValidity(); return; }
+  const btn = f.querySelector(".btn.go");
+  btn.disabled = true;
+  try {
+    const r = await api("/api/create", {charter: charterFrom(f), location: E.location.value || null,
+                                        folder: E.folder.value.trim() || null});
+    store.set(DRAFT_KEY, null);
+    f.hidden = true;
+    $("#f-done").innerHTML = `<div class="done-card" role="status"><h3>${esc(r.folder)} created</h3><ol>
+      <li>Folder, git repo and <code>.agent/drainclamp-state.md</code> created; the charter saved as <code>.agent/charter.json</code>.</li>
+      <li>Added to the DrainClamp project list as active.</li>
+      <li>Next: open Claude Code in <code>${esc(r.root)}</code> and run <code>/drainclamp-build-adhd</code>. It reads the charter, drafts the roadmap and checks, and asks only about the blanks.</li></ol>
+      <a class="btn primary" href="#/p/${esc(r.id)}">Open project</a> <a class="btn" href="#/active">Back to projects</a></div>`;
+    window.scrollTo(0, 0);
+  } catch (e) { say(e.message, true); btn.disabled = false; }
+}
+
+/* ---------- events (delegated; every render replaces #app) ---------- */
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); say("Rundown copied."); return; } catch {}
+  const t = document.createElement("textarea");
+  t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+  document.body.append(t); t.select();
+  try { document.execCommand("copy"); say("Rundown copied."); } catch { say("Copy failed; select the text instead.", true); }
+  t.remove();
+}
+function focusIn(sel) { const el = app.querySelector(sel); if (el) el.focus(); }
+
+app.addEventListener("click", async ev => {
+  const el = ev.target.closest("[data-act]");
+  if (!el || !app.contains(el)) return;
+  const a = el.dataset.act, d = S.detail, k = el.dataset.k;
+  if (el.tagName === "INPUT" && a !== "todo") return;
+  switch (a) {
+    case "open": S.open[k] = !S.open[k]; S.arm = null; renderProject();
+      if (S.open[k]) focusIn(`[data-okey="${CSS.escape(k)}"] :is(input,select,textarea)`); return;
+    case "close": delete S.open[k]; renderProject(); return;
+    case "arm": S.arm = k; renderProject(); focusIn(`[data-k="${CSS.escape(k)}"]`); return;
+    case "kind": S.logKind = el.dataset.kind; renderProject(); focusIn("[data-form=log] input"); return;
+    case "edit": S.edit = !S.edit; S.arm = null; renderProject(); focusIn("[data-act=edit]"); return;
+    case "copy": copyText(rundownText(d)); return;
+    case "seed": op("profile.seed", {}); return;
+    case "tick": {
+      const done = el.dataset.done === "1", key = `note:${el.dataset.m}/${el.dataset.c}`;
+      const ok = await op(done ? "chunk.undo" : "chunk.done", {milestone: el.dataset.m, id: el.dataset.c}, done ? {} : {[key]: true});
+      if (ok && !done) focusIn(`[data-okey="${CSS.escape(key)}"] input`);
+      return;
+    }
+    case "todo": op(el.checked ? "todo.done" : "todo.undo", {id: el.dataset.id}); return;
+    case "sgstatus": op("safeguard.edit", {id: el.dataset.id, status: el.dataset.to}); return;
+    case "delsg": op("safeguard.delete", {id: el.dataset.id}); return;
+    case "delfeature": op("feature.delete", {id: el.dataset.id}); return;
+    case "deltime": op("time.delete", {id: el.dataset.id}, {log: true}); return;
+    case "delrun": op("run.delete", {id: el.dataset.id}, {log: true}); return;
+    case "reopen":
+      el.disabled = true;
+      if (await setStatus(el.dataset.id, Number(el.dataset.rev), "active", "")) { S.list = await api("/api/projects"); renderList("complete"); }
+      else el.disabled = false;
+      return;
+    case "reopen-here":
+      if (await setStatus(d.id, d.data.rev, "active", "")) await loadProject(d.id);
+      return;
+    case "addscope": $("#f-scope").insertAdjacentHTML("beforeend", scopeRow()); $("#f-scope .srow:last-child input").focus(); return;
+    case "addrisk": $("#f-risks").insertAdjacentHTML("beforeend", riskRow()); $("#f-risks .rrow:last-child input").focus(); return;
+    case "delrow": el.closest(".srow,.rrow").remove(); return;
+    case "draft": {
+      const f = app.querySelector("form[data-form=create]");
+      store.set(DRAFT_KEY, JSON.stringify({charter: charterFrom(f), location: f.elements.location.value, folder: f.elements.folder.value}));
+      say(store.get(DRAFT_KEY) ? "Draft saved in this browser." : "This browser would not save the draft.", !store.get(DRAFT_KEY));
+      return;
+    }
+  }
+});
+
+app.addEventListener("toggle", ev => {
+  const det = ev.target;
+  if (det.tagName === "DETAILS" && det.dataset.k) S.open[det.dataset.k] = det.open;
+}, true);
+
+app.addEventListener("submit", async ev => {
+  const f = ev.target.closest("form[data-form]");
+  if (!f) return;
+  ev.preventDefault();
+  const kind = f.dataset.form, d = S.detail;
+  const v = n => f.elements[n]?.value ?? "";
+  if (kind === "create") return createProject(f);
+  if (!f.checkValidity()) { f.reportValidity(); return; }
+  switch (kind) {
+    case "log": {
+      const text = v("text").trim();
+      if (!text) return;
+      const ok = await op(S.logKind === "error" ? "error.add" : "todo.add",
+        S.logKind === "error" ? {summary: text, milestone: d.milestone || ""} : {text, milestone: d.milestone || ""});
+      if (ok) focusIn("[data-form=log] input");
+      return;
+    }
+    case "fix": op("error.fix", {id: f.dataset.id, fix: v("fix")}); return;
+    case "note": op("chunk.note", {milestone: f.dataset.m, id: f.dataset.c, note: v("note")}); return;
+    case "health": op("health.set", {state: v("state"), update: v("update")}); return;
+    case "savings": op("savings.set", {baseline_min: v("baseline_min"), new_min: v("new_min"), runs_per_year: v("runs_per_year"),
+                                       hourly_rate: v("hourly_rate"), note: v("note")}); return;
+    case "run": op("run.add", {count: v("count"), minutes: v("minutes"), note: v("note")}, {log: true}); return;
+    case "time": op("time.add", {minutes: v("minutes"), note: v("note")}, {log: true}); return;
+    case "summary": op("profile.summary", {text: v("text")}); return;
+    case "feature": op("feature.edit", {id: f.dataset.id, name: v("name"), what: v("what")}); return;
+    case "feature-add": op("feature.add", {name: v("name"), what: v("what")}); return;
+    case "sg-add": op("safeguard.add", {area: v("area"), control: v("control"), detail: v("detail"),
+                                        prevents: v("prevents"), status: v("status")}); return;
+    case "complete": {
+      if (await setStatus(d.id, d.data.rev, "complete", v("note"))) location.hash = "#/completed";
+      return;
+    }
+  }
+});
+
+addEventListener("keydown", ev => {
+  if (ev.key !== "Escape" || !S.detail || !location.hash.startsWith("#/p/")) return;
+  if (S.arm || Object.values(S.open).some(Boolean)) { S.arm = null; S.open = {}; renderProject(); }
+});
+
+route();
+</script>
+</body>
+</html>

@@ -611,6 +611,42 @@ def purge_check(state: State, root: Path, context_high: bool) -> tuple[str, str]
     )
 
 
+def chunk_purge_check(done_targets: list[str], next_targets: list[str], root: Path,
+                      context_high: bool) -> tuple[str, str]:
+    """The milestone calculus applied at a chunk boundary, over chunk targets.
+
+    `path::symbol` compares by path: two symbols of one file share the reads
+    that loaded it, so counting them apart would understate the overlap. As
+    with milestones, an empty or unresolved side is unknown and never PURGE.
+    """
+    def paths(targets: list[str]) -> list[str]:
+        return [t.partition("::")[0] for t in targets if t.partition("::")[0].strip()]
+
+    saved = "DRAINCLAMP: Chunk saved to .agent/drainclamp-project.json. "
+    reason: str | None = None
+    overlap: float | None = None
+    done_paths, next_paths = paths(done_targets), paths(next_targets)
+    if not done_paths:
+        reason = "finished chunk has no targets"
+    elif not next_paths:
+        reason = "next chunk has no targets"
+    else:
+        done_set, done_bad, _ = expand(done_paths, root)
+        next_set, next_bad, _ = expand(next_paths, root)
+        if done_bad or next_bad:
+            reason = f"unresolved path pattern: {(done_bad or next_bad)[0]}"
+        elif not done_set or not next_set:
+            reason = "chunk targets resolve to nothing"
+        else:
+            overlap = len(done_set & next_set) / len(next_set)
+
+    shown = f"overlap {overlap * 100:.0f}%" if overlap is not None else f"overlap unknown: {reason}"
+    if context_high or (overlap is not None and overlap < PURGE_THRESHOLD):
+        tag = f"context-high; {shown}" if context_high else shown
+        return f"PURGE (chunk {tag})", saved + "Context purge recommended."
+    return f"HOLD (chunk {shown})", saved + f"Context retained ({shown})."
+
+
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------

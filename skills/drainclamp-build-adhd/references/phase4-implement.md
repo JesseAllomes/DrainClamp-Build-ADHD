@@ -2,20 +2,40 @@
 
 Always runs. This is the work; everything else exists to make this cheap and recoverable.
 
-## Loop
+## Start
 
-1. **Reuse before writing.** Index first (`dc_map.py`), then look for the helper that already does
+```
+dc_project.py next        # <=15 lines: current chunk, its targets, how to read them, last note
+dc_project.py time touch  # opens or extends the build-time session
+```
+
+The capsule replaces rereading the log or earlier chunk notes. When it says `No chunks yet`, split
+the milestone first (Gate 2, "Chunking the active milestone").
+
+## Loop (once per chunk)
+
+1. **Read the chunk's targets only.** Use the read hints the capsule prints. Anything outside the
+   targets needs a reason; add it with `chunk add` if it becomes a step of its own.
+2. **Reuse before writing.** Index first (`dc_map.py`), then look for the helper that already does
    this. A second implementation of an existing behaviour is a defect the tests will not catch.
-2. **Red.** Write or extend the test so it fails for the intended reason. A test that passes before
+3. **Red.** Write or extend the test so it fails for the intended reason. A test that passes before
    the change proves nothing about the change.
-3. **Green.** Smallest change that passes it.
-4. **Refine.** Mutating formatters belong here, not in Gate 3 — a check-only refiner reports, this
+4. **Green.** Smallest change that passes it.
+5. **Refine.** Mutating formatters belong here, not in Gate 3 — a check-only refiner reports, this
    step rewrites.
-5. **Log it.** `dc_state.py --append-log "<one sentence>"` after each completed diff.
+6. **Tick it.** `dc_project.py chunk done --milestone <m> --id <c> --note "<what was done>"`.
+   This extends build time and prints the next chunk plus a chunk-boundary verdict
+   (Gate 5, "Chunk boundaries"). Add `--context-high` when you judge context to be over ~50%.
+7. **Log problems where they happen.** `dc_project.py error add --summary ... --milestone <m>
+   --chunk <c>` for a defect found, `error fix` when it is fixed, `todo add` for later work.
+
+Chunk notes stay in the sidecar. `DC:LOG` gets **one** line per milestone, at close:
+`dc_state.py --append-log "<one sentence>"`.
 
 ## Reading
 
-Rules 1 and 3 of `SKILL.md` in one line: index, then read the one range you need.
+Rules 1 and 3 of `SKILL.md` in one line: index, then read the one range you need. A chunk's
+`path::symbol` target is that range.
 
 | Situation | Read |
 |---|---|

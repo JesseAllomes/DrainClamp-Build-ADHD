@@ -75,7 +75,9 @@ dc_verify.py --record <id> --digest <digest> --status pass|fail --log <path>
 ```
 
 The record is accepted only when the digest matches the entry it was issued for, so an approved
-command cannot be swapped for another — editing the entry invalidates its record. An entry that is
+command cannot be swapped for another — editing the entry invalidates its record. It also stores a
+fingerprint of the tree (HEAD plus changed files outside `.agent/`), so a code change afterwards turns
+it back into `APPROVAL-REQUIRED` with a `stale:` line; outside git no record is accepted. An entry that is
 neither allowlisted nor recorded **has not run**, and a tier made only of those reports
 `NO-CHECKS-RUN`, never green.
 

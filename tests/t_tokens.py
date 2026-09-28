@@ -94,6 +94,19 @@ write(claude / "proj-a" / "attr-other.jsonl", [
                     "input_tokens": 8, "cache_creation_input_tokens": 8,
                     "cache_read_input_tokens": 80, "output_tokens": 8}}}),
 ])
+# One API call streamed as three records repeating its usage, plus a second call.
+def streamed(mid, rid, inp, stamp=""):
+    return json.dumps({"type": "assistant", "requestId": rid, "timestamp": stamp,
+                       "message": {"id": mid, "usage": {
+                           "input_tokens": inp, "cache_creation_input_tokens": 0,
+                           "cache_read_input_tokens": 0, "output_tokens": 1}}})
+
+
+write(tmp / "dedupe" / "s.jsonl", [streamed("msg1", "req1", 7), streamed("msg1", "req1", 7),
+                                   streamed("msg1", "req1", 7), streamed("msg2", "req2", 3)])
+dup = dc_tokens.scan_claude(tmp / "dedupe" / "s.jsonl")
+check("claude streamed records count once per API call",
+      dup is not None and (dup.turns, dup.input) == (2, 10), dup and (dup.turns, dup.input))
 # A large none session so the turn-weighted mean parts from the session median.
 write(claude / "proj-a" / "none-big.jsonl", [
     json.dumps({"type": "user", "message": {"content": "unrelated work"}}),
@@ -295,6 +308,93 @@ found = dc_tokens.adhd_skill_near(base_skill)
 check("adhd locator finds sibling checkout", found == adhd_skill, found)
 check("adhd locator misses a tree with no sibling",
       dc_tokens.adhd_skill_near(tmp / "orphan" / "skills" / "drainclamp-build") is None)
+
+# --- project mode: chunk windows from done_at, clipped to time sessions --------
+proj = (tmp / "proj-root").resolve()
+(proj / ".agent").mkdir(parents=True)
+D = "2026-01-05T"
+
+
+def chunk(cid, done_at):
+    return {"id": cid, "goal": "g", "targets": [], "est_min": None, "done": True,
+            "done_at": D + done_at, "note": ""}
+
+
+(proj / ".agent" / "drainclamp-project.json").write_text(json.dumps({
+    "schema": 1, "rev": 1,
+    "time": [{"id": "s1", "start": D + "10:00:00+00:00", "end": D + "11:00:00+00:00",
+              "source": "auto", "note": ""}],
+    "chunks": {"m1": [chunk("c0", "09:00:00+00:00"), chunk("c1", "10:20:00+00:00"),
+                      chunk("c2", "10:40:00+00:00")],
+               "m2": [chunk("c1", "10:45:00+00:00"),
+                      dict(chunk("c2", "10:50:00+00:00"), done=False)]}}), encoding="utf-8")
+pclaude = tmp / "pclaude"
+named = json.dumps({"type": "user", "cwd": str(proj), "message": {"content": SECRET}})
+write(pclaude / "p" / "a.jsonl", [
+    named,
+    streamed("x0", "r0", 1, D + "09:30:00Z"),       # before any window, outside the session
+    streamed("x1", "r1", 5, D + "10:10:00Z"),       # m1/c1
+    streamed("x2", "r2", 7, D + "10:30:00Z"),       # m1/c2, streamed twice
+    streamed("x2", "r2", 7, D + "10:30:00Z"),
+    streamed("x3", "r3", 11, D + "10:52:00Z"),      # in the session, in no chunk
+    streamed("x4", "r4", 13, D + "13:00:00Z"),      # after the session
+])
+write(pclaude / "p" / "a" / "subagents" / "agent-1.jsonl", [
+    json.dumps({"type": "user", "message": {"content": "work in " + proj.as_posix()}}),
+    streamed("y1", "q1", 17, D + "10:15:00Z"),      # m1/c1, from a subagent
+])
+write(pclaude / "p" / "other.jsonl", [
+    json.dumps({"type": "user", "message": {"content": "some other repo"}}),
+    streamed("z1", "w1", 100, D + "10:10:00Z"),
+])
+got = dc_tokens.project_tokens(proj, pclaude)
+check("project: only transcripts naming the root count", got["transcripts"] == 2, got["transcripts"])
+check("project: chunk window sums main + subagent calls",
+      (got["chunks"]["m1/c1"]["calls"], got["chunks"]["m1/c1"]["fresh"]) == (2, 22),
+      got["chunks"].get("m1/c1"))
+check("project: streamed call counted once", got["chunks"]["m1/c2"]["calls"] == 1,
+      got["chunks"].get("m1/c2"))
+check("project: milestone totals its chunks",
+      got["milestones"]["m1"]["fresh"] == 29 and got["milestones"]["m2"]["calls"] == 0,
+      got["milestones"])
+check("project: session time outside chunks is `outside`",
+      got["outside"]["calls"] == 1 and got["outside"]["fresh"] == 11, got["outside"])
+check("project: chunk done outside every session has no window",
+      got["unwindowed"] == ["m1/c0"], got["unwindowed"])
+check("project: open chunk has no row", "m2/c2" not in got["chunks"], sorted(got["chunks"]))
+cli = run_cli("--project", str(proj), "--claude", str(pclaude))
+check("project CLI exits clean", cli.returncode == 0, cli.stderr.strip())
+check("project CLI declares coverage", "COVERAGE: partial" in cli.stdout, cli.stdout[:200])
+check("project CLI never prints transcript text", SECRET not in cli.stdout + cli.stderr)
+check("project CLI prints milestone total", "m1 total" in cli.stdout, cli.stdout)
+side = proj / ".agent" / "drainclamp-project.json"
+saved = run_cli("--project", str(proj), "--claude", str(pclaude), "--save")
+stored = json.loads(side.read_text(encoding="utf-8"))
+check("save exits clean", saved.returncode == 0, saved.stderr.strip())
+check("save stores totals in the sidecar and bumps rev",
+      stored["rev"] == 2 and stored["tokens"]["chunks"]["m1/c1"]["calls"] == 2
+      and stored["tokens"]["at"], stored.get("tokens"))
+check("save never stores transcript text or time", SECRET not in side.read_text(encoding="utf-8")
+      and len(stored["time"]) == 1, stored["time"])
+import dc_project  # noqa: E402
+check("sidecar with tokens still validates",
+      dc_project.load(proj / ".agent")["tokens"]["transcripts"] == 2)
+stored["tokens"] = ["not", "a", "dict"]
+side.write_text(json.dumps(stored), encoding="utf-8")
+wrong = run_cli("--project", str(proj), "--claude", str(pclaude), "--save")
+check("save refuses a sidecar with a malformed tokens field",
+      wrong.returncode != 0 and json.loads(side.read_text(encoding="utf-8"))["tokens"] == ["not", "a", "dict"],
+      wrong.stderr.strip())
+bad = tmp / "no-sidecar"
+bad.mkdir()
+nosave = run_cli("--project", str(bad), "--claude", str(pclaude), "--save")
+check("save with no sidecar refuses and creates nothing",
+      nosave.returncode != 0 and not (bad / ".agent").exists(), nosave.stderr.strip())
+check("--save without --project is a usage error",
+      run_cli("--save", "--claude", str(pclaude)).returncode == 2)
+empty_run = dc_tokens.project_tokens(bad, pclaude)
+check("project with no sidecar reports nothing",
+      empty_run["chunks"] == {} and empty_run["transcripts"] == 0, empty_run)
 
 print()
 print("FAILURES:", fails if fails else "none")

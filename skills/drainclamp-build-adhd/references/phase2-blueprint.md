@@ -107,6 +107,42 @@ copying appropriate:
 - When several `AGENTS.md` files apply it refuses and names them; choose one with `--dest`.
 - `CLAUDE.md` is never created.
 
+## From a charter
+
+When `dc_project.py charter` shows a charter, draft from it instead of from a blank page:
+
+- **ROADMAP**: one row per `Draft ROADMAP rows` line, in that order. The line becomes the `goal`;
+  the `files` come from the Gate 0 audit, never from the charter. When the lines came from `Must
+  scope`, merge or split them so each row is one milestone. Should and Could scope stays out
+  until the user asks for it; Won't never goes in.
+- **VERIFY**: each `Acceptance` line needs a test that fails until the line is true. Write those
+  tests in Gate 4 and register the runner that runs them here (`pytest tests/`, not one entry per
+  line). An acceptance line no command can check is a manual check: record it in `DC:DECISIONS`
+  as `acceptance (manual): <line>`, never as a fake VERIFY entry.
+- **DECISIONS**: the charter answers Gate 1 recorded. `Out of scope` and `never` lines are
+  constraints for every later milestone.
+
+The charter is not updated from here. When a milestone changes the plan, the roadmap is the
+record; the charter stays what the user asked for.
+
+## Chunking the active milestone
+
+After `DC:ROADMAP` is written, split the active (or next startable) milestone into steps of about
+25 minutes or less. Each chunk names its **targets**: the files, or `path::symbol` ranges, that
+the step reads and edits.
+
+```
+dc_project.py chunk add --milestone m2 --goal "one step" --targets "src/load.py::load;tests/t_load.py" --est 20
+```
+
+- Chunks live in `.agent/drainclamp-project.json`, not in the state file. Schema 1 stays frozen,
+  and chunk notes are never loaded unless asked for.
+- Targets are what Gate 4 reads and what the chunk-boundary purge check compares. A chunk with no
+  targets is allowed, but its boundary verdict is always `unknown`.
+- Chunk only the milestone about to start. Later milestones are chunked when they become active,
+  because their targets depend on what the earlier ones actually changed.
+- Skip chunking when the milestone is one step. `dc_project.py next` still works with no chunks.
+
 ## Gate 2 output
 
 On success, emit exactly:

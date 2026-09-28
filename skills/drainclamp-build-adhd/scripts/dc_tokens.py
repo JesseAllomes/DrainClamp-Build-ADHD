@@ -60,6 +60,8 @@ class Config:
     claude_explicit: bool = False
     codex_explicit: bool = False
     grok_explicit: bool = False
+    project: Path | None = None
+    save: bool = False
 
 
 @dataclass
@@ -343,17 +345,38 @@ def context_of(inp: int, created: int, read: int) -> int:
     return inp + created + read
 
 
-def scan_claude(path: Path) -> Session | None:
-    session = Session(bucket="none", host="claude")
+@dataclass
+class ClaudeFile:
+    """One Claude transcript reduced to its API calls; text itself is never kept."""
+
+    calls: list[tuple[str, int, int, int, int]]  # (timestamp, input, created, read, output)
+    bucket: str
+    mentions: bool = False
+
+
+def read_claude(path: Path, needles: tuple[str, ...] = ()) -> ClaudeFile | None:
+    """Claude Code streams one API call as several records that repeat its usage.
+
+    Counting records bills a call once per content block, so calls are keyed by
+    (message.id, requestId) and the last record wins. A record with neither key
+    is its own call. `needles` (lower-case) are matched against raw lines.
+    """
+    calls: dict[object, tuple[str, int, int, int, int]] = {}
     text_bucket = "none"
     attr_bucket: str | None = None
+    mentions = False
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
+            for n, line in enumerate(handle):
                 text_bucket = merge_bucket(text_bucket, classify(line))
+                if needles and not mentions:
+                    low = line.lower()
+                    mentions = any(needle in low for needle in needles)
                 try:
                     record = json.loads(line)
                 except ValueError:
+                    continue
+                if not isinstance(record, dict):
                     continue
                 attr = record.get("attributionSkill")
                 if isinstance(attr, str) and attr.strip():
@@ -366,23 +389,37 @@ def scan_claude(path: Path) -> Session | None:
                 usage = message.get("usage")
                 if not isinstance(usage, dict):
                     continue
-                inp = add_int(usage, "input_tokens")
-                created = add_int(usage, "cache_creation_input_tokens")
-                read = add_int(usage, "cache_read_input_tokens")
-                output = add_int(usage, "output_tokens")
-                ctx = context_of(inp, created, read)
-                session.turns += 1
-                session.input += inp
-                session.created += created
-                session.read += read
-                session.output += output
-                if session.turns == 1:
-                    session.first_context = ctx
-                session.last_context = ctx
+                mid, rid = message.get("id"), record.get("requestId")
+                key = (mid, rid) if mid or rid else ("line", n)
+                stamp = record.get("timestamp")
+                calls.pop(key, None)  # re-insert so order follows the last record
+                calls[key] = (stamp if isinstance(stamp, str) else "",
+                              add_int(usage, "input_tokens"),
+                              add_int(usage, "cache_creation_input_tokens"),
+                              add_int(usage, "cache_read_input_tokens"),
+                              add_int(usage, "output_tokens"))
     except OSError:
         return None
-    session.bucket = attr_bucket if attr_bucket is not None else text_bucket
-    return session if session.turns else None
+    bucket = attr_bucket if attr_bucket is not None else text_bucket
+    return ClaudeFile(list(calls.values()), bucket, mentions)
+
+
+def scan_claude(path: Path) -> Session | None:
+    parsed = read_claude(path)
+    if parsed is None or not parsed.calls:
+        return None
+    session = Session(bucket=parsed.bucket, host="claude")
+    for _, inp, created, read, output in parsed.calls:
+        ctx = context_of(inp, created, read)
+        session.turns += 1
+        session.input += inp
+        session.created += created
+        session.read += read
+        session.output += output
+        if session.turns == 1:
+            session.first_context = ctx
+        session.last_context = ctx
+    return session
 
 
 def _codex_usage(block: object) -> tuple[int, int, int, int, int] | None:
@@ -759,6 +796,172 @@ def report(cfg: Config) -> int:
     return _dcio.EXIT_OK
 
 
+# ---------------------------------------------------------------- project mode
+#
+# Chunks carry `done_at` and build time is kept as sessions, so a chunk's window
+# is (previous chunk done, this chunk done], clipped to the start of the time
+# session it finished in. Calls in a time session but in no chunk window are
+# `outside` -- planning, review, the Gate 5 report. Only Claude transcripts
+# carry per-call timestamps, so this is Claude-only and says so.
+
+PROJECT_FIELDS = ("calls", "fresh", "read", "output")
+
+
+def _when(text: str):
+    from datetime import datetime, timezone
+    try:
+        when = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def root_needles(root: Path) -> tuple[str, ...]:
+    """Spellings of `root` as a transcript line holds them (JSON-escaped, lower-case)."""
+    posix = root.as_posix().lower().rstrip("/")
+    forms = {posix, posix.replace("/", "\\\\")}
+    if len(posix) > 2 and posix[1] == ":":  # c:/x -> /c/x (Git Bash)
+        forms.add(f"/{posix[0]}{posix[2:]}")
+    return tuple(sorted(forms))
+
+
+def iter_claude_project(root: Path) -> Iterable[Path]:
+    yield from iter_claude(root)
+    yield from sorted(root.glob("*/*/subagents/*.jsonl"))
+
+
+def chunk_windows(data: dict) -> tuple[list[tuple[str, object, object]], list[str], list]:
+    """[(mid/cid, start, end)], chunks done with no window, and the time sessions."""
+    sessions = []
+    for s in data.get("time", []):
+        start, end = _when(s.get("start", "")), _when(s.get("end", ""))
+        if start and end and end >= start:
+            sessions.append((start, end))
+    done = []
+    for mid, chunks in data.get("chunks", {}).items():
+        for c in chunks:
+            end = _when(c.get("done_at") or "") if c.get("done") else None
+            if end:
+                done.append((end, f"{mid}/{c.get('id')}"))
+    done.sort()
+    windows, unwindowed, prev = [], [], None
+    for end, key in done:
+        home = [s for s, e in sessions if s <= end <= e]
+        start = max([t for t in (prev, max(home) if home else None) if t], default=None)
+        if start is None:
+            unwindowed.append(key)
+        else:
+            windows.append((key, start, end))
+        prev = end
+    return windows, unwindowed, sessions
+
+
+def _zero() -> dict:
+    return {name: 0 for name in PROJECT_FIELDS}
+
+
+def project_tokens(root: Path, claude: Path | None) -> dict:
+    import dc_project
+
+    data = dc_project.load(root / _dcio.AGENT_DIR_NAME)
+    windows, unwindowed, sessions = chunk_windows(data)
+    chunks = {key: _zero() for key, _, _ in windows}
+    milestones: dict[str, dict] = {}
+    for key in chunks:
+        milestones.setdefault(key.split("/")[0], _zero())
+    outside, files = _zero(), 0
+    earliest = min((s for s, _ in sessions), default=None)
+    if claude is not None and claude.is_dir() and earliest is not None:
+        needles = root_needles(root)
+        for path in iter_claude_project(claude):
+            try:
+                if path.stat().st_mtime < earliest.timestamp():
+                    continue
+            except OSError:
+                continue
+            parsed = read_claude(path, needles)
+            if parsed is None or not parsed.mentions:
+                continue
+            files += 1
+            for stamp, inp, created, read, output in parsed.calls:
+                when = _when(stamp)
+                if when is None:
+                    continue
+                key = next((k for k, s, e in windows if s < when <= e), None)
+                if key is None and not any(s <= when <= e for s, e in sessions):
+                    continue
+                cells = [chunks[key], milestones[key.split("/")[0]]] if key else [outside]
+                for cell in cells:
+                    cell["calls"] += 1
+                    cell["fresh"] += inp + created
+                    cell["read"] += read
+                    cell["output"] += output
+    return {"root": str(root), "transcripts": files, "chunks": chunks,
+            "milestones": milestones, "outside": outside, "unwindowed": unwindowed,
+            "coverage": "partial: claude transcripts only; windows from chunk done_at "
+                        "and time sessions; a transcript counts when it names the root"}
+
+
+def print_project(result: dict) -> None:
+    print(f"DRAINCLAMP: project tokens  {Path(result['root']).name}  "
+          f"transcripts={result['transcripts']}")
+    print(f"COVERAGE: {result['coverage']}")
+    print(f"{'':<14}{'calls':>7}{'fresh':>12}{'read':>14}{'output':>10}")
+
+    def row(label: str, cell: dict) -> None:
+        print(f"{label:<14}" + rcell(num(cell["calls"]), 7) + rcell(num(cell["fresh"]), 12)
+              + rcell(num(cell["read"]), 14) + rcell(num(cell["output"]), 10))
+
+    for mid, total in result["milestones"].items():
+        for key, cell in result["chunks"].items():
+            if key.split("/")[0] == mid:
+                row(key, cell)
+        row(f"{mid} total", total)
+    row("outside", result["outside"])
+    if result["unwindowed"]:
+        print(f"no window (done outside any time session): {', '.join(result['unwindowed'])}")
+
+
+def save_project(root: Path, result: dict) -> int:
+    """Store the aggregate in the sidecar for the board. Counts only, never text."""
+    import dc_project
+    from datetime import datetime, timezone
+
+    agent = root / _dcio.AGENT_DIR_NAME
+    if not dc_project.sidecar_path(agent).is_file():
+        raise _dcio.DcError("no .agent/drainclamp-project.json; nothing to attribute to")
+    keep = {k: result[k] for k in ("transcripts", "chunks", "milestones", "outside",
+                                    "unwindowed", "coverage")}
+    keep["at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    def apply(data: dict) -> dict:
+        data["tokens"] = keep
+        return data
+
+    return dc_project.mutate(agent, apply)["rev"]
+
+
+def project_report(cfg: Config) -> int:
+    try:
+        result = project_tokens(cfg.project, cfg.claude)
+    except _dcio.DcError as exc:
+        print(f"DRAINCLAMP: {exc}", file=sys.stderr)
+        return exc.code
+    if cfg.save:
+        try:
+            rev = save_project(cfg.project, result)
+        except _dcio.DcError as exc:
+            print(f"DRAINCLAMP: {exc}", file=sys.stderr)
+            return exc.code
+    if cfg.as_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print_project(result)
+    if cfg.save:
+        print(f"DRAINCLAMP: tokens saved to .agent/drainclamp-project.json (rev {rev})")
+    return _dcio.EXIT_OK
+
+
 def parse_args(argv: list[str] | None = None) -> Config:
     parser = argparse.ArgumentParser(prog="dc_tokens.py", description=__doc__)
     parser.add_argument("--claude", default=None,
@@ -776,7 +979,13 @@ def parse_args(argv: list[str] | None = None) -> Config:
     parser.add_argument("--no-static", action="store_true",
                         help="skip the static skill-size table")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--project", default=None, metavar="ROOT",
+                        help="attribute Claude usage to ROOT's chunks and milestones")
+    parser.add_argument("--save", action="store_true",
+                        help="with --project: store the totals in ROOT's sidecar for the board")
     args = parser.parse_args(argv)
+    if args.save and not args.project:
+        parser.error("--save needs --project")
 
     claude_arg = args.claude or args.transcripts
     any_host = any((claude_arg, args.codex, args.grok))
@@ -796,12 +1005,15 @@ def parse_args(argv: list[str] | None = None) -> Config:
         claude_explicit=bool(claude_arg),
         codex_explicit=bool(args.codex),
         grok_explicit=bool(args.grok),
+        project=Path(args.project).expanduser().resolve() if args.project else None,
+        save=args.save,
     )
     return cfg
 
 
 def main() -> int:
-    return report(parse_args())
+    cfg = parse_args()
+    return project_report(cfg) if cfg.project else report(cfg)
 
 
 if __name__ == "__main__":

@@ -124,9 +124,16 @@ check("a piped entry is UNSAFE-COMMAND (exit 4)",
 check("nothing was executed for the unsafe entry",
       not (repo / "out.txt").exists())
 
-set_verify(repo, [{"id": "custom", "argv": ["node", "scripts/custom-check.js"],
-                   "cwd": ".", "tier": "milestone"}])
-out = verify(repo, "--tier", "milestone")
+# host-approved records are tied to a tree, so this part runs in a git copy
+rec = fixtures / "repo_rec"
+if not rec.exists():
+    shutil.copytree(repo, rec)
+    for cmd in (["init", "-q"], ["add", "-A"],
+                ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]):
+        subprocess.run(["git", *cmd], cwd=rec, capture_output=True)
+set_verify(rec, [{"id": "custom", "argv": ["node", "scripts/custom-check.js"],
+                  "cwd": ".", "tier": "milestone"}])
+out = verify(rec, "--tier", "milestone")
 digest_line = next((ln for ln in out.stdout.splitlines() if "digest:" in ln), "")
 digest = digest_line.split("digest:")[-1].strip()
 check("a non-allowlisted entry asks for approval (exit 4)",
@@ -138,26 +145,45 @@ check("an approval-only tier is never green",
       "NO-CHECKS-RUN" in out.stdout and out.returncode != 0,
       next((ln for ln in out.stdout.splitlines() if ln.startswith("RESULT")), ""))
 
-out = verify(repo, "--record", "custom", "--digest", "sha256:deadbeefdead",
+out = verify(rec, "--record", "custom", "--digest", "sha256:deadbeefdead",
              "--status", "pass")
 check("a mismatched digest is refused", out.returncode == 4 and "digest mismatch" in out.stderr,
       out.stderr.strip().splitlines()[0] if out.stderr else "")
 check("nothing was recorded for the mismatch",
-      not (repo / ".agent/verify-records.json").exists()
-      or "custom" not in json.loads((repo / ".agent/verify-records.json")
+      not (rec / ".agent/verify-records.json").exists()
+      or "custom" not in json.loads((rec / ".agent/verify-records.json")
                                     .read_text(encoding="utf-8")))
 
-out = verify(repo, "--record", "custom", "--digest", digest, "--status", "pass")
+out = verify(rec, "--record", "custom", "--digest", digest, "--status", "pass")
 check("the issued digest is accepted", out.returncode == 0 and "RECORDED" in out.stdout,
       out.stdout.strip())
-out = verify(repo, "--tier", "milestone")
+out = verify(rec, "--tier", "milestone")
 check("a recorded pass satisfies that entry",
       out.returncode == 0 and "host-approved record" in out.stdout,
       out.stdout.splitlines()[1] if len(out.stdout.splitlines()) > 1 else "")
 
-set_verify(repo, [{"id": "custom", "argv": ["node", "scripts/custom-check.js", "--strict"],
+(rec / "calc_extra.py").write_text("X = 1\n", encoding="utf-8")
+out = verify(rec, "--tier", "milestone")
+check("a code change after recording makes the record stale",
+      out.returncode == 4 and "stale:" in out.stdout and "host-approved" not in out.stdout,
+      f"rc={out.returncode}")
+out = verify(rec, "--record", "custom", "--digest", digest, "--status", "pass")
+out = verify(rec, "--tier", "milestone")
+check("recording again for the new tree satisfies it",
+      out.returncode == 0 and "host-approved record" in out.stdout, f"rc={out.returncode}")
+(rec / ".agent" / "scratch.txt").write_text("state churn", encoding="utf-8")
+out = verify(rec, "--tier", "milestone")
+check("changes under .agent/ do not stale a record", out.returncode == 0, f"rc={out.returncode}")
+records = json.loads((rec / ".agent/verify-records.json").read_text(encoding="utf-8"))
+records["custom"].pop("tree")
+(rec / ".agent/verify-records.json").write_text(json.dumps(records), encoding="utf-8")
+out = verify(rec, "--tier", "milestone")
+check("a record without a tree (pre-1.3) is stale", out.returncode == 4, f"rc={out.returncode}")
+check("a non-git root yields no fingerprint", dc_verify.tree_fingerprint(Path(tempfile.mkdtemp())) is None)
+
+set_verify(rec, [{"id": "custom", "argv": ["node", "scripts/custom-check.js", "--strict"],
                    "cwd": ".", "tier": "milestone"}])
-out = verify(repo, "--tier", "milestone")
+out = verify(rec, "--tier", "milestone")
 check("editing the entry invalidates its record",
       out.returncode == 4 and dc_verify.APPROVAL in out.stdout, f"rc={out.returncode}")
 
