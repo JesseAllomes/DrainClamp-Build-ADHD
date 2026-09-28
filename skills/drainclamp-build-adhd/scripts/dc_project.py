@@ -560,6 +560,12 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
         t = _find(data["todos"], _text(a, "id", True), "to-do")
         t["done"] = op == "todo.done"
         t["done_at"] = stamp if t["done"] else None
+        flow = data.get("flow") or {}
+        # A status a task set lasts only while a task of that owner is still open.
+        if flow.get("source") == "task" and not any(
+                not x.get("done") and OWNERS.get(x.get("owner")) == flow.get("state")
+                for x in data["todos"]):
+            data["flow"] = None
         return f"to-do {t['id']} {'done' if t['done'] else 'reopened'}"
     if op == "time.touch":
         touch_time(data, now)
@@ -670,7 +676,7 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
         data["todos"].append({"id": tid, "text": _capped(_text(a, "text", True), "text"),
                               "milestone": _text(a, "milestone"), "owner": owner,
                               "done": False, "at": stamp, "done_at": None})
-        data["flow"] = {"state": OWNERS[owner], "note": "", "at": stamp}
+        data["flow"] = {"state": OWNERS[owner], "note": "", "at": stamp, "source": "task"}
         return f"task {tid} added"
     if op == "outcome.set":
         by = _text(a, "by") or "user"

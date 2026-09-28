@@ -36,6 +36,7 @@ PAD_MIN = 30
 CACHE_NAME = "effort.json"
 ASSIGN_NAME = "effort-assign.json"
 TITLE_CAP = 80
+TITLE_MIN = 12   # "1" or "--all" answers a menu; the title is the first real prompt
 SUGGEST_MIN = 3
 SESSIONS_KEPT = 300
 HOSTS = ("claude", "codex", "grok")
@@ -57,6 +58,14 @@ def _ts(value) -> datetime | None:
 def _clip(text: str) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= TITLE_CAP else text[:TITLE_CAP - 1] + "\u2026"
+
+
+def _title(current: str, text: str) -> str:
+    """Keep the first prompt of real length; a short reply only stands in until one comes."""
+    if current and len(current) >= TITLE_MIN:
+        return current
+    clipped = _clip(text)
+    return clipped if len(clipped) >= TITLE_MIN or not current else current
 
 
 def default_sources() -> dict[str, Path]:
@@ -184,7 +193,7 @@ def read_claude(path: Path, match: Matcher) -> dict:
             if text is None:
                 continue
             s["cwd"] = s["cwd"] or r.get("cwd", "")
-            s["title"] = s["title"] or _clip(text)
+            s["title"] = _title(s["title"], text)
             cur = [when, last_out, None]
             s["turns"].append(cur)
     return s
@@ -203,7 +212,7 @@ def read_codex(path: Path, match: Matcher) -> dict:
         if when is None:
             continue
         if kind == "user_message":
-            s["title"] = s["title"] or _clip(p.get("message", ""))
+            s["title"] = _title(s["title"], p.get("message", ""))
             cur = [when, last_out, None]
             s["turns"].append(cur)
         elif kind in ("agent_message", "task_complete") or \

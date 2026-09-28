@@ -206,7 +206,8 @@ check("board.html is served, not the fallback", page == html)
 sent = set(re.findall(r'"([a-z]+\.[a-z]+)"', html))  # every quoted "area.verb" is an op name
 check("page sends only known operations", sent and sent <= set(dc_project.OPS),
       sorted(sent - set(dc_project.OPS)))
-for path in ("/api/projects", "/api/project?id=", "/api/op", "/api/create", "/api/status"):
+for path in ("/api/projects", "/api/project?id=", "/api/op", "/api/create", "/api/status", "/api/task",
+             "/api/config", "/api/effort", "/api/effort/refresh", "/api/effort/assign"):
     check(f"page calls {path}", f'"{path}' in html)
 
 

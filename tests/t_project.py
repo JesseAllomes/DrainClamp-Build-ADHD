@@ -330,6 +330,14 @@ check("task.add records owner and sets flow", dd["todos"][-1]["owner"] == "you" 
 check("a finished roadmap with an open task is back in progress",
       dc_project.board_status(drows, dd, "active")["state"] == "need")
 check("next step falls back to the first open task", dc_project.next_step(drows, dd) == "add CSV export")
+dc_project.apply_op(dd, done_repo, "todo.done", {"id": dd["todos"][-1]["id"]})
+check("ticking your last task clears the status the task set", dd["flow"] is None and
+      dc_project.board_status(drows, dd, "active")["state"] == "close", dd["flow"])
+dc_project.apply_op(dd, done_repo, "todo.undo", {"id": dd["todos"][-1]["id"]})
+dc_project.apply_op(dd, done_repo, "flow.set", {"state": "need"})
+dc_project.apply_op(dd, done_repo, "todo.done", {"id": dd["todos"][-1]["id"]})
+check("a status set by hand survives ticking tasks", (dd["flow"] or {}).get("state") == "need", dd["flow"])
+dc_project.apply_op(dd, done_repo, "todo.undo", {"id": dd["todos"][-1]["id"]})
 dd["flow"] = None
 check("an open task the person owns means waiting on them",
       dc_project.board_status(drows, dd, "active") == {"state": "need", "guessed": False})
