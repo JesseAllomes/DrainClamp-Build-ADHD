@@ -11,9 +11,12 @@ These checks are about arrangement, not content. Every other suite runs the
 scripts; this one asserts the tree those scripts are reached through.
 """
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -162,6 +165,12 @@ check("no test fixtures committed",
 # skill's own claim and change how every host must install it.
 for forbidden in ("requirements.txt", "pyproject.toml", "setup.py"):
     check(f"no {forbidden} (scripts are stdlib-only)", forbidden not in TRACKED)
+
+# A suite run on its own must not register its temp repos in the user's real
+# registry; dc_selftest isolates it, but a standalone run only has this line.
+leaky = [p.name for p in sorted((ROOT / "tests").glob("t_*.py"))
+         if "DRAINCLAMP_HOME" not in p.read_text(encoding="utf-8")]
+check("every suite isolates the project registry", not leaky, ", ".join(leaky))
 
 print()
 print(f"FAILURES: {fails if fails else 'none'}")

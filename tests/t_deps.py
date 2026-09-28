@@ -9,6 +9,7 @@ The column is optional. The row parser already tolerated extra cells and
 ignored them, so a four-column table means exactly what it always did and no
 state file needs migrating.
 """
+import os
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 if not SCRIPTS.is_dir():
     SCRIPTS = ROOT / "skills" / "drainclamp-build" / "scripts"
 

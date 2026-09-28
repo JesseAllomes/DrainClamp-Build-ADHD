@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 SOURCE = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 import dc_install  # noqa: E402

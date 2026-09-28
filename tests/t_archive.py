@@ -1,10 +1,12 @@
 """DC:LOG rollover and --promote-to-agents checks for dc_state.py."""
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 sys.path.insert(0, str(SCRIPTS))
 import _dcio  # noqa: E402
 import dc_state  # noqa: E402

@@ -1,11 +1,13 @@
 """Registry and session-menu checks for dc_registry.py / dc_session.py."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 sys.path.insert(0, str(SCRIPTS))
 import dc_registry  # noqa: E402
 import dc_session  # noqa: E402

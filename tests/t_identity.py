@@ -12,8 +12,11 @@ everything else already agrees. They are deliberately name-agnostic -- this
 file is identical in the baseline and in any fork of it.
 """
 import json
+import os
 import re
 import sys
+import tempfile
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent

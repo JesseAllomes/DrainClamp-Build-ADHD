@@ -10,6 +10,7 @@ These checks pin the refusal: no state means nothing executes, the exit code
 is the existing NO-CHECKS code rather than a new one, discovery still works
 before Gate 2 has run, and the escape hatch is explicit.
 """
+import os
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 if not SCRIPTS.is_dir():
     SCRIPTS = ROOT / "skills" / "drainclamp-build" / "scripts"
 

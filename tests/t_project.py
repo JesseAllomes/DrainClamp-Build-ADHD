@@ -1,5 +1,6 @@
 """Sidecar checks for dc_project.py: chunks, errors, to-dos, time, savings, capsule."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -7,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 sys.path.insert(0, str(SCRIPTS))
 import dc_project  # noqa: E402
 import dc_state  # noqa: E402

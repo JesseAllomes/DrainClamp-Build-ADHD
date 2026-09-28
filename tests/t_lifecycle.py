@@ -1,5 +1,6 @@
 """Project lifecycle: create from a charter, complete, reopen -- CLI functions and board."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 sys.path.insert(0, str(SCRIPTS))
 import dc_board  # noqa: E402
 import dc_project  # noqa: E402

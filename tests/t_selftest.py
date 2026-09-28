@@ -3,6 +3,7 @@
 A fixture that quietly fails to materialise turns a real assertion into a
 vacuous one, so the manifest has to say what was skipped and why.
 """
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 sys.path.insert(0, str(SCRIPTS))
 import dc_map  # noqa: E402
 import dc_selftest  # noqa: E402

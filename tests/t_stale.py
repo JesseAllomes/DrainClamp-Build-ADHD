@@ -11,6 +11,7 @@ caller *reasoned from* rather than the one on disk at write time. These checks
 pin the refusal, the survival of the committed work, the retry path, and the
 unchanged default.
 """
+import os
 import re
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "drainclamp-build-adhd" / "scripts"
+os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 if not SCRIPTS.is_dir():
     SCRIPTS = ROOT / "skills" / "drainclamp-build" / "scripts"
 
