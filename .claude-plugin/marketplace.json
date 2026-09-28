@@ -9,7 +9,7 @@
       "name": "drainclamp-build-adhd",
       "source": "./",
       "description": "A session gate plus six conditional gates over one repository change, with durable state on disk so the work survives a context reset. Output is shaped for a reader with ADHD: action first, one question at a time, fixed re-entry shape after a reset.",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "author": {
         "name": "Jesse Allomes"
       },
