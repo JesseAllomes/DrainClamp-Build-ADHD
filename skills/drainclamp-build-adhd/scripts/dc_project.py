@@ -50,6 +50,16 @@ AREAS = ("Security", "Data retention", "Guardrails", "Confirmation checks", "Tes
 HEALTH = ("on", "risk", "off")
 PROFILE_CAP = 100
 UPDATES_KEPT = 50
+FLOW = ("need", "run")          # Waiting on you / Moving; unset means the board guesses
+OWNERS = {"claude": "run", "you": "need"}
+OUTCOME_BY = ("claude", "user")
+# Wording on the current step that usually means the next move is the person's.
+NEEDS_YOU = re.compile(r"\b(user|await\w*|live[- ]test\w*|pastes?|approv\w*|sign[- ]off|you|your)\b", re.I)
+FREQUENCY = {"daily": 240, "weekly": 52, "fortnightly": 26, "monthly": 12, "quarterly": 4,
+             "yearly": 1}
+FREQUENCY_HINTS = (("fortnightly", r"fortnight"), ("monthly", r"\bmonthly\b|every month"),
+                   ("weekly", r"\bweekly\b|every week"), ("quarterly", r"\bquarterly\b"),
+                   ("daily", r"\bdaily\b|every day|each day|nightly"))
 
 
 def _now() -> datetime:
@@ -72,7 +82,7 @@ def empty() -> dict:
     return {"schema": SCHEMA_VERSION, "rev": 0, "chunks": {}, "errors": [],
             "todos": [], "time": [], "savings": {}, "runs": [], "updates": [],
             "health": None, "profile": {"summary": "", "features": [], "safeguards": []},
-            "tokens": None}
+            "tokens": None, "flow": None, "outcome": None}
 
 
 def sidecar_path(agent: Path) -> Path:
@@ -92,7 +102,9 @@ def _validate(data) -> dict:
             or any(not isinstance(out[k], list) for k in LISTS) \
             or not isinstance(out["profile"], dict) \
             or not (out["health"] is None or isinstance(out["health"], dict)) \
-            or not (out["tokens"] is None or isinstance(out["tokens"], dict)):
+            or not (out["tokens"] is None or isinstance(out["tokens"], dict)) \
+            or not (out["flow"] is None or isinstance(out["flow"], dict)) \
+            or not (out["outcome"] is None or isinstance(out["outcome"], dict)):
         raise DcError("sidecar fields have the wrong types; left untouched")
     prof = {"summary": "", "features": [], "safeguards": []}
     prof.update(out["profile"])
@@ -165,6 +177,49 @@ def current_milestone(rows: list[dict]) -> dict | None:
     return None
 
 
+def board_status(rows: list[dict], data: dict, registry_status: str) -> dict:
+    """Which board group a project sits in: need | run | close | done.
+
+    Completed is the registry's word. A finished roadmap with no open task is ready to
+    close. Otherwise the sidecar's `flow` (set by Claude or the person) decides; an open
+    task the person owns means waiting on them; failing both, the wording of the current
+    step is a guess, and says so.
+    """
+    if registry_status == "complete":
+        return {"state": "done", "guessed": False}
+    open_tasks = [t for t in data["todos"] if not t.get("done")]
+    ms = current_milestone(rows)
+    if ms is None and not open_tasks:
+        return {"state": "close", "guessed": False}
+    flow = data.get("flow") or {}
+    if flow.get("state") in FLOW:
+        return {"state": flow["state"], "guessed": False, "note": flow.get("note", ""),
+                "at": flow.get("at")}
+    if any(t.get("owner") == "you" for t in open_tasks):
+        return {"state": "need", "guessed": False}
+    text = ms["goal"] if ms else ""
+    return {"state": "need" if NEEDS_YOU.search(text) else "run", "guessed": True}
+
+
+def next_step(rows: list[dict], data: dict) -> str | None:
+    """The current milestone's goal, else the first open task."""
+    ms = current_milestone(rows)
+    if ms:
+        return ms["goal"]
+    task = next((t for t in data["todos"] if not t.get("done")), None)
+    return task["text"] if task else None
+
+
+def guess_frequency(root: Path) -> str | None:
+    """How often the finished tool runs, from the project's own wording; a suggestion only."""
+    agent = root / _dcio.AGENT_DIR_NAME
+    text = " ".join(_dcio.read_text(agent / n) or "" for n in
+                    (_dcio.STATE_NAME, "drainclamp-log-archive.md", CHARTER_NAME))
+    hits = {k: len(re.findall(rx, text, re.I)) for k, rx in FREQUENCY_HINTS}
+    best = max(hits, key=hits.get)
+    return best if hits[best] else None
+
+
 # -- time --------------------------------------------------------------------
 
 def minutes_of(session: dict) -> float:
@@ -201,7 +256,32 @@ def global_rate(home: str | None) -> float | None:
     return float(rate) if isinstance(rate, (int, float)) else None
 
 
-def savings(data: dict, home: str | None) -> dict:
+def set_global_rate(home: str | None, rate: float | None) -> float | None:
+    """Store the default hourly rate in the registry home's config.json, keeping other keys."""
+    if rate is not None and (not isinstance(rate, (int, float)) or isinstance(rate, bool)
+                             or rate < 0 or rate > 100000):
+        raise DcError("hourly rate must be a number from 0 to 100000")
+    folder = dc_registry.home_dir(home)
+    folder.mkdir(parents=True, exist_ok=True)
+    with _dcio.FileLock(folder, name=".config.lock"):
+        text = _dcio.read_text(folder / CONFIG_NAME)
+        try:
+            cfg = json.loads(text) if text else {}
+        except ValueError:
+            raise DcError(f"{folder / CONFIG_NAME} is not valid JSON; left untouched") from None
+        if not isinstance(cfg, dict):
+            raise DcError(f"{folder / CONFIG_NAME} is not a JSON object; left untouched")
+        if rate is None:
+            cfg.pop("hourly_rate", None)
+        else:
+            cfg["hourly_rate"] = float(rate)
+        _dcio.atomic_write(folder / CONFIG_NAME, json.dumps(cfg, indent=2, sort_keys=True) + "\n")
+    return rate
+
+
+def savings(data: dict, home: str | None, you_minutes: float | None = None) -> dict:
+    """Value figures. Build cost uses `you_minutes` (measured hands-on time) when given,
+    else the sidecar's own time sessions."""
     s = data["savings"]
     rate = s.get("hourly_rate")
     rate = float(rate) if isinstance(rate, (int, float)) else global_rate(home)
@@ -217,8 +297,9 @@ def savings(data: dict, home: str | None) -> dict:
     out.update(realised(data, s))
     if rate is not None and out["realised_hours"] is not None:
         out["realised_cost"] = out["realised_hours"] * rate
+    out["build_minutes"] = build_minutes(data) if you_minutes is None else you_minutes
     if rate is not None:
-        out["build_cost"] = build_minutes(data) / 60 * rate
+        out["build_cost"] = out["build_minutes"] / 60 * rate
         if out["annual_cost"]:
             out["payback_years"] = out["build_cost"] / out["annual_cost"]
     return out
@@ -254,6 +335,8 @@ def summary(data: dict, home: str | None) -> dict:
                        "plan": sum(1 for g in data["profile"]["safeguards"]
                                    if g.get("status") != "in")},
         "completed": data.get("completed"),
+        "flow": data.get("flow"),
+        "outcome": data.get("outcome"),
         "rev": data["rev"],
     }
 
@@ -356,7 +439,7 @@ OPS = ("chunk.add", "chunk.done", "chunk.undo", "chunk.note", "error.add", "erro
        "todo.add", "todo.done", "todo.undo", "time.touch", "time.add", "time.delete",
        "savings.set", "profile.summary", "profile.seed", "feature.add", "feature.edit",
        "feature.delete", "safeguard.add", "safeguard.edit", "safeguard.delete",
-       "health.set", "run.add", "run.delete")
+       "health.set", "run.add", "run.delete", "flow.set", "task.add", "outcome.set")
 
 
 def _capped(value: str, key: str) -> str:
@@ -570,6 +653,34 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
         r = _find(data["runs"], _text(a, "id", True), "run")
         data["runs"].remove(r)
         return f"run {r['id']} deleted"
+    if op == "flow.set":
+        state = _text(a, "state", True)
+        if state == "auto":
+            data["flow"] = None
+            return "status left to the board"
+        if state not in FLOW:
+            raise DcError(f"state must be one of {', '.join(FLOW)} or auto")
+        data["flow"] = {"state": state, "note": _capped(_text(a, "note"), "note"), "at": stamp}
+        return "waiting on you" if state == "need" else "moving"
+    if op == "task.add":
+        owner = _text(a, "owner") or "claude"
+        if owner not in OWNERS:
+            raise DcError(f"owner must be one of {', '.join(OWNERS)}")
+        tid = _next_id(data["todos"], "t")
+        data["todos"].append({"id": tid, "text": _capped(_text(a, "text", True), "text"),
+                              "milestone": _text(a, "milestone"), "owner": owner,
+                              "done": False, "at": stamp, "done_at": None})
+        data["flow"] = {"state": OWNERS[owner], "note": "", "at": stamp}
+        return f"task {tid} added"
+    if op == "outcome.set":
+        by = _text(a, "by") or "user"
+        if by not in OUTCOME_BY:
+            raise DcError(f"by must be one of {', '.join(OUTCOME_BY)}")
+        text = _capped(_text(a, "text"), "text")
+        prof["summary"] = text if a.get("text") is not None else prof["summary"]
+        confirmed = bool(a.get("confirmed")) if by == "user" else False
+        data["outcome"] = {"by": by, "confirmed": confirmed, "at": stamp}
+        return "outcome confirmed" if confirmed else "outcome saved"
     raise DcError(f"unknown operation: {op}")
 
 

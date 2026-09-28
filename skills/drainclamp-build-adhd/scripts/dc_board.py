@@ -22,24 +22,26 @@ It is deliberately narrow:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import hmac
 import json
 import secrets
 import socket
 import sys
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import _dcio
+import dc_effort
 import dc_project
 import dc_registry
 import dc_state
 from _dcio import DcError
 
 DEFAULT_PORT = 8765
+ACTIVITY_DAYS = 30
 MAX_BODY = 64 * 1024
 PAGE = Path(__file__).resolve().parent / "board.html"
 LOOPBACK = ("127.0.0.1", "localhost")
@@ -68,7 +70,40 @@ def _log_lines(state) -> list[str]:
             if l.startswith("- ")]
 
 
-def overview(entry: dict, home: str | None) -> dict:
+def days(today: datetime | None = None) -> list[str]:
+    """The activity window's dates, oldest first, ending today (UTC)."""
+    today = (today or datetime.now(timezone.utc)).date()
+    return [(today - timedelta(days=ACTIVITY_DAYS - 1 - k)).isoformat() for k in range(ACTIVITY_DAYS)]
+
+
+def activity(root: Path, window: list[str]) -> list[int]:
+    """Log entries per day over `window` -- the board's updates-per-day series."""
+    counts: dict[str, int] = {}
+    for when in dc_effort.log_stamps(root):
+        key = when.astimezone(timezone.utc).date().isoformat()
+        counts[key] = counts.get(key, 0) + 1
+    return [counts.get(d, 0) for d in window]
+
+
+def _effort(effort: dict | None, pid: str) -> dict | None:
+    return (effort or {}).get("projects", {}).get(pid) if effort else None
+
+
+def _enrich(item: dict, root: Path, rows: list[dict], data: dict, entry: dict,
+            home: str | None, effort: dict | None, window: list[str]) -> None:
+    mine = _effort(effort, item["id"])
+    item["board"] = dc_project.board_status(rows, data, entry["status"])
+    item["next"] = dc_project.next_step(rows, data)
+    item["activity"] = activity(root, window)
+    item["effort"] = mine
+    item["value"] = dc_project.savings(data, home, mine["you_min"] if mine else None)
+    item["outcome"] = {"text": data["profile"]["summary"], **(data.get("outcome") or {})}
+    item["frequency"] = dc_project.guess_frequency(root)
+    item["tasks_open"] = sum(1 for t in data["todos"] if not t.get("done"))
+
+
+def overview(entry: dict, home: str | None, effort: dict | None = None,
+             window: list[str] | None = None) -> dict:
     root = Path(entry["root"])
     item = {"id": project_id(entry["root"]), "name": entry.get("name") or root.name,
             "root": entry["root"], "status": entry["status"], "last": entry.get("last"),
@@ -81,30 +116,52 @@ def overview(entry: dict, home: str | None) -> dict:
         ms = dc_project.current_milestone(rows)
         item["milestone"] = ms["id"] if ms else None
         item["milestone_goal"] = ms["goal"] if ms else None
-        item["summary"] = dc_project.summary(dc_project.load(root / _dcio.AGENT_DIR_NAME), home)
+        data = dc_project.load(root / _dcio.AGENT_DIR_NAME)
+        item["summary"] = dc_project.summary(data, home)
+        _enrich(item, root, rows, data, entry, home, effort, window or days())
     except (DcError, KeyError, ValueError) as exc:
         item["error"] = str(exc)  # one broken project must not blank the board
     return item
 
 
-def detail(entry: dict, home: str | None) -> dict:
+def detail(entry: dict, home: str | None, effort: dict | None = None) -> dict:
     root = Path(entry["root"])
     agent = root / _dcio.AGENT_DIR_NAME
     state = _state(root)
     rows = dc_state.parse_roadmap(state.sections["ROADMAP"]) if state else []
     data = dc_project.load(agent)
     ms = dc_project.current_milestone(rows)
-    return {"id": project_id(entry["root"]), "name": entry.get("name") or root.name,
+    window = days()
+    item = {"id": project_id(entry["root"]), "name": entry.get("name") or root.name,
             "root": entry["root"], "status": entry["status"], "last": entry.get("last"),
             "roadmap": rows, "milestone": ms["id"] if ms else None, "data": data,
             "summary": dc_project.summary(data, home), "log": _log_lines(state),
-            "charter": dc_project.load_charter(agent), "ops": list(dc_project.OPS)}
+            "charter": dc_project.load_charter(agent), "ops": list(dc_project.OPS),
+            "days": window}
+    _enrich(item, root, rows, data, entry, home, effort, window)
+    return item
+
+
+def _effort_view(home: str | None) -> dict | None:
+    try:
+        return dc_effort.view(home)
+    except DcError:
+        return None  # a damaged cache hides the figures; it never blanks the board
+
+
+def effort_summary(effort: dict | None) -> dict | None:
+    if not effort:
+        return None
+    return {"computed_at": effort.get("computed_at"), "scanned": effort.get("scanned"),
+            "rule": effort.get("rule"), "unassigned_total": effort.get("unassigned_total"),
+            "assigned": effort.get("assigned", 0)}
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "dc_board"
     home: str | None = None
     token: str = ""
+    effort_sources: dict | None = None  # None = the real Claude/Codex/Grok folders
 
     def log_message(self, fmt, *args):  # keep the terminal quiet
         pass
@@ -154,10 +211,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if url.path == "/api/projects":
-                self._send(200, {"projects": [overview(e, self.home) for e in _entries(self.home)],
+                effort, window = _effort_view(self.home), days()
+                self._send(200, {"projects": [overview(e, self.home, effort, window)
+                                              for e in _entries(self.home)],
                                  "hourly_rate": dc_project.global_rate(self.home),
                                  "project_roots": [str(r) for r in
-                                                   dc_project.project_roots(self.home)]})
+                                                   dc_project.project_roots(self.home)],
+                                 "days": window, "effort": effort_summary(effort),
+                                 "frequencies": dc_project.FREQUENCY})
+                return
+            if url.path == "/api/effort":
+                effort = _effort_view(self.home)
+                self._send(200, {"effort": effort_summary(effort),
+                                 "sessions": (effort or {}).get("unassigned", [])})
                 return
             if url.path == "/api/project":
                 pid = (parse_qs(url.query).get("id") or [""])[0]
@@ -165,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
                 if entry is None:
                     self._send(404, {"error": f"no project {pid}"})
                     return
-                self._send(200, detail(entry, self.home))
+                self._send(200, detail(entry, self.home, _effort_view(self.home)))
                 return
         except DcError as exc:
             self._send(500, {"error": str(exc)})
@@ -207,7 +273,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         routes = {"/api/op": self._op, "/api/create": self._create,
-                  "/api/status": self._status}
+                  "/api/status": self._status, "/api/task": self._task,
+                  "/api/config": self._config, "/api/effort/refresh": self._effort_refresh,
+                  "/api/effort/assign": self._effort_assign}
         if path not in routes:
             self._send(404, {"error": "not found"})
             return
@@ -287,6 +355,78 @@ class Handler(BaseHTTPRequestHandler):
                          "rev": data["rev"]})
 
 
+    def _task(self, body: dict) -> None:
+        """Add a task; a completed project is reopened first, so the task has somewhere to go."""
+        found = self._project(body)
+        if found is None:
+            return
+        entry, rev = found
+        root = Path(entry["root"])
+        args = {"text": body.get("text"), "owner": body.get("owner") or "claude"}
+        if not isinstance(args["text"], str) or not args["text"].strip():
+            self._send(400, {"error": "text is required"})
+            return
+        try:
+            reopened = entry["status"] == "complete"
+            if reopened:
+                rev = dc_project.set_lifecycle(root, "active", self.home, expect=rev)["rev"]
+            result = []
+
+            def apply(data: dict) -> dict:
+                result.append(dc_project.apply_op(data, root, "task.add", args))
+                return data
+
+            data = dc_project.mutate(root / _dcio.AGENT_DIR_NAME, apply, expect=rev)
+        except DcError as exc:
+            code = 409 if "revision" in str(exc) else 400
+            self._send(code, {"error": str(exc)})
+            return
+        self._send(200, {"ok": True, "message": result[0] + (" and project reopened" if reopened else ""),
+                         "rev": data["rev"], "reopened": reopened})
+
+    def _config(self, body: dict) -> None:
+        if "hourly_rate" not in body:
+            self._send(400, {"error": "expected {hourly_rate}"})
+            return
+        try:
+            rate = dc_project.set_global_rate(self.home, body["hourly_rate"])
+        except DcError as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        self._send(200, {"ok": True, "hourly_rate": rate,
+                         "message": "hourly rate saved" if rate is not None else "hourly rate cleared"})
+
+    def _effort_refresh(self, body: dict) -> None:
+        try:
+            effort = dc_effort.refresh(self.home, self.effort_sources)
+        except DcError as exc:
+            self._send(500, {"error": str(exc)})
+            return
+        total = effort["unassigned_total"]
+        self._send(200, {"ok": True, "effort": effort_summary(effort),
+                         "message": f"time measured from {sum(effort['scanned'].values())} sessions; "
+                                    f"{total['prompts']} prompts unassigned"})
+
+    def _effort_assign(self, body: dict) -> None:
+        known = {project_id(e["root"]) for e in _entries(self.home)}
+        if body.get("accept") is True:
+            effort = _effort_view(self.home) or {}
+            items = {s["key"]: s["suggest"] for s in effort.get("unassigned", [])
+                     if s.get("suggest") in known}
+        else:
+            items = body.get("items")
+            if not isinstance(items, dict) or not all(
+                    isinstance(k, str) and (v is None or v in known) for k, v in items.items()):
+                self._send(400, {"error": "expected {items: {session key: project id or null}}"})
+                return
+        try:
+            dc_effort.assign(self.home, items)
+        except DcError as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        self._send(200, {"ok": True, "message": f"{len(items)} session(s) assigned"})
+
+
 class ExclusiveServer(ThreadingHTTPServer):
     """A port another process holds is refused, never shared.
 
@@ -304,8 +444,10 @@ class ExclusiveServer(ThreadingHTTPServer):
         super().server_bind()
 
 
-def make_server(home: str | None, port: int, token: str) -> ThreadingHTTPServer:
-    handler = type("BoundHandler", (Handler,), {"home": home, "token": token})
+def make_server(home: str | None, port: int, token: str,
+                effort_sources: dict | None = None) -> ThreadingHTTPServer:
+    handler = type("BoundHandler", (Handler,), {"home": home, "token": token,
+                                                "effort_sources": effort_sources})
     server = ExclusiveServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     return server

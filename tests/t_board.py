@@ -47,7 +47,15 @@ repo = make_repo("alpha", "| m1 | build | a.py | active |\n| m2 | ship | b.py | 
 make_repo("beta", "| m1 | only | c.py | done |")
 
 TOKEN = "test-token-123"
-server = dc_board.make_server(home=str(home), port=0, token=TOKEN)
+sessions = tmp / "sessions"  # fixture transcripts; the real Claude/Codex/Grok folders are never read
+(sessions / "claude" / "p").mkdir(parents=True)
+(sessions / "claude" / "p" / "s.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [
+    {"type": "user", "timestamp": "2026-09-01T10:00:00Z", "cwd": str(tmp / "elsewhere"),
+     "message": {"content": f"work on {tmp / 'beta'} then {tmp / 'beta'}/x and {tmp / 'beta'}/y"}},
+    {"type": "assistant", "timestamp": "2026-09-01T10:04:00Z", "message": {"content": []}},
+]), encoding="utf-8")
+SOURCES = {"claude": sessions / "claude", "codex": sessions / "none", "grok": sessions / "none"}
+server = dc_board.make_server(home=str(home), port=0, token=TOKEN, effort_sources=SOURCES)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 host, port = server.server_address
 BASE = f"http://127.0.0.1:{port}"
@@ -141,6 +149,53 @@ before = (repo / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8")
 call("/api/op", {"id": pid, "rev": 1, "op": "todo.add", "args": {"text": "y"}})
 after = (repo / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8")
 check("state file untouched by board writes", before == after)
+
+# 8b. board data and the m11 endpoints
+code, body = call("/api/projects")
+alpha = next(p for p in body["projects"] if p["name"] == "alpha")
+beta = next(p for p in body["projects"] if p["name"] == "beta")
+check("listing carries a 30-day window", len(body.get("days", [])) == dc_board.ACTIVITY_DAYS
+      and len(alpha.get("activity", [])) == dc_board.ACTIVITY_DAYS, body.get("days"))
+check("listing carries board status and next step",
+      alpha.get("board", {}).get("state") in ("need", "run") and alpha.get("next") == "build", alpha.get("board"))
+check("finished roadmap lists as ready to close", beta.get("board", {}).get("state") == "close", beta.get("board"))
+check("no effort cache yet means no figures, not an error", body.get("effort") is None and alpha.get("effort") is None)
+check("value is always present", isinstance(alpha.get("value"), dict) and "build_minutes" in alpha["value"])
+code, body = call("/api/config", {"hourly_rate": 55})
+check("hourly rate saved", code == 200 and dc_project.global_rate(str(home)) == 55.0, body)
+code, body = call("/api/config", {"hourly_rate": "lots"})
+check("bad hourly rate refused", code == 400, body)
+code, body = call("/api/config", {})
+check("config needs hourly_rate", code == 400, body)
+code, body = call("/api/effort/refresh", {})
+check("effort refresh reads only the given sources", code == 200 and body["effort"]["scanned"] == {"claude": 1}, body)
+code, body = call("/api/effort")
+sess = body.get("sessions", [])
+check("unassigned sessions are listed with a suggestion",
+      code == 200 and len(sess) == 1 and sess[0]["suggest"] == beta["id"], sess)
+code, body = call("/api/effort/assign", {"items": {sess[0]["key"]: "not-a-project"}})
+check("assigning to an unknown project is refused", code == 400, body)
+code, body = call("/api/effort/assign", {"accept": True})
+check("accept assigns suggestions", code == 200 and "1 session" in body.get("message", ""), body)
+code, body = call("/api/projects")
+beta = next(p for p in body["projects"] if p["name"] == "beta")
+check("assigned time lands on the project", (beta.get("effort") or {}).get("you_min") == 10.0, beta.get("effort"))
+check("its build cost uses your time", beta["value"]["build_minutes"] == 10.0 and beta["value"]["build_cost"] ==
+      10.0 / 60 * 55, beta["value"])
+code, body = call("/api/status", {"id": beta["id"], "rev": beta["summary"]["rev"], "status": "complete"})
+check("beta marked complete", code == 200, body)
+rev = body["rev"]
+code, body = call("/api/task", {"id": beta["id"], "rev": rev, "text": "add CSV export", "owner": "you"})
+check("a task on a completed project reopens it", code == 200 and body.get("reopened") is True, body)
+code, body = call("/api/projects")
+beta = next(p for p in body["projects"] if p["name"] == "beta")
+check("reopened project is waiting on you with the task as next step",
+      beta["status"] == "active" and beta["board"]["state"] == "need" and beta["next"] == "add CSV export",
+      (beta["status"], beta["board"], beta["next"]))
+code, body = call("/api/task", {"id": beta["id"], "rev": 0, "text": "stale"})
+check("stale task revision is 409", code == 409, body)
+code, body = call("/api/task", {"id": beta["id"], "rev": beta["summary"]["rev"], "text": "  "})
+check("empty task refused", code == 400, body)
 
 # 9. the page matches the API it drives: every op it sends exists, and its copies
 #    of dc_project's constants have not drifted

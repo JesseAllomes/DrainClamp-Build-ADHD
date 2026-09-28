@@ -301,6 +301,89 @@ check("material blanks are listed for Gate 1",
       "retention, never, approvals" in out, out)
 check("non-material blanks are never asked", "Blank, not asked: sponsor, stakeholders" in out, out)
 
+# -- board status, tasks, outcome, rate (m11) --------------------------------------
+flowrepo = make_repo("flowrepo", "| m1 | Wait for the user to run a live test | a.py | active |")
+done_repo = make_repo("donerepo", "| m1 | ship | a.py | done |")
+d = dc_project.empty()
+rows = dc_project.roadmap(flowrepo)
+st = dc_project.board_status(rows, d, "active")
+check("wording on the current step is only a guess", st == {"state": "need", "guessed": True}, st)
+dc_project.apply_op(d, flowrepo, "flow.set", {"state": "run"})
+st = dc_project.board_status(rows, d, "active")
+check("an explicit flow beats the guess", st["state"] == "run" and not st["guessed"], st)
+dc_project.apply_op(d, flowrepo, "flow.set", {"state": "auto"})
+check("flow auto hands it back to the guess", d["flow"] is None)
+try:
+    dc_project.apply_op(d, flowrepo, "flow.set", {"state": "later"})
+    check("unknown flow state refused", False)
+except dc_project.DcError:
+    check("unknown flow state refused", True)
+check("registry complete wins over everything",
+      dc_project.board_status(rows, d, "complete")["state"] == "done")
+dd = dc_project.empty()
+drows = dc_project.roadmap(done_repo)
+check("finished roadmap with no open task is ready to close",
+      dc_project.board_status(drows, dd, "active") == {"state": "close", "guessed": False})
+msg = dc_project.apply_op(dd, done_repo, "task.add", {"text": "add CSV export", "owner": "you"})
+check("task.add records owner and sets flow", dd["todos"][-1]["owner"] == "you" and
+      dd["flow"]["state"] == "need", (msg, dd["todos"], dd["flow"]))
+check("a finished roadmap with an open task is back in progress",
+      dc_project.board_status(drows, dd, "active")["state"] == "need")
+check("next step falls back to the first open task", dc_project.next_step(drows, dd) == "add CSV export")
+dd["flow"] = None
+check("an open task the person owns means waiting on them",
+      dc_project.board_status(drows, dd, "active") == {"state": "need", "guessed": False})
+try:
+    dc_project.apply_op(dd, done_repo, "task.add", {"text": "x", "owner": "boss"})
+    check("unknown task owner refused", False)
+except dc_project.DcError:
+    check("unknown task owner refused", True)
+dc_project.apply_op(dd, done_repo, "outcome.set", {"text": "Leave report runs itself", "by": "claude"})
+check("a Claude draft is saved but never confirmed",
+      dd["profile"]["summary"] == "Leave report runs itself" and dd["outcome"]["confirmed"] is False)
+dc_project.apply_op(dd, done_repo, "outcome.set", {"by": "user", "confirmed": True})
+check("confirming keeps the text", dd["profile"]["summary"] == "Leave report runs itself"
+      and dd["outcome"]["by"] == "user" and dd["outcome"]["confirmed"] is True, dd["outcome"])
+check("new ops are listed for the board", {"flow.set", "task.add", "outcome.set"} <= set(dc_project.OPS))
+side = dc_project.empty()
+side.update({"flow": "bad"})
+try:
+    dc_project._validate(side)
+    check("a non-object flow is refused", False)
+except dc_project.DcError:
+    check("a non-object flow is refused", True)
+
+rate_home = tmp / "ratehome"
+rate_home.mkdir()
+(rate_home / dc_project.CONFIG_NAME).write_text(json.dumps({"project_roots": ["x"]}), encoding="utf-8")
+dc_project.set_global_rate(str(rate_home), 55)
+cfg = json.loads((rate_home / dc_project.CONFIG_NAME).read_text(encoding="utf-8"))
+check("global rate saved beside other config", cfg == {"project_roots": ["x"], "hourly_rate": 55.0}, cfg)
+check("global rate reads back", dc_project.global_rate(str(rate_home)) == 55.0)
+for bad in (-1, "55", True):
+    try:
+        dc_project.set_global_rate(str(rate_home), bad)
+        check(f"bad rate {bad!r} refused", False)
+    except dc_project.DcError:
+        check(f"bad rate {bad!r} refused", True)
+dc_project.set_global_rate(str(rate_home), None)
+check("rate can be cleared", dc_project.global_rate(str(rate_home)) is None)
+dc_project.set_global_rate(str(rate_home), 60)
+vd = dc_project.empty()
+vd["savings"] = {"baseline_min": 90, "new_min": 10, "runs_per_year": 26}
+vd["time"] = [{"id": "s1", "start": "2026-09-01T10:00:00+00:00", "end": "2026-09-01T16:00:00+00:00",
+               "source": "auto", "note": ""}]
+s1 = dc_project.savings(vd, str(rate_home))
+s2 = dc_project.savings(vd, str(rate_home), you_minutes=90)
+check("build cost defaults to the sidecar's own time",
+      s1["build_minutes"] == 360 and s1["build_cost"] == 360.0, s1)
+check("measured hands-on time replaces it when given", s2["build_minutes"] == 90 and
+      s2["build_cost"] == 90.0 and round(s2["payback_years"], 4) == round(90 / (80 * 26), 4), s2)
+freq_repo = make_repo("freq", "| m1 | fortnightly payroll export, runs fortnightly | a.py | active |")
+check("run frequency guessed from the project's wording",
+      dc_project.guess_frequency(freq_repo) == "fortnightly")
+check("no wording, no guess", dc_project.guess_frequency(done_repo) is None)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

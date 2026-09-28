@@ -67,7 +67,8 @@ def default_sources() -> dict[str, Path]:
 
 # -- projects and their log windows -------------------------------------------------
 
-def log_windows(root: Path) -> list[tuple[datetime, datetime]]:
+def log_stamps(root: Path) -> list[datetime]:
+    """Every log entry time for a project, active log and archive, oldest first."""
     agent = root / _dcio.AGENT_DIR_NAME
     stamps = set()
     for name in (_dcio.STATE_NAME, ARCHIVE_NAME):
@@ -75,8 +76,12 @@ def log_windows(root: Path) -> list[tuple[datetime, datetime]]:
             when = _ts(m)
             if when:
                 stamps.add(when)
+    return sorted(stamps)
+
+
+def log_windows(root: Path) -> list[tuple[datetime, datetime]]:
     runs: list[list[datetime]] = []
-    for when in sorted(stamps):
+    for when in log_stamps(root):
         if runs and when - runs[-1][1] <= timedelta(minutes=GAP_MIN):
             runs[-1][1] = when
         else:
