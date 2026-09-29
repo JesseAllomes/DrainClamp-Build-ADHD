@@ -105,9 +105,7 @@ is unignored you get one warning and nothing else.
 | `dc_state.py` | Schema v1 state, crash-recoverable log rollover, purge calculus, narrow promotion |
 | `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never trusts a corrupt file |
 | `dc_session.py` | Gate S: the project menu, plus `--complete` and `--reopen` |
-| `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, savings, profile, health; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
-| `dc_board.py` | Localhost board over every registered project: overview metrics, value, status groups, tasks; token-guarded, rev-guarded writes through `dc_project` |
-| `dc_effort.py` | Your time vs agent time per project from Claude, Codex and Grok sessions; Unassigned pool with suggestions; cached in `~/.drainclamp/effort.json` |
+| `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
 | `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok; `--project` attributes Claude tokens to chunks and milestones. Aggregates only, never transcript text |
 | `dc_audit.py` | Gate 0: five-part freshness test, depth-2 rollups, stack, dead-code candidates |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests tied to a tree fingerprint |
@@ -133,7 +131,7 @@ Use `--claude`, `--codex`, or `--grok` to isolate a host; `--transcripts` aliase
 `--project <root>` attributes Claude tokens to that project's chunks and milestones. A call belongs to
 a chunk when it lands after the previous chunk was ticked and by the time this one was, clipped to the
 start of the tracked time session; calls in a session but between chunks are reported as outside.
-`--save` stores the totals in the sidecar for the board. Claude only (Codex and Grok transcripts carry
+`--save` stores the totals in the sidecar, where project-board can show them. Claude only (Codex and Grok transcripts carry
 no per-call timestamps), and untracked time is not counted, so totals are a floor. One API call is
 streamed as several transcript records; they are counted once, by message and request id.
 
@@ -141,40 +139,18 @@ The static table estimates resident `SKILL.md` and paged references (bytes/4; no
 
 The comparison is observational, not controlled, and is never a benchmark. The script is not wired into any gate and is not referenced from `SKILL.md`: a measurement tool that costs context on every invocation would be measuring a problem it had joined.
 
-### The board and project sidecar
+### The project sidecar
 
-State schema v1 is frozen, so what a person tracks beyond the roadmap lives in
+State schema v1 is frozen, so what the workflow tracks beyond the roadmap lives in
 `.agent/drainclamp-project.json`: chunks under each milestone (each naming the files it touches, so
-Gate 4 reads only those), errors, to-dos, build time, savings, health and a profile. Every write bumps
-`rev`; a writer holding an old revision is refused, never merged. `dc_project.py next` prints a dozen-line
-resume capsule instead of the whole state file, and ticking a chunk runs a chunk-boundary purge check.
+Gate 4 reads only those), errors, to-dos, build time and tokens. Every write bumps `rev`; a writer
+holding an old revision is refused, never merged. `dc_project.py next` prints a dozen-line resume
+capsule instead of the whole state file, and ticking a chunk runs a chunk-boundary purge check.
 
-```
-py -3 -B skills/drainclamp-build-adhd/scripts/dc_board.py serve --open
-```
-
-The board binds 127.0.0.1, refuses a non-loopback Host, and needs the per-run token printed in its URL.
-It never writes the state file.
-
-- **Project list**, docked on the left: Waiting on you, Moving, Ready to close, and Completed (folded).
-  A project is waiting on you when the sidecar's `flow` says so (set by Claude, you, or a task you
-  own); with nothing set, the wording of the current step is a guess and is labelled one.
-- **Overview**: open projects, waiting on you, milestones done, updates this week, ready to close; a
-  value section (time saved a year, value a year, your build time, payback, saved so far); updates
-  per day, status split, most active.
-- **Project page**: status menu, what it achieves (Claude drafts, you confirm), time and cost, the
-  before -> after per run and a payback chart, next step, activity, updates, milestones and tasks.
-  Adding a task to a completed project reopens it.
-- **Your time** comes from `dc_effort.py`: each prompt counts the gap since the agent last finished,
-  up to 10 minutes, across Claude, Codex and Grok. A prompt belongs to the project whose log window
-  holds it, else to the project folder it ran in (a folder holding other projects never claims one).
-  The rest is Unassigned, with a suggestion per session from the project paths it names; review it
-  at `#/sessions`. Build cost is your time times the hourly rate; agent time is shown, not billed.
-
-```
-py -3 -B skills/drainclamp-build-adhd/scripts/dc_effort.py refresh   # or "Measure now" on the board
-py -3 -B skills/drainclamp-build-adhd/scripts/dc_effort.py show
-```
+Dashboards are not DrainClamp's job. project-board is a separate tool that reads
+DrainClamp's project list and these files (never writing them) and adds status, % complete, value and
+your time across every project, DrainClamp or not. When it creates, completes or reopens a DrainClamp
+project it calls `dc_project.py create` / `complete` / `reopen`, the same commands you can run yourself.
 
 ### The sandbox
 
@@ -307,10 +283,8 @@ py -3 -B tests/t_gatestate.py  # verification refuses to run against no plan
 py -3 -B tests/t_deps.py       # milestone dependencies pick the next row
 py -3 -B tests/t_stale.py      # a returning writer cannot erase what landed
 py -3 -B tests/t_session.py    # registry and the Gate S menu
-py -3 -B tests/t_project.py    # sidecar: chunks, errors, to-dos, time, savings, capsule
-py -3 -B tests/t_lifecycle.py  # create from a charter, complete, reopen
-py -3 -B tests/t_board.py      # board server: token, Host, rev-guarded writes, m11 endpoints
-py -3 -B tests/t_effort.py     # your time vs agent time, attribution, Unassigned pool
+py -3 -B tests/t_project.py    # sidecar: chunks, errors, to-dos, time, capsule
+py -3 -B tests/t_lifecycle.py  # create from a charter, complete, reopen (functions and CLI)
 py -3 -B tests/t_tokens.py     # token buckets, dedupe, chunk attribution, no text leaks
 py -3 -B tests/t_identity.py   # the checkout agrees about its own name
 py -3 -B tests/t_structure.py  # the layout install and forks assume
@@ -319,7 +293,7 @@ py -3 -B tests/t_selftest.py   # the fixtures themselves
 py -3 -B tests/t_skeleton.py   # one change through all six gates
 ```
 
-753 checks across 22 suites, no third-party runner. Fixtures are generated, never hand-edited:
+634 checks across 20 suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes

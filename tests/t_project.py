@@ -1,4 +1,4 @@
-"""Sidecar checks for dc_project.py: chunks, errors, to-dos, time, savings, capsule."""
+"""Sidecar checks for dc_project.py: chunks, errors, to-dos, time, capsule; no board fields."""
 import json
 import os
 import subprocess
@@ -124,29 +124,6 @@ check("manual time is recorded", len(manual) == 1 and
 rc, out = proj(repo, "time", "add", "--minutes", "-5")
 check("negative time is refused", rc != 0)
 
-# 6. savings: formula and payback, rate falls back to the global config
-home.mkdir(parents=True, exist_ok=True)
-(home / "config.json").write_text(json.dumps({"hourly_rate": 50}), encoding="utf-8")
-rc, out = proj(repo, "savings", "set", "--baseline-min", "60", "--new-min", "15",
-               "--runs-per-year", "26")
-check("savings set succeeds", rc == 0, out.strip())
-rc, out = proj(repo, "summary", "--json")
-s = json.loads(out)
-check("annual hours saved = (60-15)*26/60", abs(s["savings"]["annual_hours"] - 19.5) < 1e-9,
-      s["savings"])
-check("annual cost saved uses the global rate", abs(s["savings"]["annual_cost"] - 975) < 1e-9,
-      s["savings"])
-check("build hours include manual time", s["build_minutes"] >= 90, s["build_minutes"])
-check("payback is build cost over annual saving", s["savings"]["payback_years"] is not None)
-check("summary counts chunks", s["chunks"] == {"done": 1, "total": 2}, s["chunks"])
-check("summary counts open errors", s["errors_open"] == 0, s["errors_open"])
-
-proj(repo, "savings", "set", "--baseline-min", "60", "--new-min", "15",
-     "--runs-per-year", "26", "--rate", "100")
-s = json.loads(proj(repo, "summary", "--json")[1])
-check("per-project rate overrides the global one",
-      abs(s["savings"]["annual_cost"] - 1950) < 1e-9, s["savings"])
-
 # 7. a damaged or future sidecar is refused, never overwritten
 side.write_text("{broken", encoding="utf-8")
 rc, out = proj(repo, "todo", "add", "--text", "x")
@@ -156,7 +133,7 @@ side.write_text(json.dumps({"schema": 99}), encoding="utf-8")
 rc, out = proj(repo, "summary")
 check("unknown schema is refused", rc != 0 and "schema" in out, out.strip())
 
-# 8. every write bumps the revision so the board can detect a stale edit
+# 8. every write bumps the revision so a stale writer can be refused
 side.unlink()
 proj(repo, "todo", "add", "--text", "a")
 proj(repo, "todo", "add", "--text", "b")
@@ -167,75 +144,6 @@ try:
     check("stale revision is refused", False)
 except dc_project.DcError as exc:
     check("stale revision is refused", "revision" in str(exc), str(exc))
-
-# 9. profile: summary, features, safeguards by area
-rc, out = proj(repo, "profile", "summary", "--text", "One place for every KPI")
-check("summary saved", rc == 0, out.strip())
-proj(repo, "feature", "add", "--name", "Dashboard", "--what", "shows KPIs")
-rc, out = proj(repo, "feature", "edit", "--id", "f1", "--what", "shows every KPI")
-data = json.loads(side.read_text(encoding="utf-8"))
-check("feature added and edited", data["profile"]["features"] ==
-      [{"id": "f1", "name": "Dashboard", "what": "shows every KPI", "priority": ""}],
-      data["profile"])
-rc, out = proj(repo, "safeguard", "add", "--area", "Security", "--control", "binds 127.0.0.1",
-               "--prevents", "remote access", "--status", "in")
-check("safeguard added", rc == 0, out.strip())
-rc, out = proj(repo, "safeguard", "add", "--area", "Nope", "--control", "x")
-check("unknown safeguard area refused", rc != 0)
-proj(repo, "safeguard", "add", "--area", "Testing", "--control", "selftest on close")
-s = json.loads(proj(repo, "summary", "--json")[1])
-check("summary counts safeguards in and planned", s["safeguards"] == {"in": 1, "plan": 1},
-      s["safeguards"])
-proj(repo, "safeguard", "edit", "--id", "g2", "--status", "in")
-data = json.loads(side.read_text(encoding="utf-8"))
-check("safeguard edit changes only what was given",
-      data["profile"]["safeguards"][1]["status"] == "in" and
-      data["profile"]["safeguards"][1]["control"] == "selftest on close")
-proj(repo, "feature", "delete", "--id", "f1")
-check("feature deleted", json.loads(side.read_text(encoding="utf-8"))["profile"]["features"] == [])
-
-# 10. health with a dated update, kept as history
-rc, out = proj(repo, "health", "set", "--state", "risk", "--update", "waiting on data")
-proj(repo, "health", "set", "--state", "on", "--update", "data arrived")
-data = json.loads(side.read_text(encoding="utf-8"))
-check("health holds the latest update", data["health"]["state"] == "on" and
-      data["health"]["update"] == "data arrived" and data["health"]["at"], data["health"])
-check("updates keep the history", [u["state"] for u in data["updates"]] == ["risk", "on"])
-rc, out = proj(repo, "health", "set", "--state", "green")
-check("unknown health refused", rc != 0)
-
-# 11. runs: realised savings from real use
-proj(repo, "savings", "set", "--baseline-min", "60", "--new-min", "15",
-     "--runs-per-year", "26", "--rate", "100")
-proj(repo, "run", "add", "--count", "4")
-proj(repo, "run", "add", "--minutes", "30", "--note", "slow week")
-s = json.loads(proj(repo, "summary", "--json")[1])["savings"]
-check("realised hours = (4x45 + 1x30)/60", abs(s["realised_hours"] - 3.5) < 1e-9, s)
-check("realised cost uses the rate", abs(s["realised_cost"] - 350) < 1e-9, s)
-check("realised runs counted", s["realised_runs"] == 5, s)
-rc, out = proj(repo, "run", "add", "--count", "0")
-check("zero runs refused", rc != 0)
-
-# 12. seeding from a charter fills blanks only and marks safeguards planned
-d = dc_project.empty()
-charter = {"purpose": "Track KPIs",
-           "scope": [{"feature": "Board", "what": "view", "priority": "Must"},
-                     {"feature": "Mobile", "what": "app", "priority": "Won't"}],
-           "security": "- local only\n- token per run", "retention": "logs kept 30 days",
-           "risks": [{"risk": "stale data", "guardrail": "show refresh time"}],
-           "never": "email anyone", "approvals": "before sending", "acceptance": "totals match"}
-n = dc_project.seed_profile(d, charter)
-areas = [g["area"] for g in d["profile"]["safeguards"]]
-check("seed summary from purpose", d["profile"]["summary"] == "Track KPIs")
-check("seed skips Won't features", [f["name"] for f in d["profile"]["features"]] == ["Board"])
-check("seed safeguards by area", areas == ["Security", "Security", "Data retention",
-                                           "Guardrails", "Guardrails", "Confirmation checks",
-                                           "Testing"], areas)
-check("seeded safeguards start planned",
-      all(g["status"] == "plan" for g in d["profile"]["safeguards"]) and n == 8, n)
-d["profile"]["summary"] = "hand written"
-check("reseed adds nothing over hand edits",
-      dc_project.seed_profile(d, charter) == 0 and d["profile"]["summary"] == "hand written")
 
 # chunk boundary: purge verdict over chunk target paths, printed by `chunk done`
 bnd = make_repo("boundary", "| m1 | three steps | a.py;b.py;c.py | active |")
@@ -301,96 +209,23 @@ check("material blanks are listed for Gate 1",
       "retention, never, approvals" in out, out)
 check("non-material blanks are never asked", "Blank, not asked: sponsor, stakeholders" in out, out)
 
-# -- board status, tasks, outcome, rate (m11) --------------------------------------
-flowrepo = make_repo("flowrepo", "| m1 | Wait for the user to run a live test | a.py | active |")
-done_repo = make_repo("donerepo", "| m1 | ship | a.py | done |")
-d = dc_project.empty()
-rows = dc_project.roadmap(flowrepo)
-st = dc_project.board_status(rows, d, "active")
-check("wording on the current step is only a guess", st == {"state": "need", "guessed": True}, st)
-dc_project.apply_op(d, flowrepo, "flow.set", {"state": "run"})
-st = dc_project.board_status(rows, d, "active")
-check("an explicit flow beats the guess", st["state"] == "run" and not st["guessed"], st)
-dc_project.apply_op(d, flowrepo, "flow.set", {"state": "auto"})
-check("flow auto hands it back to the guess", d["flow"] is None)
-try:
-    dc_project.apply_op(d, flowrepo, "flow.set", {"state": "later"})
-    check("unknown flow state refused", False)
-except dc_project.DcError:
-    check("unknown flow state refused", True)
-check("registry complete wins over everything",
-      dc_project.board_status(rows, d, "complete")["state"] == "done")
-dd = dc_project.empty()
-drows = dc_project.roadmap(done_repo)
-check("finished roadmap with no open task is ready to close",
-      dc_project.board_status(drows, dd, "active") == {"state": "close", "guessed": False})
-msg = dc_project.apply_op(dd, done_repo, "task.add", {"text": "add CSV export", "owner": "you"})
-check("task.add records owner and sets flow", dd["todos"][-1]["owner"] == "you" and
-      dd["flow"]["state"] == "need", (msg, dd["todos"], dd["flow"]))
-check("a finished roadmap with an open task is back in progress",
-      dc_project.board_status(drows, dd, "active")["state"] == "need")
-check("next step falls back to the first open task", dc_project.next_step(drows, dd) == "add CSV export")
-dc_project.apply_op(dd, done_repo, "todo.done", {"id": dd["todos"][-1]["id"]})
-check("ticking your last task clears the status the task set", dd["flow"] is None and
-      dc_project.board_status(drows, dd, "active")["state"] == "close", dd["flow"])
-dc_project.apply_op(dd, done_repo, "todo.undo", {"id": dd["todos"][-1]["id"]})
-dc_project.apply_op(dd, done_repo, "flow.set", {"state": "need"})
-dc_project.apply_op(dd, done_repo, "todo.done", {"id": dd["todos"][-1]["id"]})
-check("a status set by hand survives ticking tasks", (dd["flow"] or {}).get("state") == "need", dd["flow"])
-dc_project.apply_op(dd, done_repo, "todo.undo", {"id": dd["todos"][-1]["id"]})
-dd["flow"] = None
-check("an open task the person owns means waiting on them",
-      dc_project.board_status(drows, dd, "active") == {"state": "need", "guessed": False})
-try:
-    dc_project.apply_op(dd, done_repo, "task.add", {"text": "x", "owner": "boss"})
-    check("unknown task owner refused", False)
-except dc_project.DcError:
-    check("unknown task owner refused", True)
-dc_project.apply_op(dd, done_repo, "outcome.set", {"text": "Leave report runs itself", "by": "claude"})
-check("a Claude draft is saved but never confirmed",
-      dd["profile"]["summary"] == "Leave report runs itself" and dd["outcome"]["confirmed"] is False)
-dc_project.apply_op(dd, done_repo, "outcome.set", {"by": "user", "confirmed": True})
-check("confirming keeps the text", dd["profile"]["summary"] == "Leave report runs itself"
-      and dd["outcome"]["by"] == "user" and dd["outcome"]["confirmed"] is True, dd["outcome"])
-check("new ops are listed for the board", {"flow.set", "task.add", "outcome.set"} <= set(dc_project.OPS))
-side = dc_project.empty()
-side.update({"flow": "bad"})
-try:
-    dc_project._validate(side)
-    check("a non-object flow is refused", False)
-except dc_project.DcError:
-    check("a non-object flow is refused", True)
-
-rate_home = tmp / "ratehome"
-rate_home.mkdir()
-(rate_home / dc_project.CONFIG_NAME).write_text(json.dumps({"project_roots": ["x"]}), encoding="utf-8")
-dc_project.set_global_rate(str(rate_home), 55)
-cfg = json.loads((rate_home / dc_project.CONFIG_NAME).read_text(encoding="utf-8"))
-check("global rate saved beside other config", cfg == {"project_roots": ["x"], "hourly_rate": 55.0}, cfg)
-check("global rate reads back", dc_project.global_rate(str(rate_home)) == 55.0)
-for bad in (-1, "55", True):
+# -- board features are project-board's, not DrainClamp's (1.5.0) --------------------
+for gone in ("savings.set", "profile.summary", "feature.add", "safeguard.add", "health.set", "run.add",
+             "flow.set", "task.add", "outcome.set"):
+    check(f"{gone} is not a DrainClamp operation", gone not in dc_project.OPS)
     try:
-        dc_project.set_global_rate(str(rate_home), bad)
-        check(f"bad rate {bad!r} refused", False)
+        dc_project.apply_op(dc_project.empty(), repo, gone, {})
+        check(f"{gone} refused", False)
     except dc_project.DcError:
-        check(f"bad rate {bad!r} refused", True)
-dc_project.set_global_rate(str(rate_home), None)
-check("rate can be cleared", dc_project.global_rate(str(rate_home)) is None)
-dc_project.set_global_rate(str(rate_home), 60)
-vd = dc_project.empty()
-vd["savings"] = {"baseline_min": 90, "new_min": 10, "runs_per_year": 26}
-vd["time"] = [{"id": "s1", "start": "2026-09-01T10:00:00+00:00", "end": "2026-09-01T16:00:00+00:00",
-               "source": "auto", "note": ""}]
-s1 = dc_project.savings(vd, str(rate_home))
-s2 = dc_project.savings(vd, str(rate_home), you_minutes=90)
-check("build cost defaults to the sidecar's own time",
-      s1["build_minutes"] == 360 and s1["build_cost"] == 360.0, s1)
-check("measured hands-on time replaces it when given", s2["build_minutes"] == 90 and
-      s2["build_cost"] == 90.0 and round(s2["payback_years"], 4) == round(90 / (80 * 26), 4), s2)
-freq_repo = make_repo("freq", "| m1 | fortnightly payroll export, runs fortnightly | a.py | active |")
-check("run frequency guessed from the project's wording",
-      dc_project.guess_frequency(freq_repo) == "fortnightly")
-check("no wording, no guess", dc_project.guess_frequency(done_repo) is None)
+        check(f"{gone} refused", True)
+for name in ("board_status", "next_step", "guess_frequency", "savings", "set_global_rate", "seed_profile"):
+    check(f"dc_project.{name} is gone", not hasattr(dc_project, name))
+old = dc_project.empty()
+old.update({"savings": {"baseline_min": 60}, "profile": {"summary": "x"}, "health": {"state": "on"},
+            "runs": [{"id": "r1"}], "flow": {"state": "need"}, "outcome": {"by": "user"}})
+kept = dc_project._validate(old)
+check("an older sidecar with board fields still loads, fields kept as found",
+      kept["savings"] == {"baseline_min": 60} and kept["profile"] == {"summary": "x"} and kept["runs"] == [{"id": "r1"}])
 
 print()
 print("FAILURES:", fails if fails else "none")

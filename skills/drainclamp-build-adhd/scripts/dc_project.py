@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """Project sidecar: `.agent/drainclamp-project.json`, schema 1.
 
-State schema v1 is frozen, so everything a person tracks about a project beyond
-the roadmap lives here: small chunks under each milestone with a note of what
-was done, an error register, a to-do list, build time, the time/cost the work
-saves (estimated, and realised from a log of real runs), a health flag with a
-dated update, and a profile -- summary, features and safeguards by area -- that
-the board shows as the project's rundown. A new project's profile is seeded
-from its charter.
+State schema v1 is frozen, so what the build workflow tracks beyond the roadmap
+lives here: small chunks under each milestone with a note of what was done, an
+error register, a to-do list, build time and token use. Dashboards are not
+DrainClamp's job: project-board reads these files (read-only) and keeps its own
+data. Older sidecars may still carry board fields; they are kept as found.
 
 Chunks double as a token budget. Each one names the files (and symbols) it
 touches, so implementation reads only those, and `next` prints a resume capsule
-of a dozen lines instead of the whole state file and log. Chunk notes are for
-the dashboard and are never loaded into context by any gate.
+of a dozen lines instead of the whole state file and log. Chunk notes are never
+loaded into context by any gate.
 
 Unlike the registry, the sidecar is an authority, not a cache: a damaged or
 unknown-schema file is refused and left exactly as found, never replaced.
@@ -44,22 +42,8 @@ IDLE_MINUTES = 30
 NOTE_CAP = 160
 CAPSULE_CAP = 15
 
-LISTS = ("errors", "todos", "time", "runs", "updates")
+LISTS = ("errors", "todos", "time")
 PREFIX = {"errors": "e", "todos": "t", "time": "s"}
-AREAS = ("Security", "Data retention", "Guardrails", "Confirmation checks", "Testing")
-HEALTH = ("on", "risk", "off")
-PROFILE_CAP = 100
-UPDATES_KEPT = 50
-FLOW = ("need", "run")          # Waiting on you / Moving; unset means the board guesses
-OWNERS = {"claude": "run", "you": "need"}
-OUTCOME_BY = ("claude", "user")
-# Wording on the current step that usually means the next move is the person's.
-NEEDS_YOU = re.compile(r"\b(user|await\w*|live[- ]test\w*|pastes?|approv\w*|sign[- ]off|you|your)\b", re.I)
-FREQUENCY = {"daily": 240, "weekly": 52, "fortnightly": 26, "monthly": 12, "quarterly": 4,
-             "yearly": 1}
-FREQUENCY_HINTS = (("fortnightly", r"fortnight"), ("monthly", r"\bmonthly\b|every month"),
-                   ("weekly", r"\bweekly\b|every week"), ("quarterly", r"\bquarterly\b"),
-                   ("daily", r"\bdaily\b|every day|each day|nightly"))
 
 
 def _now() -> datetime:
@@ -80,9 +64,7 @@ def _parse_iso(text: str) -> datetime:
 
 def empty() -> dict:
     return {"schema": SCHEMA_VERSION, "rev": 0, "chunks": {}, "errors": [],
-            "todos": [], "time": [], "savings": {}, "runs": [], "updates": [],
-            "health": None, "profile": {"summary": "", "features": [], "safeguards": []},
-            "tokens": None, "flow": None, "outcome": None}
+            "todos": [], "time": [], "tokens": None}
 
 
 def sidecar_path(agent: Path) -> Path:
@@ -98,20 +80,9 @@ def _validate(data) -> dict:
     out = empty()
     out.update(data)
     if not isinstance(out["rev"], int) or not isinstance(out["chunks"], dict) \
-            or not isinstance(out["savings"], dict) \
             or any(not isinstance(out[k], list) for k in LISTS) \
-            or not isinstance(out["profile"], dict) \
-            or not (out["health"] is None or isinstance(out["health"], dict)) \
-            or not (out["tokens"] is None or isinstance(out["tokens"], dict)) \
-            or not (out["flow"] is None or isinstance(out["flow"], dict)) \
-            or not (out["outcome"] is None or isinstance(out["outcome"], dict)):
+            or not (out["tokens"] is None or isinstance(out["tokens"], dict)):
         raise DcError("sidecar fields have the wrong types; left untouched")
-    prof = {"summary": "", "features": [], "safeguards": []}
-    prof.update(out["profile"])
-    if not isinstance(prof["summary"], str) or not isinstance(prof["features"], list) \
-            or not isinstance(prof["safeguards"], list):
-        raise DcError("sidecar profile has the wrong types; left untouched")
-    out["profile"] = prof
     return out
 
 
@@ -177,49 +148,6 @@ def current_milestone(rows: list[dict]) -> dict | None:
     return None
 
 
-def board_status(rows: list[dict], data: dict, registry_status: str) -> dict:
-    """Which board group a project sits in: need | run | close | done.
-
-    Completed is the registry's word. A finished roadmap with no open task is ready to
-    close. Otherwise the sidecar's `flow` (set by Claude or the person) decides; an open
-    task the person owns means waiting on them; failing both, the wording of the current
-    step is a guess, and says so.
-    """
-    if registry_status == "complete":
-        return {"state": "done", "guessed": False}
-    open_tasks = [t for t in data["todos"] if not t.get("done")]
-    ms = current_milestone(rows)
-    if ms is None and not open_tasks:
-        return {"state": "close", "guessed": False}
-    flow = data.get("flow") or {}
-    if flow.get("state") in FLOW:
-        return {"state": flow["state"], "guessed": False, "note": flow.get("note", ""),
-                "at": flow.get("at")}
-    if any(t.get("owner") == "you" for t in open_tasks):
-        return {"state": "need", "guessed": False}
-    text = ms["goal"] if ms else ""
-    return {"state": "need" if NEEDS_YOU.search(text) else "run", "guessed": True}
-
-
-def next_step(rows: list[dict], data: dict) -> str | None:
-    """The current milestone's goal, else the first open task."""
-    ms = current_milestone(rows)
-    if ms:
-        return ms["goal"]
-    task = next((t for t in data["todos"] if not t.get("done")), None)
-    return task["text"] if task else None
-
-
-def guess_frequency(root: Path) -> str | None:
-    """How often the finished tool runs, from the project's own wording; a suggestion only."""
-    agent = root / _dcio.AGENT_DIR_NAME
-    text = " ".join(_dcio.read_text(agent / n) or "" for n in
-                    (_dcio.STATE_NAME, "drainclamp-log-archive.md", CHARTER_NAME))
-    hits = {k: len(re.findall(rx, text, re.I)) for k, rx in FREQUENCY_HINTS}
-    best = max(hits, key=hits.get)
-    return best if hits[best] else None
-
-
 # -- time --------------------------------------------------------------------
 
 def minutes_of(session: dict) -> float:
@@ -245,82 +173,6 @@ def touch_time(data: dict, when: datetime | None = None) -> dict:
     return data
 
 
-# -- savings -----------------------------------------------------------------
-
-def global_rate(home: str | None) -> float | None:
-    text = _dcio.read_text(dc_registry.home_dir(home) / CONFIG_NAME)
-    try:
-        rate = json.loads(text).get("hourly_rate") if text else None
-    except (ValueError, AttributeError):
-        return None
-    return float(rate) if isinstance(rate, (int, float)) else None
-
-
-def set_global_rate(home: str | None, rate: float | None) -> float | None:
-    """Store the default hourly rate in the registry home's config.json, keeping other keys."""
-    if rate is not None and (not isinstance(rate, (int, float)) or isinstance(rate, bool)
-                             or rate < 0 or rate > 100000):
-        raise DcError("hourly rate must be a number from 0 to 100000")
-    folder = dc_registry.home_dir(home)
-    folder.mkdir(parents=True, exist_ok=True)
-    with _dcio.FileLock(folder, name=".config.lock"):
-        text = _dcio.read_text(folder / CONFIG_NAME)
-        try:
-            cfg = json.loads(text) if text else {}
-        except ValueError:
-            raise DcError(f"{folder / CONFIG_NAME} is not valid JSON; left untouched") from None
-        if not isinstance(cfg, dict):
-            raise DcError(f"{folder / CONFIG_NAME} is not a JSON object; left untouched")
-        if rate is None:
-            cfg.pop("hourly_rate", None)
-        else:
-            cfg["hourly_rate"] = float(rate)
-        _dcio.atomic_write(folder / CONFIG_NAME, json.dumps(cfg, indent=2, sort_keys=True) + "\n")
-    return rate
-
-
-def savings(data: dict, home: str | None, you_minutes: float | None = None) -> dict:
-    """Value figures. Build cost uses `you_minutes` (measured hands-on time) when given,
-    else the sidecar's own time sessions."""
-    s = data["savings"]
-    rate = s.get("hourly_rate")
-    rate = float(rate) if isinstance(rate, (int, float)) else global_rate(home)
-    out = {"baseline_min": s.get("baseline_min"), "new_min": s.get("new_min"),
-           "runs_per_year": s.get("runs_per_year"), "hourly_rate": rate,
-           "annual_hours": None, "annual_cost": None, "build_cost": None,
-           "payback_years": None, "note": s.get("note", ""), "realised_cost": None}
-    if all(isinstance(s.get(k), (int, float)) for k in ("baseline_min", "new_min",
-                                                          "runs_per_year")):
-        out["annual_hours"] = (s["baseline_min"] - s["new_min"]) * s["runs_per_year"] / 60
-        if rate is not None:
-            out["annual_cost"] = out["annual_hours"] * rate
-    out.update(realised(data, s))
-    if rate is not None and out["realised_hours"] is not None:
-        out["realised_cost"] = out["realised_hours"] * rate
-    out["build_minutes"] = build_minutes(data) if you_minutes is None else you_minutes
-    if rate is not None:
-        out["build_cost"] = out["build_minutes"] / 60 * rate
-        if out["annual_cost"]:
-            out["payback_years"] = out["build_cost"] / out["annual_cost"]
-    return out
-
-
-def realised(data: dict, s: dict) -> dict:
-    """Hours actually saved, from logged runs: each run saves baseline - its minutes."""
-    runs = data.get("runs") or []
-    base = s.get("baseline_min")
-    if not runs or not isinstance(base, (int, float)):
-        return {"realised_runs": sum(r.get("count", 0) for r in runs), "realised_hours": None}
-    total = 0.0
-    for r in runs:
-        took = r.get("minutes")
-        took = took if isinstance(took, (int, float)) else s.get("new_min")
-        if isinstance(took, (int, float)):
-            total += (base - took) * r.get("count", 0)
-    return {"realised_runs": sum(r.get("count", 0) for r in runs),
-            "realised_hours": total / 60}
-
-
 def summary(data: dict, home: str | None) -> dict:
     chunks = [c for cs in data["chunks"].values() for c in cs]
     return {
@@ -328,15 +180,7 @@ def summary(data: dict, home: str | None) -> dict:
         "errors_open": sum(1 for e in data["errors"] if e.get("status") != "fixed"),
         "todos_open": sum(1 for t in data["todos"] if not t.get("done")),
         "build_minutes": build_minutes(data),
-        "savings": savings(data, home),
-        "health": data.get("health"),
-        "safeguards": {"in": sum(1 for g in data["profile"]["safeguards"]
-                                 if g.get("status") == "in"),
-                       "plan": sum(1 for g in data["profile"]["safeguards"]
-                                   if g.get("status") != "in")},
         "completed": data.get("completed"),
-        "flow": data.get("flow"),
-        "outcome": data.get("outcome"),
         "rev": data["rev"],
     }
 
@@ -407,7 +251,7 @@ def boundary(data: dict, root: Path, mid: str, cid: str,
     return [f"Next chunk: {nxt['id']} - {_clip(nxt['goal'])}", verdict, human]
 
 
-# -- operations (shared by the CLI and dc_board.py) ---------------------------
+# -- operations ----------------------------------------------------------------
 
 def _targets(value) -> list[str]:
     if isinstance(value, list):
@@ -436,76 +280,12 @@ def _text(a: dict, key: str, required: bool = False) -> str:
 
 
 OPS = ("chunk.add", "chunk.done", "chunk.undo", "chunk.note", "error.add", "error.fix",
-       "todo.add", "todo.done", "todo.undo", "time.touch", "time.add", "time.delete",
-       "savings.set", "profile.summary", "profile.seed", "feature.add", "feature.edit",
-       "feature.delete", "safeguard.add", "safeguard.edit", "safeguard.delete",
-       "health.set", "run.add", "run.delete", "flow.set", "task.add", "outcome.set")
-
-
-def _capped(value: str, key: str) -> str:
-    if len(value) > TEXT_CAP:
-        raise DcError(f"{key} is over {TEXT_CAP} characters")
-    return value
-
-
-def _room(items: list, what: str) -> None:
-    if len(items) >= PROFILE_CAP:
-        raise DcError(f"at most {PROFILE_CAP} {what}")
-
-
-def _safeguard_fields(g: dict, a: dict, partial: bool) -> None:
-    for key in ("area", "control", "detail", "prevents", "status"):
-        if partial and a.get(key) is None:
-            continue
-        value = _capped(_text(a, key, required=key in ("area", "control") and not partial), key)
-        if key == "area" and value not in AREAS:
-            raise DcError(f"area must be one of {', '.join(AREAS)}")
-        if key == "status":
-            value = value or "plan"
-            if value not in ("in", "plan"):
-                raise DcError("status must be in or plan")
-        if key in ("area", "control") and not value:
-            raise DcError(f"{key} is required")
-        g[key] = value
+       "todo.add", "todo.done", "todo.undo", "time.touch", "time.add", "time.delete")
 
 
 def _lines(text: str) -> list[str]:
     return [l.strip().lstrip("-*\u2022 ").strip() for l in (text or "").splitlines()
             if l.strip().lstrip("-*\u2022 ").strip()]
-
-
-def seed_profile(data: dict, charter: dict) -> int:
-    """Fill a blank profile from the charter. Returns how many items were added.
-
-    Only blanks are filled, so hand edits are never overwritten; every seeded
-    safeguard starts as planned until the build puts it in place.
-    """
-    prof, added = data["profile"], 0
-    if not prof["summary"] and charter.get("purpose"):
-        prof["summary"] = charter["purpose"][:TEXT_CAP]
-    if not prof["features"]:
-        for row in charter.get("scope") or []:
-            if row.get("priority") == "Won't" or not row.get("feature"):
-                continue
-            prof["features"].append({"id": _next_id(prof["features"], "f"),
-                                     "name": row["feature"], "what": row.get("what", ""),
-                                     "priority": row.get("priority", "")})
-            added += 1
-    if not prof["safeguards"]:
-        seeds = [("Security", t, "") for t in _lines(charter.get("security", ""))]
-        seeds += [("Data retention", t, "") for t in _lines(charter.get("retention", ""))]
-        seeds += [("Guardrails", r["guardrail"], r["risk"])
-                  for r in charter.get("risks") or [] if r.get("guardrail")]
-        seeds += [("Guardrails", f"Never: {t}", "") for t in _lines(charter.get("never", ""))]
-        seeds += [("Confirmation checks", t, "")
-                  for t in _lines(charter.get("approvals", ""))]
-        seeds += [("Testing", t, "") for t in _lines(charter.get("acceptance", ""))]
-        for area, control, prevents in seeds[:PROFILE_CAP]:
-            prof["safeguards"].append({"id": _next_id(prof["safeguards"], "g"), "area": area,
-                                       "control": control[:TEXT_CAP], "detail": "",
-                                       "prevents": prevents[:TEXT_CAP], "status": "plan"})
-            added += 1
-    return added
 
 
 def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = None) -> str:
@@ -560,12 +340,6 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
         t = _find(data["todos"], _text(a, "id", True), "to-do")
         t["done"] = op == "todo.done"
         t["done_at"] = stamp if t["done"] else None
-        flow = data.get("flow") or {}
-        # A status a task set lasts only while a task of that owner is still open.
-        if flow.get("source") == "task" and not any(
-                not x.get("done") and OWNERS.get(x.get("owner")) == flow.get("state")
-                for x in data["todos"]):
-            data["flow"] = None
         return f"to-do {t['id']} {'done' if t['done'] else 'reopened'}"
     if op == "time.touch":
         touch_time(data, now)
@@ -591,102 +365,6 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
         s = _find(data["time"], _text(a, "id", True), "time entry")
         data["time"].remove(s)
         return f"time {s['id']} deleted"
-    if op == "savings.set":
-        vals = {k: _num(a, k) for k in ("baseline_min", "new_min", "runs_per_year")}
-        rate = _num(a, "hourly_rate", required=False)
-        if any(v < 0 for v in vals.values()) or (rate is not None and rate < 0):
-            raise DcError("savings figures must not be negative")
-        data["savings"] = {**vals, "hourly_rate": rate, "note": _text(a, "note")}
-        return "savings set"
-    prof = data["profile"]
-    if op == "profile.summary":
-        prof["summary"] = _capped(_text(a, "text"), "text")
-        return "summary saved"
-    if op == "profile.seed":
-        charter = load_charter(root / _dcio.AGENT_DIR_NAME)
-        if charter is None:
-            raise DcError("no .agent/charter.json to seed from")
-        return f"profile seeded from charter ({seed_profile(data, charter)} items)"
-    if op == "feature.add":
-        _room(prof["features"], "features")
-        fid = _next_id(prof["features"], "f")
-        prof["features"].append({"id": fid, "name": _capped(_text(a, "name", True), "name"),
-                                 "what": _capped(_text(a, "what"), "what"), "priority": ""})
-        return f"feature {fid} added"
-    if op == "feature.edit":
-        f = _find(prof["features"], _text(a, "id", True), "feature")
-        for key in ("name", "what"):
-            if a.get(key) is not None:
-                f[key] = _capped(_text(a, key, required=key == "name"), key)
-        return f"feature {f['id']} saved"
-    if op == "safeguard.add":
-        _room(prof["safeguards"], "safeguards")
-        g = {"id": _next_id(prof["safeguards"], "g")}
-        _safeguard_fields(g, a, partial=False)
-        prof["safeguards"].append(g)
-        return f"safeguard {g['id']} added"
-    if op == "safeguard.edit":
-        g = _find(prof["safeguards"], _text(a, "id", True), "safeguard")
-        _safeguard_fields(g, a, partial=True)
-        return f"safeguard {g['id']} saved"
-    if op in ("feature.delete", "safeguard.delete"):
-        key = "features" if op == "feature.delete" else "safeguards"
-        item = _find(prof[key], _text(a, "id", True), key[:-1])
-        prof[key].remove(item)
-        return f"{key[:-1]} {item['id']} deleted"
-    if op == "health.set":
-        state = _text(a, "state", True)
-        if state not in HEALTH:
-            raise DcError(f"state must be one of {', '.join(HEALTH)}")
-        data["health"] = {"state": state, "update": _capped(_text(a, "update"), "update"),
-                          "at": stamp}
-        data["updates"] = (data["updates"] + [data["health"]])[-UPDATES_KEPT:]
-        return f"health {state}"
-    if op == "run.add":
-        count = _num(a, "count", required=False)
-        count = 1 if count is None else count
-        if count <= 0 or count != int(count):
-            raise DcError("count must be a whole number above 0")
-        minutes = _num(a, "minutes", required=False)
-        if minutes is not None and minutes < 0:
-            raise DcError("minutes must not be negative")
-        rid = _next_id(data["runs"], "r")
-        data["runs"].append({"id": rid, "at": _iso(_parse_iso(a["at"])) if a.get("at")
-                             else stamp, "count": int(count), "minutes": minutes,
-                             "note": _capped(_text(a, "note"), "note")})
-        return f"run {rid} logged ({int(count)} x)"
-    if op == "run.delete":
-        r = _find(data["runs"], _text(a, "id", True), "run")
-        data["runs"].remove(r)
-        return f"run {r['id']} deleted"
-    if op == "flow.set":
-        state = _text(a, "state", True)
-        if state == "auto":
-            data["flow"] = None
-            return "status left to the board"
-        if state not in FLOW:
-            raise DcError(f"state must be one of {', '.join(FLOW)} or auto")
-        data["flow"] = {"state": state, "note": _capped(_text(a, "note"), "note"), "at": stamp}
-        return "waiting on you" if state == "need" else "moving"
-    if op == "task.add":
-        owner = _text(a, "owner") or "claude"
-        if owner not in OWNERS:
-            raise DcError(f"owner must be one of {', '.join(OWNERS)}")
-        tid = _next_id(data["todos"], "t")
-        data["todos"].append({"id": tid, "text": _capped(_text(a, "text", True), "text"),
-                              "milestone": _text(a, "milestone"), "owner": owner,
-                              "done": False, "at": stamp, "done_at": None})
-        data["flow"] = {"state": OWNERS[owner], "note": "", "at": stamp, "source": "task"}
-        return f"task {tid} added"
-    if op == "outcome.set":
-        by = _text(a, "by") or "user"
-        if by not in OUTCOME_BY:
-            raise DcError(f"by must be one of {', '.join(OUTCOME_BY)}")
-        text = _capped(_text(a, "text"), "text")
-        prof["summary"] = text if a.get("text") is not None else prof["summary"]
-        confirmed = bool(a.get("confirmed")) if by == "user" else False
-        data["outcome"] = {"by": by, "confirmed": confirmed, "at": stamp}
-        return "outcome confirmed" if confirmed else "outcome saved"
     raise DcError(f"unknown operation: {op}")
 
 
@@ -827,13 +505,7 @@ def create_project(charter: dict, home: str | None, location: str | None = None,
             indent=2, sort_keys=True) + "\n")
 
         def seed(data: dict) -> dict:
-            v = c["value"]
-            if all(v[k] is not None for k in ("baseline_min", "new_min", "runs_per_year")):
-                data["savings"] = {k: v[k] for k in ("baseline_min", "new_min",
-                                                     "runs_per_year")}
-                data["savings"].update(hourly_rate=v["hourly_rate"], note="from charter")
             data["created"] = stamp
-            seed_profile(data, c)
             return data
 
         mutate(agent, seed)
@@ -1001,56 +673,6 @@ def build_parser() -> argparse.ArgumentParser:
     d = tm.add_parser("delete")
     d.add_argument("--id", required=True)
 
-    sv = sub.add_parser("savings").add_subparsers(dest="op", required=True)
-    a = sv.add_parser("set")
-    a.add_argument("--baseline-min", type=float, required=True,
-                   help="minutes per run before")
-    a.add_argument("--new-min", type=float, required=True, help="minutes per run after")
-    a.add_argument("--runs-per-year", type=float, required=True)
-    a.add_argument("--rate", dest="hourly_rate", type=float,
-                   help="hourly cost; overrides config.json")
-    a.add_argument("--note", default="")
-
-    pf = sub.add_parser("profile").add_subparsers(dest="op", required=True)
-    a = pf.add_parser("summary")
-    a.add_argument("--text", required=True)
-    pf.add_parser("seed", help="fill blank profile fields from .agent/charter.json")
-
-    ft = sub.add_parser("feature").add_subparsers(dest="op", required=True)
-    a = ft.add_parser("add")
-    a.add_argument("--name", required=True)
-    a.add_argument("--what", default="")
-    a = ft.add_parser("edit")
-    a.add_argument("--id", required=True)
-    a.add_argument("--name")
-    a.add_argument("--what")
-    ft.add_parser("delete").add_argument("--id", required=True)
-
-    sg = sub.add_parser("safeguard").add_subparsers(dest="op", required=True)
-    for name in ("add", "edit"):
-        a = sg.add_parser(name)
-        if name == "edit":
-            a.add_argument("--id", required=True)
-        a.add_argument("--area", choices=AREAS, required=name == "add")
-        a.add_argument("--control", required=name == "add", help="what is in place")
-        a.add_argument("--detail")
-        a.add_argument("--prevents")
-        a.add_argument("--status", choices=("in", "plan"))
-    sg.add_parser("delete").add_argument("--id", required=True)
-
-    hl = sub.add_parser("health").add_subparsers(dest="op", required=True)
-    a = hl.add_parser("set")
-    a.add_argument("--state", choices=HEALTH, required=True)
-    a.add_argument("--update", default="", help="one line: where it stands")
-
-    rn = sub.add_parser("run").add_subparsers(dest="op", required=True)
-    a = rn.add_parser("add", help="log real use, for realised savings")
-    a.add_argument("--count", type=int, default=1)
-    a.add_argument("--minutes", type=float, help="minutes each run took (default: new_min)")
-    a.add_argument("--at")
-    a.add_argument("--note", default="")
-    rn.add_parser("delete").add_argument("--id", required=True)
-
     cr = sub.add_parser("create", help="new project folder from a charter JSON file")
     cr.add_argument("--charter", required=True, help="charter JSON (name and purpose required)")
     cr.add_argument("--location", help="one of project_roots in config.json (default: first)")
@@ -1090,13 +712,9 @@ def main() -> int:
         if args.json:
             print(json.dumps(s, indent=2, sort_keys=True))
         else:
-            sv = s["savings"]
             print(f"chunks {s['chunks']['done']}/{s['chunks']['total']} | "
                   f"errors open {s['errors_open']} | to-dos open {s['todos_open']} | "
                   f"build {s['build_minutes'] / 60:.1f} h")
-            if sv["annual_hours"] is not None:
-                cost = f", ${sv['annual_cost']:,.0f}/yr" if sv["annual_cost"] is not None else ""
-                print(f"saves {sv['annual_hours']:.1f} h/yr{cost}")
         return _dcio.EXIT_OK
 
     if args.cmd == "next":

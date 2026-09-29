@@ -1,18 +1,14 @@
-"""Project lifecycle: create from a charter, complete, reopen -- CLI functions and board."""
+"""Project lifecycle: create from a charter, complete, reopen -- functions and the CLI other tools call."""
 import json
 import os
 import subprocess
 import sys
 import tempfile
-import threading
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
 os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real registry
 sys.path.insert(0, str(SCRIPTS))
-import dc_board  # noqa: E402
 import dc_project  # noqa: E402
 import dc_registry  # noqa: E402
 from _dcio import DcError  # noqa: E402
@@ -97,11 +93,9 @@ charter = dc_project.load_charter(agent)
 check("charter saved", charter and charter["name"] == "KPI's FY26-27", charter)
 check("blank scope rows dropped", charter and len(charter["scope"]) == 1)
 side = dc_project.load(agent)
-check("sidecar seeded with savings", side["savings"].get("baseline_min") == 60 and
-      side["savings"].get("hourly_rate") == 80, side["savings"])
-check("profile seeded from the charter", side["profile"]["summary"] == "Track KPIs in one place"
-      and [f["name"] for f in side["profile"]["features"]] == ["Dashboard"] and
-      [g["area"] for g in side["profile"]["safeguards"]] == ["Guardrails"], side["profile"])
+check("sidecar holds build data only (no board fields seeded)", side.get("created") and
+      not any(k in side for k in ("savings", "profile", "health", "runs")), sorted(side))
+check("the charter keeps its value figures as the brief", charter["value"]["baseline_min"] == 60)
 entry = dc_registry.find(dc_registry.load(H), target)
 check("registered active under the charter name",
       entry and entry["status"] == "active" and entry["name"] == "KPI's FY26-27", entry)
@@ -141,69 +135,35 @@ check("registry unchanged after damaged sidecar",
       dc_registry.find(dc_registry.load(H), target)["status"] == "active")
 (agent / "drainclamp-project.json").unlink()
 
-# 7. the board: create and status endpoints
-TOKEN = "life-token"
-server = dc_board.make_server(home=H, port=0, token=TOKEN)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-BASE = f"http://127.0.0.1:{server.server_address[1]}"
+# 7. the command line other tools (project-board) call: create, complete, reopen
+import re  # noqa: E402
+
+CLI = [sys.executable, "-B", str(SCRIPTS / "dc_project.py")]
 
 
-def call(path, body=None, token=TOKEN):
-    data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(BASE + path, data=data,
-                                 method="POST" if data is not None else "GET")
-    if token:
-        req.add_header("X-DC-Token", token)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.status, json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read() or b"{}")
+def cli(*args):
+    return subprocess.run([*CLI, "--home", H, *args], capture_output=True, text=True)
 
 
-code, body = call("/api/projects")
-check("listing offers project_roots",
-      code == 200 and [Path(r) for r in body["project_roots"]] == [roots.resolve()], body)
-
-code, _ = call("/api/create", {"charter": {"name": "Beta", "purpose": "p"}}, token=None)
-check("create without token is 403", code == 403 and not (roots / "beta").exists(), code)
-code, body = call("/api/create", {"charter": {"name": "Beta", "purpose": "p"},
-                                  "folder": "../beta"})
-check("board refuses a traversal folder", code == 400 and not (tmp / "beta").exists(),
-      (code, body))
-code, body = call("/api/create", {"charter": {"name": "Beta", "purpose": "p"},
-                                  "location": str(other)})
-check("board refuses a location outside roots", code == 400, (code, body))
-code, body = call("/api/create", {"charter": {"name": "Beta", "purpose": "Try it"}})
-check("board creates a project", code == 200 and body.get("folder") == "beta" and
-      (roots / "beta" / ".agent" / "charter.json").is_file(), (code, body))
-bid = body.get("id")
-code, body = call(f"/api/project?id={bid}")
-check("new project detail carries the charter",
-      code == 200 and body.get("charter", {}).get("purpose") == "Try it", body)
-rev = body.get("data", {}).get("rev")
-
-code, _ = call("/api/status", {"id": bid, "rev": rev, "status": "complete"}, token=None)
-check("status without token is 403", code == 403, code)
-code, body = call("/api/status", {"id": bid, "rev": rev, "status": "deleted"})
-check("unknown status is 400", code == 400, (code, body))
-code, body = call("/api/status", {"id": bid, "rev": rev + 3, "status": "complete"})
-check("stale status is 409", code == 409, (code, body))
-code, body = call("/api/status", {"id": bid, "rev": rev, "status": "complete",
-                                  "note": "done here"})
-check("board marks complete", code == 200 and body.get("rev") == rev + 1, (code, body))
-code, body = call("/api/projects")
-beta = next((p for p in body.get("projects", []) if p["id"] == bid), {})
-check("listing shows it complete", beta.get("status") == "complete", beta)
-check("Gate S menu agrees",
-      "Beta" not in [e["name"] for e in dc_registry.listing("active", H)] and
-      "Beta" in [e["name"] for e in dc_registry.listing("complete", H)])
-code, body = call("/api/status", {"id": bid, "rev": rev + 1, "status": "active"})
-check("board reopens", code == 200 and
-      dc_registry.find(dc_registry.load(H), roots / "beta")["status"] == "active", (code, body))
-
-server.shutdown()
-server.server_close()
+cf = tmp / "beta.json"
+cf.write_text(json.dumps({"name": "Beta", "purpose": "Try it"}), encoding="utf-8")
+out = cli("create", "--charter", str(cf), "--folder", "../beta")
+check("cli create refuses a traversal folder", out.returncode != 0 and not (tmp / "beta").exists(), out.stderr)
+out = cli("create", "--charter", str(cf), "--location", str(other))
+check("cli create refuses a location outside roots", out.returncode != 0, out.stderr)
+out = cli("create", "--charter", str(cf))
+m = re.search(r"created Beta at (.+?) \(git repo", out.stdout)
+check("cli create prints the root the board parses", out.returncode == 0 and m and Path(m.group(1)) == (roots / "beta").resolve(),
+      out.stdout + out.stderr)
+check("cli create writes the charter", (roots / "beta" / ".agent" / "charter.json").is_file())
+cf.write_text(json.dumps({"name": "Gamma", "purpose": "p", "kpis": ["k1"]}), encoding="utf-8")
+out = cli("create", "--charter", str(cf))
+check("unknown charter fields are refused (KPIs belong to the KPI board)", out.returncode != 0 and "unknown charter fields" in out.stderr, out.stderr)
+out = subprocess.run([*CLI, "--home", H, "--root", str(roots / "beta"), "complete", "--note", "done here"], capture_output=True, text=True)
+check("cli complete", out.returncode == 0 and dc_registry.find(dc_registry.load(H), roots / "beta")["status"] == "complete", out.stderr)
+check("Gate S menu agrees", "Beta" in [e["name"] for e in dc_registry.listing("complete", H)])
+out = subprocess.run([*CLI, "--home", H, "--root", str(roots / "beta"), "reopen"], capture_output=True, text=True)
+check("cli reopen", out.returncode == 0 and dc_registry.find(dc_registry.load(H), roots / "beta")["status"] == "active", out.stderr)
 
 print()
 print("FAILURES:", fails if fails else "none")
