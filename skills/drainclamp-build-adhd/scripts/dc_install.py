@@ -88,7 +88,8 @@ AGENT_FILE = "dca-scout.md"
 # Every subagent definition this checkout ships: the scout, plus Gate 6's
 # review roster. Each is installed, checked and removed on its own, so one
 # hand-edited definition never blocks the others.
-AGENT_FILES = (AGENT_FILE, "dca-critic.md", "dca-checker.md", "dca-refuter.md", "dca-fixer.md")
+AGENT_FILES = (AGENT_FILE, "dca-critic.md", "dca-checker.md", "dca-refuter.md", "dca-fixer.md",
+               "dca-advisor.md")
 
 # Classification of whatever currently sits at the install path.
 ABSENT = "ABSENT"

@@ -56,6 +56,12 @@ rv("adjudicate", "--round", "R1", "--file", "-", stdin=json.dumps({"id": "r1", "
 rv("decide", "--set", "r1=waive:python ints do not overflow; accepted")
 rc, out = rv("finish", "--round", "R1")
 check("the feed fixture reaches a finished round", rc == 0, out)
+rv("brief", "--milestone", "m1")
+rc, out = rv("suggest", "--advice", "A1", "--model", "opus/high", "--file", "-", stdin=json.dumps(
+    {"title": "Name the bad port in the error", "kind": "improve", "size": "S", "purpose": "",
+     "value": "faster config fixes", "detail": "", "file": "a.py", "line": 1, "evidence": "def f(x):"}))
+rv("triage", "--set", "i1=shelve")
+check("the feed fixture has a shelved idea", rc == 0 and "1 new" in out, out)
 
 side = json.loads((root / ".agent" / "drainclamp-project.json").read_text(encoding="utf-8"))
 review = side.get("review")
@@ -76,6 +82,14 @@ for f in review.get("findings", []):
 check("statuses are from the documented set",
       all(f["status"] in ("candidate", "open", "fixing", "fixed", "waived", "dismissed", "refuted", "withdrawn")
           for f in review.get("findings", [])))
+IDEA = {"id": str, "title": str, "kind": str, "size": str, "purpose": str, "value": str, "status": str,
+        "reason": str, "advice": str}
+for i in review.get("ideas", []):
+    for key, kind in IDEA.items():
+        check(f"idea field {key} is {kind.__name__}", isinstance(i.get(key), kind), i.get(key))
+check("idea statuses are from the documented set",
+      bool(review.get("ideas")) and all(i["status"] in ("proposed", "accepted", "denied", "shelved")
+                                        for i in review.get("ideas", [])))
 
 print()
 print("FAILURES:", fails if fails else "none")

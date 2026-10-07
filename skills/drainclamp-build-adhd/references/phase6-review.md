@@ -26,6 +26,7 @@ changed after the review (`STALE`, exit 5). Turning review on is the user's call
 | `checker` goal and test coverage | `dca-checker` | haiku, effort medium | packet + tests | nothing |
 | `refuter`, `recheck` | `dca-refuter` | sonnet, effort high | candidates file + cited ranges | nothing |
 | `fixer` | `dca-fixer` | sonnet, effort medium | tickets file + ticket ranges | ticket files only |
+| advisor (after a pass) | `dca-advisor` | opus, effort high | advisor brief + entry points | nothing |
 
 - **Adjudicator check, once per round.** State your model and effort in one line. If it is not
   `models.adjudicator` from the config, ask once: switch (`/model`, `/effort`) or continue with the
@@ -104,6 +105,28 @@ changed after the review (`STALE`, exit 5). Turning review on is the user's call
 **Cap reached mid-round** (the fix loop needs a 7th run): finish what can be finished, then say
 `Round cap reached. Reply go for a fix-diff round.` On go:
 `dc_review.py packet --only "<fixed files>"` starts a small round over just those files.
+
+## Advisor (after a pass, never blocking)
+
+The review asks "is it wrong?". The advisor asks "does it do its job as well as it could?". It
+runs when `config --advisor` says so: `final` (default) after the last milestone's review passes,
+`milestone` after every pass, `off` never, or whenever the user asks. It sits outside the round
+cap: one `dca-advisor` run (Opus, high) per brief.
+
+1. `dc_review.py brief [--milestone m]`. It refuses until the review passes. The brief holds the
+   purpose lines (charter first, then project summary, then README), architecture, roadmap,
+   decisions, log, to-dos, handled defects, and ideas already decided or shelved.
+2. Spawn once: `Advisor brief: .agent/review/A1/brief.md. Output JSON lines only.` Then
+   `dc_review.py suggest --advice A1 --model <m> --file -`. The script keeps at most 5. It
+   rejects an idea that names no purpose line or whose evidence is not in a file or the brief,
+   drops ones already accepted or denied, and brings a shelved one back under its old id.
+3. **One table, one question:** `Reply per id: accept | deny: <reason> | shelve`. Then
+   `dc_review.py triage --set i1=accept --set "i2=deny:<reason>" --set i3=shelve`.
+   Accepting an `S` idea adds a to-do. Accepting an `M` or `L` idea needs a roadmap row: run Gate 2
+   for it, ask nothing more. Denied ideas never come back. Shelved ideas return in the next brief.
+
+Do the advisor's job yourself only on a host without subagents, labelled inline. The
+orchestrator built the code, which is exactly the bias the advisor exists to avoid.
 
 ## Output contract
 

@@ -282,11 +282,92 @@ check("an aborted round is never a pass", code == 6 and "NOT-RUN" in out, out)
 rc, out = rv(ab, "packet", "--milestone", "m1")
 check("a new round may start after an abort", rc == 0 and "R2" in out, out)
 
+# -- big files: a new one is pointed at, a clipped modified one is partial coverage --------------
+big = make_repo("big")
+(big / "long.py").write_text("".join(f"V{i} = {i}\n" for i in range(300)), encoding="utf-8")
+git(big, "add", "long.py")
+git(big, "commit", "-qm", "long")
+(big / "long.py").write_text("".join(f"V{i} = {i + 1}\n" for i in range(300)), encoding="utf-8")
+(big / "fresh.py").write_text("".join(f"def f{i}():\n    return {i}\n" for i in range(160)), encoding="utf-8")
+green(big)
+rc, out = rv(big, "packet", "--milestone", "m1", "--depth", "final")
+pk = (big / ".agent/review/R1/packet.md").read_text(encoding="utf-8")
+check("a large new file is pointed at, not half inlined",
+      "### FILE fresh.py  NEW, 320 lines: not inlined" in pk and "def f159" not in pk, pk[:200])
+check("its symbols are listed so agents can read it", "fresh.py:319-320  f159" in pk)
+check("a clipped modified file makes coverage partial",
+      "COVERAGE: partial" in out and "diff cut at 250 lines in long.py" in pk, out)
+
 # -- mode final only guards the last close ----------------------------------------------------
 fin = make_repo("final")
 rv(fin, "config", "--mode", "final")
 rc, out = set_roadmap(fin, "done")
 check("mode final: an intermediate milestone closes without review", rc == 0, out)
+
+# -- the advisor ----------------------------------------------------------------------------------
+adv = make_repo("advise")
+(adv / ".agent" / "charter.json").write_text(json.dumps({"charter": {
+    "name": "adv", "purpose": "Sum parser totals for the payroll export",
+    "out_of_scope": "Anything beyond parsing totals"}}), encoding="utf-8")
+rv(adv, "config", "--mode", "milestone")
+green(adv)
+rv(adv, "packet", "--milestone", "m1")
+rc, out = rv(adv, "brief", "--milestone", "m1")
+check("brief refused before the review passes", rc == 6 and "ADVICE NOT-RUN" in out, out)
+rv(adv, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+rv(adv, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+rv(adv, "finish", "--round", "R1")
+rc, out = rv(adv, "brief", "--milestone", "m1")
+check("brief built after a passing review", rc == 0 and "ADVICE A1" in out and "purpose lines 2" in out, out)
+brief = (adv / ".agent/review/A1/brief.md").read_text(encoding="utf-8")
+check("brief carries charter purpose and out-of-scope as P lines",
+      "P1: [charter purpose] Sum parser totals" in brief and "P2: [charter out_of_scope]" in brief, brief[:300])
+
+
+def idea(title, size="S", purpose="P1", file="a.py", line=1, evidence="def parse(items):", kind="improve"):
+    return json.dumps({"title": title, "kind": kind, "size": size, "purpose": purpose,
+                       "value": "the payroll officer gets correct totals", "detail": "d",
+                       "file": file, "line": line, "evidence": evidence})
+
+
+ideas = "\n".join([
+    idea("Sum every item, not all but the last"),
+    idea("Validate the totals against the export header", size="M", file="",
+         evidence="Sum parser totals for the payroll export"),
+    idea("Serves nothing listed", purpose="P9"),
+    idea("Grounded in nothing", evidence="this quote is nowhere"),
+    idea("Report which item overflowed", file="", evidence="Sum parser totals for the payroll export"),
+    idea("Cache parsed totals between runs", size="L", kind="expand", file="",
+         evidence="Sum parser totals for the payroll export"),
+    idea("Expose totals to the KPI feed", size="M", kind="expand", file="",
+         evidence="Sum parser totals for the payroll export"),
+    idea("Sixth valid idea over the cap", file="", evidence="Sum parser totals for the payroll export"),
+])
+rc, out = rv(adv, "suggest", "--advice", "A1", "--model", "opus/high", "--file", "-", stdin=ideas)
+check("advisor ideas: grounded ones kept, ungrounded rejected, five at most",
+      rc == 0 and "5 new" in out and "2 rejected" in out and "TRUNCATED 1" in out, out)
+check("a purpose that is not in the brief is rejected", "is not a P<n> in the brief" in out, out)
+rc, out = rv(adv, "suggest", "--advice", "A1", "--file", "-", stdin=idea("Again"))
+check("one advisor run per brief", rc != 0 and "one run per brief" in out, out)
+rc, out = rv(adv, "triage", "--set", "i2=deny")
+check("deny needs a reason", rc != 0 and "deny needs a reason" in out, out)
+rc, out = rv(adv, "triage", "--set", "i1=accept", "--set", "i2=accept", "--set", "i3=shelve",
+             "--set", "i4=deny:out of scope for a parser")
+check("accepting an S idea adds a to-do; an M idea asks for a roadmap row",
+      rc == 0 and "to-do t1 added" in out and "i2 is size M: add a roadmap row" in out, out)
+check("the to-do names the idea", any(t["text"].startswith("[i1]") for t in dc_project.load(adv / ".agent")["todos"]))
+rc, out = rv(adv, "brief", "--milestone", "m1")
+brief2 = (adv / ".agent/review/A2/brief.md").read_text(encoding="utf-8")
+check("the next brief lists decided and shelved ideas",
+      "i4 [denied] Cache parsed totals" in brief2 and "i3 Report which item overflowed" in brief2, brief2[-600:])
+again = "\n".join([idea("Report which item overflowed", file="", evidence="Sum parser totals for the payroll export"),
+                   idea("Cache parsed totals between runs", size="L", kind="expand", file="",
+                        evidence="Sum parser totals for the payroll export")])
+rc, out = rv(adv, "suggest", "--advice", "A2", "--model", "opus/high", "--file", "-", stdin=again)
+check("a shelved idea comes back with its id; a denied one never does",
+      "1 revived" in out and "1 already decided" in out and "i3" in out, out)
+code, out = rv(adv, "status", "--milestone", "m1")
+check("status shows the advisor's ideas", "advisor final: ideas" in out and "proposed" in out, out)
 
 # -- dc_verify writes the tier record Gate 6 reads ------------------------------------------------
 ver = make_repo("verify")

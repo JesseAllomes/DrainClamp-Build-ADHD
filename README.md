@@ -165,6 +165,7 @@ cannot be marked `done` until a review round clears it. Per round, at most six s
 | checker | `dca-checker` | haiku, medium | goal met, every new branch tested |
 | refuter, re-check | `dca-refuter` | sonnet, high | disprove each finding; confirm each fix |
 | fixer | `dca-fixer` | sonnet, medium | apply the user-approved ticket exactly, nothing else |
+| advisor | `dca-advisor` | opus, high | after a pass: up to 5 grounded improvements against the build's purpose |
 
 The main session (Opus, high effort, by default) orchestrates and adjudicates, and the user makes
 every fix / waive / dismiss call. Accuracy comes from independence: two lenses, then a refuter that
@@ -178,6 +179,16 @@ defaults to `REFUTED`. Cost stays low because:
 
 Findings live in the sidecar under `review`, which project-board shows as an "Adversarial review"
 section.
+
+The advisor is a separate, non-blocking step. After a review passes (by default only the final one),
+one fresh Opus agent weighs the build against its stated purpose and proposes up to five
+improvements. Each must cite the purpose line it serves and evidence the script can check. You
+accept each one (a small one becomes a to-do, a bigger one a roadmap row), deny it (with a reason,
+and it never comes back) or shelve it (it comes back next time). The board lists them under
+"Improvement ideas".
+
+Use the real `dca-*` agent types, not a general-purpose stand-in. Their short tool lists cut each
+run's fixed overhead: a stand-in measured about 45k tokens before reading anything.
 
 ### The sandbox
 
@@ -323,7 +334,7 @@ py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 pl
 py -3 -B tests/t_skeleton.py   # one change through the core gates
 ```
 
-757 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
+788 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes

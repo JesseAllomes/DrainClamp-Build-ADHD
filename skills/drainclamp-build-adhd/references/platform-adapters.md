@@ -41,7 +41,7 @@ hooks, which this skill does not install. The parent persists whatever the scout
 results come back with a `TRUNCATED n/N` header and a narrowing hint (which path or symbol to
 re-query), and the parent re-scopes rather than accepting a silent truncation.
 
-Gate 6 adds four definitions beside the scout, installed the same way: `dca-critic`, `dca-checker`
+Gate 6 adds five definitions beside the scout, installed the same way: `dca-critic`, `dca-checker`, `dca-advisor`
 and `dca-refuter` (read-only like the scout) and `dca-fixer` (Read, Edit, Write; no shell). None
 has an agent-spawning tool, so the per-round cap in `dc_review.py run` cannot be exceeded from inside
 a subagent. Their frontmatter sets `model` and `effort`; the orchestrator may override `model` per

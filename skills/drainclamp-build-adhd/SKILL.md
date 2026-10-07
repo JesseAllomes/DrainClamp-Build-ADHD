@@ -17,7 +17,7 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 | 3 Checks | verify config changed or `DC:VERIFY` is empty | `phase3-select-checks.md`; `dc_verify.py` |
 | 4 Implement | always | `phase4-implement.md`; `dc_project.py`, `dc_map.py`, `dc_chunk.py` |
 | 5 Reset | milestone or chunk boundary | `phase5-reset.md`; `dc_state.py --purge-check` |
-| 6 Review | review mode on (`dc_review.py config`) at milestone close, after Gate 3, before Gate 5; or on request | `phase6-review.md`; `dc_review.py` |
+| 6 Review | review mode on (`dc_review.py config`) at milestone close, after Gate 3, before Gate 5; or on request. Advisor after a pass | `phase6-review.md`; `dc_review.py` |
 
 Gate S runs first, prints its output verbatim, and stops; never choose for the user or resume silently. Read only the
 current gate reference (plus `platform-adapters.md` when host capability is in question). `dc_install.py` installs

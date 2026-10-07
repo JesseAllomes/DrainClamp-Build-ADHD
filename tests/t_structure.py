@@ -90,7 +90,7 @@ check("no scout definition nested inside the skill", not nested_scout, str(neste
 # spawn agents (that is how the per-round cap could be exceeded unseen). Model and
 # effort are set per role so the orchestrator's routing has a default to fall back on.
 ROSTER = {"dca-critic.md": False, "dca-checker.md": False, "dca-refuter.md": False,
-          "dca-fixer.md": True}
+          "dca-fixer.md": True, "dca-advisor.md": False}
 for name, writes in ROSTER.items():
     path = ROOT / "agents" / name
     if not path.is_file():
