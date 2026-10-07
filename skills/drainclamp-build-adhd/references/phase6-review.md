@@ -31,8 +31,22 @@ changed after the review (`STALE`, exit 5). Turning review on is the user's call
 - **Adjudicator check, once per round.** State your model and effort in one line. If it is not
   `models.adjudicator` from the config, ask once: switch (`/model`, `/effort`) or continue with the
   verdict tagged `ADJUDICATOR: <model>`.
-- Agent names: a plugin install lists `drainclamp-build-adhd:dca-critic`, a copied install
-  `dca-critic`. Use whichever the host lists. Pass the role's model as the Agent tool's `model`.
+- **Models per host.** The table's defaults are Claude's. `dc_review.py config` prints every host's
+  roster (`models`, `models codex`, `models grok`); set one with `config --host <h> --model role=m/e`.
+  The adjudicator is always the session running the round.
+
+  | Host | Agent names | How a role gets its model |
+  |---|---|---|
+  | Claude Code | `drainclamp-build-adhd:dca-critic` (plugin) or `dca-critic` (copied) | Agent tool `model` per spawn |
+  | Grok | `drainclamp-build-adhd:dca-critic` as `subagent_type` | `spawn_subagent` `model` per spawn |
+  | Codex | `dca-critic` (spawn by naming it) | baked into `~/.codex/agents/dca-*.toml` at install |
+
+  Codex reads the model from the agent file, so changing its roster means re-running
+  `dc_install.py --host codex --agents-only [--project <root>]` from the installed plugin.
+  Register each run with the model it actually ran on.
+- **Cross-model review.** Review state lives in `.agent/`, not in a host. To have another model
+  family attack the change, run the round from another host in the same repository: build in one,
+  review in the other. Never reach the other host through a nested CLI.
 - **Cap.** At most `max_agents` (≤6) runs per round. Register every run *before* spawning it:
   `dc_review.py run --round R<n> --role <role> --model <model>`. The script refuses the run over
   the cap, and that refusal is the cap.

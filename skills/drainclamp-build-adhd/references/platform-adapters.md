@@ -33,7 +33,16 @@ The definition lives at `agents/dca-scout.md` at the repository root, because Cl
 loader reads agents only from there and silently ignores a path inside `skills/`. Claude Code reads
 installed agent definitions from `~/.claude/agents/`, so `dc_install.py` copies it there when that
 directory already exists — it never creates it, because a definition in a directory the host does not
-read is install theatre. No other host documents a subagent directory, so no other host gets a copy.
+read is install theatre.
+
+Grok loads the plugin's `agents/` directory itself and lists each as
+`drainclamp-build-adhd:dca-*`; `spawn_subagent` takes the role's `model`. Codex reads custom agents
+as TOML from `~/.codex/agents/`, and its plugins cannot ship them, so `dc_install.py --host codex`
+generates `dca-*.toml` from the same definitions: `name`, `description`, `developer_instructions`,
+the role's `model` and `model_reasoning_effort` from the Codex roster, and `sandbox_mode`
+(`read-only`, or `workspace-write` for the fixer). It creates `~/.codex/agents/` when Codex is
+present, because Codex documents that directory. With the skill installed as a plugin, run it from
+the plugin's copy with `--agents-only` so no skill link is made, and again after each upgrade.
 
 When a subagent is available, `dca-scout` is read-only: `Glob`, `Grep`, `Read`. It has no `Write`,
 because a `tools:` list cannot confine writes to `.agent/` — that would need host permissions or
@@ -42,7 +51,8 @@ results come back with a `TRUNCATED n/N` header and a narrowing hint (which path
 re-query), and the parent re-scopes rather than accepting a silent truncation.
 
 Gate 6 adds five definitions beside the scout, installed the same way: `dca-critic`, `dca-checker`, `dca-advisor`
-and `dca-refuter` (read-only like the scout) and `dca-fixer` (Read, Edit, Write; no shell). None
+and `dca-refuter` (read-only like the scout) and `dca-fixer` (Read, Edit, Write; no shell; on Codex the
+sandbox allows workspace writes and cannot withhold the shell, and the hash scope check still holds). None
 has an agent-spawning tool, so the per-round cap in `dc_review.py run` cannot be exceeded from inside
 a subagent. Their frontmatter sets `model` and `effort`; the orchestrator may override `model` per
 call from `dc_review.py config`. Subagents cannot ask the user anything, so every decision stays

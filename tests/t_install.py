@@ -357,6 +357,56 @@ check("--no-agent leaves the agents directory alone",
       out.returncode == 0 and "dc-scout" not in out.stdout,
       out.stdout.strip().splitlines()[0])
 
+# --- Codex agents: TOML generated from the same definitions ---------------
+import tomllib  # noqa: E402
+
+home = new_home()
+(home / ".codex").mkdir()  # Codex present, no agents directory yet
+out = run(home, "--host", "codex", "--agents-only")
+codex_dir = home / ".codex" / "agents"
+check("--agents-only installs Codex agents and no skill link",
+      out.returncode == 0 and (codex_dir / "dca-critic.toml").is_file()
+      and not (home / ".codex" / "skills").exists(), out.stdout)
+critic = tomllib.loads((codex_dir / "dca-critic.toml").read_text(encoding="utf-8"))
+meta, body = dc_install.split_definition(dc_install.source_agent(SOURCE, "dca-critic.md")
+                                         .read_text(encoding="utf-8"))
+check("the critic TOML carries the definition and the Codex roster's model",
+      critic["name"] == "dca-critic" and critic["description"] == meta["description"]
+      and critic["developer_instructions"] == body and critic["model"] == "gpt-6.1-sol"
+      and critic["model_reasoning_effort"] == "high" and critic["sandbox_mode"] == "read-only",
+      str({k: v for k, v in critic.items() if k != "developer_instructions"}))
+fixer = tomllib.loads((codex_dir / "dca-fixer.toml").read_text(encoding="utf-8"))
+checker = tomllib.loads((codex_dir / "dca-checker.toml").read_text(encoding="utf-8"))
+scout = tomllib.loads((codex_dir / "dca-scout.toml").read_text(encoding="utf-8"))
+check("the fixer may write; the checker runs on the light model; the scout inherits",
+      fixer["sandbox_mode"] == "workspace-write" and checker["model"] == "gpt-6-luna"
+      and "model" not in scout and scout["sandbox_mode"] == "read-only")
+out = run(home, "--host", "codex", "--agents-only")
+check("a second Codex install changes nothing", out.returncode == 0 and "INSTALLED" not in out.stdout,
+      out.stdout)
+out = run(home, "--host", "codex", "--agents-only", "--check")
+check("--check --agents-only reports the Codex agents healthy",
+      out.returncode == 0 and "OK       .codex/agents/dca-critic.toml" in out.stdout, out.stdout)
+
+proj = Path(tempfile.mkdtemp(prefix="dcproj-"))
+(proj / ".agent").mkdir()
+(proj / ".agent" / "drainclamp-project.json").write_text(json.dumps(
+    {"schema": 1, "rev": 1, "chunks": {}, "review": {"config": {"host_models": {
+        "codex": {"checker": "gpt-6-sol/low"}}}}}), encoding="utf-8")
+out = run(home, "--host", "codex", "--agents-only", "--project", str(proj))
+checker = tomllib.loads((codex_dir / "dca-checker.toml").read_text(encoding="utf-8"))
+check("--project takes the Codex roster from that project's review config",
+      out.returncode == 0 and checker["model"] == "gpt-6-sol" and checker["model_reasoning_effort"] == "low",
+      out.stdout + out.stderr)
+
+(codex_dir / "dca-critic.toml").write_text("# mine\n", encoding="utf-8")
+out = run(home, "--host", "codex", "--agents-only")
+check("an edited Codex agent is refused", out.returncode == 2
+      and (codex_dir / "dca-critic.toml").read_text(encoding="utf-8") == "# mine\n", out.stdout)
+out = run(home, "--host", "codex", "--agents-only", "--uninstall", "--force")
+check("uninstall removes every Codex agent it wrote",
+      out.returncode == 0 and not list(codex_dir.glob("dca-*.toml")), out.stdout)
+
 check("the checkout is intact after the whole suite",
       source_files() == BASELINE, f"{source_files()} files, baseline {BASELINE}")
 

@@ -100,6 +100,14 @@ def finding(cl, ev, line=3, sev="high", cat="correctness", file="a.py", decision
 root = make_repo("main")
 rc, out = rv(root, "config")
 check("config defaults to mode off", rc == 0 and "mode off" in out, out)
+check("config lists the Codex and Grok rosters by default",
+      "models codex: " in out and "checker=gpt-6-luna/medium" in out and "models grok: " in out, out)
+rc, out = rv(root, "config", "--host", "codex", "--model", "checker=gpt-6-sol/low")
+check("--host codex sets the Codex roster, not Claude's",
+      rc == 0 and "checker=gpt-6-sol/low" in out and "checker=haiku/medium" in out, out)
+check("a host override survives normalisation beside the other defaults",
+      dc_review.models_for(side(root)["config"], "codex")
+      == {**dc_review.DEFAULT_CONFIG["host_models"]["codex"], "checker": "gpt-6-sol/low"})
 rc, out = set_roadmap(root, "active")
 check("mode off: roadmap writes are untouched by Gate 6", rc == 0, out)
 rc, out = rv(root, "config", "--mode", "milestone", "--model", "critic=sonnet/high")

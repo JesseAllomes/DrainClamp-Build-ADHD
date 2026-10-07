@@ -58,7 +58,19 @@ DEFAULT_CONFIG = {
     "advisor": "final",
     "models": {"adjudicator": "opus/high", "critic": "sonnet/high", "checker": "haiku/medium",
                "refuter": "sonnet/high", "fixer": "sonnet/medium", "advisor": "opus/high"},
+    # `models` above is Claude's roster. Other hosts name their own models: Codex bakes
+    # them into its agent files at install (dc_install.py), Grok takes one per spawn.
+    # The adjudicator is whichever session runs the round, so no host lists it.
+    "host_models": {
+        "codex": {"critic": "gpt-6.1-sol/high", "checker": "gpt-6-luna/medium",
+                  "refuter": "gpt-6.1-sol/high", "fixer": "gpt-6.1-sol/medium",
+                  "advisor": "gpt-6-astra/high"},
+        "grok": {"critic": "grok-4.6/high", "checker": "grok-4.7-build-fast/medium",
+                 "refuter": "grok-4.6/high", "fixer": "grok-4.6/medium",
+                 "advisor": "grok-4.7/high"},
+    },
 }
+HOSTS = ("claude", "codex", "grok")
 ADVISOR_MODES = ("off", "milestone", "final")
 IDEA_CAP = 5
 IDEA_SIZES = ("S", "M", "L")
@@ -152,11 +164,17 @@ def review_of(data: dict) -> dict:
         raise DcError("sidecar `review` is not an object; left untouched")
     cfg = dict(DEFAULT_CONFIG)
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
+    cfg["host_models"] = {h: dict(m) for h, m in DEFAULT_CONFIG["host_models"].items()}
     given = raw.get("config") if isinstance(raw.get("config"), dict) else {}
     for key, value in given.items():
         if key == "models" and isinstance(value, dict):
             cfg["models"].update({str(k): str(v) for k, v in value.items()})
-        elif key != "models":
+        elif key == "host_models" and isinstance(value, dict):
+            for host, roles in value.items():
+                if isinstance(roles, dict):
+                    cfg["host_models"].setdefault(str(host), {}).update(
+                        {str(k): str(v) for k, v in roles.items()})
+        elif key not in ("models", "host_models"):
             cfg[key] = value
     rounds = raw.get("rounds") if isinstance(raw.get("rounds"), list) else []
     findings = raw.get("findings") if isinstance(raw.get("findings"), list) else []
@@ -165,6 +183,13 @@ def review_of(data: dict) -> dict:
     out = dict(raw)
     out.update({"config": cfg, "rounds": rounds, "findings": findings, "advice": advice, "ideas": ideas})
     return out
+
+
+def models_for(cfg: dict, host: str) -> dict:
+    """Role -> "model/effort" for one host's review roster."""
+    if host == "claude":
+        return dict(cfg["models"])
+    return dict((cfg.get("host_models") or {}).get(host) or {})
 
 
 def _store(data: dict, rv: dict) -> None:
@@ -930,6 +955,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--max-findings", type=int)
     c.add_argument("--advisor", choices=ADVISOR_MODES, help="when the advisor runs (default final)")
     c.add_argument("--model", action="append", default=[], help="role=model/effort")
+    c.add_argument("--host", choices=HOSTS, default="claude",
+                   help="whose roster --model sets (default claude)")
 
     k = sub.add_parser("packet", help="start a round: Gate 3 check + review packet")
     k.add_argument("--milestone")
@@ -1054,7 +1081,10 @@ def main() -> int:
                     if not 1 <= args.max_findings <= 20:
                         raise DcError("max findings per agent is 1..20")
                     cfg["max_findings_per_agent"] = args.max_findings
-                cfg["models"].update(sets)
+                if args.host == "claude":
+                    cfg["models"].update(sets)
+                else:
+                    cfg["host_models"].setdefault(args.host, {}).update(sets)
             data = change(apply_cfg)
         else:
             data = dc_project.load(agent)
@@ -1063,6 +1093,8 @@ def main() -> int:
               f"max agents {cfg['max_agents']} | findings/agent {cfg['max_findings_per_agent']} | "
               f"advisor {cfg['advisor']}")
         print("models: " + ", ".join(f"{k}={v}" for k, v in sorted(cfg["models"].items())))
+        for host in HOSTS[1:]:
+            print(f"models {host}: " + ", ".join(f"{k}={v}" for k, v in sorted(models_for(cfg, host).items())))
         return _dcio.EXIT_OK
 
     if args.cmd == "packet":

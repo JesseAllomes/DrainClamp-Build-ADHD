@@ -229,7 +229,7 @@ The repository is its own marketplace. Two commands, no clone:
 /plugin install drainclamp-build-adhd@drainclamp-adhd
 ```
 
-That installs the skill and the `dca-scout` subagent together, and `/plugin update drainclamp-build-adhd`
+That installs the skill and the `dca-*` subagents together, and `/plugin update drainclamp-build-adhd`
 pulls later versions. Claude Code copies the plugin into its own cache, so the install does not
 track a checkout.
 
@@ -254,9 +254,30 @@ If the source is already added, refresh it first with
 `drainclamp-build-adhd@jesseallomes/drainclamp-build-adhd` — not `@drainclamp-adhd`
 (that qualifier is Claude Code's marketplace id).
 
-Use this **or** `dc_install.py` for Grok, not both. `dc_install.py --uninstall --host grok`
+Use this **or** `dc_install.py` for Grok, not both. `dc_install.py --uninstall --host agents`
 removes the skill-link install if you are switching. Reload plugins (`r` in the Plugins
-tab) or start a new session after install.
+tab) or start a new session after install. The plugin brings the `dca-*` subagents too; Gate 6
+passes each role its Grok model at spawn (`dc_review.py config` shows the roster).
+
+### Codex plugin
+
+Codex reads the Claude catalog straight from git:
+
+```powershell
+codex plugin marketplace add https://github.com/JesseAllomes/DrainClamp-Build-ADHD.git
+codex plugin add drainclamp-build-adhd@drainclamp-adhd
+```
+
+Codex plugins cannot ship subagents, so install Gate 6's roster once from the plugin's own copy.
+It writes `~/.codex/agents/dca-*.toml`, each with its role's Codex model (`dc_review.py config`
+shows the roster; `--project <repo>` uses that repo's override), and makes no skill link:
+
+```powershell
+py -3 -B "$HOME\.codex\plugins\cache\drainclamp-adhd\drainclamp-build-adhd\<version>\skills\drainclamp-build-adhd\scripts\dc_install.py" --host codex --agents-only
+```
+
+Update with `codex plugin marketplace upgrade drainclamp-adhd`, then re-run that line for the new
+`<version>`: the agent files are copies, so they refresh only when the installer runs.
 
 ### Direct install (Claude Code, Codex, Grok)
 
@@ -334,7 +355,7 @@ py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 pl
 py -3 -B tests/t_skeleton.py   # one change through the core gates
 ```
 
-788 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
+820 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes
