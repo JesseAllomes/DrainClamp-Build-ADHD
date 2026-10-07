@@ -384,6 +384,199 @@ check("dc_verify records the tier outcome and tree",
 if p.returncode == 0:
     check("a passing tier record satisfies Gate 6's Gate 3 check", dc_review.gate3_status(ver) is not None)
 
+
+def fixing_repo(name, *batch):
+    """A repo whose round R1 holds critic-a's findings, confirmed and decided `fix`."""
+    root = make_repo(name)
+    rv(root, "config", "--mode", "milestone")
+    green(root)
+    rv(root, "packet", "--milestone", "m1")
+    rv(root, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+    rv(root, "run", "--round", "R1", "--role", "refuter", "--model", "sonnet")
+    rv(root, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="\n".join(batch))
+    ids = [f["id"] for f in side(root)["findings"]]
+    rv(root, "adjudicate", "--round", "R1", "--file", "-",
+       stdin="\n".join(json.dumps({"id": i, "verdict": "CONFIRMED", "note": "fixture"}) for i in ids))
+    rv(root, "decide", *[a for i in ids for a in ("--set", f"{i}=fix")])
+    return root
+
+
+# -- scope names a ticket whose files did not change -----------------------------------------------
+bl = fixing_repo("blocked", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rv(bl, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+rc, out = rv(bl, "scope", "--round", "R1")
+check("scope flags a ticket whose files did not change",
+      rc == 0 and "r1: none of its files changed (fixer BLOCKED?)" in out, out)
+
+# -- mode final guards the last close ------------------------------------------------------------
+fl = make_repo("final-last")
+rv(fl, "config", "--mode", "final")
+both = tmp / "rm-both.md"
+both.write_text(ROADMAP.replace("| pending |", "| done |"), encoding="utf-8")
+rc, out = st(fl, "--set", "ROADMAP", "--file", str(both))
+check("mode final: closing the last milestone unreviewed is refused NOT-RUN",
+      rc == 6 and "NOT-RUN" in out and "m2" in out, out)
+
+# -- a damaged sidecar never holds the purge -------------------------------------------------------
+dp = make_repo("damaged-purge")
+(dp / ".agent" / "drainclamp-project.json").write_text("{not json", encoding="utf-8")
+line, _ = dc_state.purge_check(dc_state.load(dp / ".agent" / "drainclamp-state.md"), dp, False)
+check("a damaged sidecar counts as no open findings in the purge check",
+      dc_state.review_blocking(dp) == 0 and not line.startswith("HOLD (review open"), line)
+
+# -- resolve --reopen sends a failed re-check back to open ---------------------------------------
+ro = fixing_repo("reopen", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rc, out = rv(ro, "resolve", "--id", "r1", "--reopen", "--note", "re-check NOT-RESOLVED")
+f1 = side(ro)["findings"][0]
+check("resolve --reopen puts the finding back to open",
+      rc == 0 and "r1 reopened" in out and f1["status"] == "open" and f1["resolved_at"] is None
+      and "NOT-RESOLVED" in f1["refuter_note"], out)
+
+# -- brief --anyway: the advisor without a passing review, recorded ------------------------------
+an = make_repo("anyway")
+rv(an, "config", "--mode", "milestone")
+green(an)
+rv(an, "packet", "--milestone", "m1")
+rc, out = rv(an, "brief", "--milestone", "m1", "--anyway", "user wants ideas before the review ends")
+adv_rec = side(an)["advice"]
+check("brief --anyway builds the brief and records the reason",
+      rc == 0 and "ADVICE A1" in out and bool(adv_rec)
+      and adv_rec[0]["anyway"] == "user wants ideas before the review ends", out)
+
+# -- the per-agent findings cap --------------------------------------------------------------------
+pc = make_repo("per-agent-cap")
+rv(pc, "config", "--mode", "milestone")
+green(pc)
+rv(pc, "packet", "--milestone", "m1")
+rv(pc, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+nine = "\n".join(finding(f"distinct claim number {i}", "for i in range(len(items) - 1):") for i in range(9))
+rc, out = rv(pc, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin=nine)
+check("a batch over max_findings_per_agent is cut and says so",
+      rc == 0 and "9 in" in out and "TRUNCATED 1 over the per-agent cap" in out, out)
+
+# -- an unreadable finder reply is not a clean review ----------------------------------------------
+up = make_repo("unparsable")
+rv(up, "config", "--mode", "milestone")
+green(up)
+rv(up, "packet", "--milestone", "m1")
+rv(up, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+rc, out = rv(up, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-",
+             stdin="I looked through the packet.\nOverall it seems fine.\n")
+check("a reply with no parsable finding is refused (exit 6)", rc == 6 and "NOT-INGESTED" in out, out)
+rc, out = rv(up, "finish", "--round", "R1")
+check("the refused reply leaves the run un-ingested", rc == 6 and "never ingested: critic-a" in out, out)
+one = json.loads(finding("loop stops one item early", "for i in range(len(items) - 1):"))
+fenced = "```json\n[\n" + json.dumps(one, indent=2) + "\n]\n```\n"
+rc, out = rv(up, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin=fenced)
+check("a fenced, pretty-printed JSON array is parsed", rc == 0 and "1 new" in out, out)
+
+# -- a reopened finding cannot resolve on its old ticket -----------------------------------------
+rt = fixing_repo("reticket", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rv(rt, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(rt / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+rv(rt, "scope", "--round", "R1")
+rv(rt, "resolve", "--id", "r1", "--reopen", "--note", "re-check NOT-RESOLVED")
+check("reopen clears the old ticket", side(rt)["findings"][0]["ticket"] == "", side(rt)["findings"][0])
+rv(rt, "decide", "--set", "r1=fix")
+rc, out = rv(rt, "resolve", "--id", "r1", "--fixed")
+check("resolve --fixed after a reopen needs a new ticket", rc != 0 and "no ticket" in out, out)
+
+# -- the fixer may not touch .agent/ ---------------------------------------------------------------
+gd = fixing_repo("guard", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rv(gd, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(gd / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+car = gd / ".agent" / "drainclamp-project.json"
+raw = json.loads(car.read_text(encoding="utf-8"))
+raw["review"]["config"]["mode"] = "off"
+car.write_text(json.dumps(raw), encoding="utf-8")
+rc, out = rv(gd, "scope", "--round", "R1")
+check("a fixer edit to the review store is a SCOPE-BREACH (exit 4)", rc == 4 and ".agent/" in out, out)
+
+# -- a ticket stored after a breach does not hide it ---------------------------------------------
+br = fixing_repo("breach-kept", finding("loop stops one item early", "for i in range(len(items) - 1):"),
+                 finding("caller passes a literal list", "return parse([1, 2, 3])", line=9, sev="low",
+                         cat="conformance"))
+rv(br, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(br / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+(br / "b.py").write_text("X = 2\n", encoding="utf-8")
+rc, out = rv(br, "scope", "--round", "R1")
+check("a stray edit is a breach", rc == 4 and "b.py" in out, out)
+rv(br, "ticket", "--round", "R1", "--id", "r2", "--allow", "a.py", "--file", "-", stdin="TICKET r2\n")
+rc, out = rv(br, "scope", "--round", "R1")
+check("a ticket stored after a breach keeps the breach", rc == 4 and "b.py" in out, out)
+
+# -- files left out at the packet cap are not reviewed -------------------------------------------
+lo = make_repo("left-out")
+for n in range(4):
+    (lo / f"f{n}.py").write_text("".join(f"V{i} = {i}\n" for i in range(200)), encoding="utf-8")
+rv(lo, "config", "--mode", "milestone")
+green(lo)
+rv(lo, "packet", "--milestone", "m1", "--depth", "quick")
+missed = side(lo)["rounds"][0].get("left_out") or []
+check("the packet records the files it left out at the cap", len(missed) >= 1, side(lo)["rounds"][0])
+rv(lo, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+rv(lo, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+rc, out = rv(lo, "finish", "--round", "R1")
+check("a round that left files out is not a pass (exit 6)", rc == 6 and "left out at the packet cap" in out, out)
+green(lo)
+rv(lo, "packet", "--milestone", "m1", "--depth", "quick", "--only", ";".join(missed))
+rv(lo, "run", "--round", "R2", "--role", "critic-a", "--model", "sonnet")
+rv(lo, "ingest", "--round", "R2", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+rc, out = rv(lo, "finish", "--round", "R2")
+check("a later round over the left-out files clears them", rc == 0 and "REVIEW-PASS" in out, out)
+
+# -- two defects a line apart stay two findings ----------------------------------------------------
+tw = make_repo("two-defects")
+rv(tw, "config", "--mode", "milestone")
+green(tw)
+rv(tw, "packet", "--milestone", "m1")
+rv(tw, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+pair = "\n".join([finding("loop stops one item early", "for i in range(len(items) - 1):"),
+                  finding("total is not reset between calls", "total += items[i]", line=4)])
+rc, out = rv(tw, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin=pair)
+check("same category a line apart with different code stays two findings", rc == 0 and "2 new" in out, out)
+
+# -- an untracked symlink is never inlined into the packet -----------------------------------------
+sl = make_repo("symlink")
+secret = tmp / "outside-secret.txt"
+secret.write_text("TOP-SECRET-VALUE\n", encoding="utf-8")
+try:
+    os.symlink(secret, sl / "link.txt")
+    linked = True
+except (OSError, NotImplementedError):
+    linked = False
+if linked:
+    green(sl)
+    rc, out = rv(sl, "packet", "--milestone", "m1")
+    pk = (sl / ".agent/review/R1/packet.md").read_text(encoding="utf-8")
+    check("an untracked symlink's target is not inlined", rc == 0 and "TOP-SECRET-VALUE" not in pk, out)
+else:
+    print("SKIPPED: symlink check, this host cannot create symlinks")
+
+# -- review off: a damaged sidecar does not block roadmap writes ---------------------------------
+dg = make_repo("damaged-guard")
+(dg / ".agent" / "drainclamp-project.json").write_text("{not json", encoding="utf-8")
+rc, out = set_roadmap(dg, "done")
+check("review never turned on: a damaged sidecar does not block a roadmap write", rc == 0, out)
+
+# -- staleness counts every finished round, not only the last ------------------------------------
+sr = make_repo("stale-rounds")
+(sr / "c.py").write_text("C = 1\n", encoding="utf-8")
+rv(sr, "config", "--mode", "milestone")
+green(sr)
+rv(sr, "packet", "--milestone", "m1")
+rv(sr, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+rv(sr, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+rv(sr, "finish", "--round", "R1")
+green(sr)
+rv(sr, "packet", "--milestone", "m1", "--only", "a.py")
+rv(sr, "run", "--round", "R2", "--role", "critic-a", "--model", "sonnet")
+rv(sr, "ingest", "--round", "R2", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+rv(sr, "finish", "--round", "R2")
+(sr / "c.py").write_text("C = 2\n", encoding="utf-8")
+code, out = rv(sr, "check", "--milestone", "m1")
+check("an edit to a file only an earlier round reviewed is STALE (exit 5)", code == 5 and "c.py" in out, out)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

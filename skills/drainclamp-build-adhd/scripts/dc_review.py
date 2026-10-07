@@ -229,10 +229,23 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
     if not done:
         return "NOT-RUN", _dcio.EXIT_NO_CHECKS, [f"no finished review round for {milestone}"]
     last = done[-1]
-    moved = [p for p, h in (last.get("stamp") or {}).items() if _hash(root, p) != h]
+    # Every finished round's stamp counts, later rounds overriding earlier ones: a small
+    # fix-diff round (--only) must not hide edits to files an earlier round reviewed.
+    stamp: dict = {}
+    for r in done:
+        stamp.update(r.get("stamp") or {})
+    moved = [p for p, h in stamp.items() if _hash(root, p) != h]
     if moved:
         return "STALE", _dcio.EXIT_TIMEOUT, ["changed since review: " + ", ".join(moved[:5])
                                              + (f" (+{len(moved) - 5})" if len(moved) > 5 else "")]
+    # Files a packet left out at its line cap were never read by any agent. They stay
+    # unreviewed until a later round's stamp covers them (packet --only <files>).
+    seen = {p for r in done for p in (r.get("stamp") or {})}
+    unseen = sorted({p for r in done for p in (r.get("left_out") or [])} - seen)
+    if unseen:
+        return "NOT-RUN", _dcio.EXIT_NO_CHECKS, ["not reviewed, left out at the packet cap: "
+                                                 + ", ".join(unseen[:5])
+                                                 + (f" (+{len(unseen) - 5})" if len(unseen) > 5 else "")]
     tag = "" if last.get("coverage") == "full" else f" COVERAGE: {last.get('coverage')}"
     return "REVIEW-PASS", _dcio.EXIT_OK, [f"round {last['id']}{tag}"]
 
@@ -240,6 +253,16 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
 def guard_roadmap(root: Path, old_rows: list[dict], new_rows: list[dict]) -> None:
     """Refuse a roadmap write that closes a milestone Gate 6 has not cleared."""
     agent = root / _dcio.AGENT_DIR_NAME
+    # Read the mode leniently first: a project that never turned review on must not lose
+    # roadmap writes to a damaged sidecar (dc_state.review_blocking is tolerant the same way).
+    try:
+        raw = json.loads(_dcio.read_text(dc_project.sidecar_path(agent)) or "{}")
+    except (ValueError, UnicodeDecodeError):
+        raw = {}
+    review = raw.get("review") if isinstance(raw, dict) else None
+    cfg = review.get("config") if isinstance(review, dict) else None
+    if not isinstance(cfg, dict) or cfg.get("mode", "off") == "off":
+        return
     data = dc_project.load(agent)
     rv = review_of(data)
     mode = rv["config"].get("mode", "off")
@@ -299,6 +322,9 @@ def file_diff(root: Path, rel: str, base: str | None, tracked: bool) -> str:
     if tracked:
         ref = base or "HEAD"
         return _git(root, "diff", "-U3", ref, "--", rel) or ""
+    path = root / rel
+    if path.is_symlink() or not _dcio.is_within(path, root):
+        return ""   # never inline what a link points at: it can sit outside the repository
     text = _source(root, rel)
     if text is None:
         return ""
@@ -348,6 +374,7 @@ def build_packet(root: Path, rid: str, ms: dict, depth: str, base: str | None,
     callers: list[str] = []
     removed_by_file: dict[str, list[str]] = {}
     shown = truncated = 0
+    left_out: list[str] = []
     clipped_files: list[str] = []
     records = dc_map.refresh(root)
     for rel in files:
@@ -370,6 +397,7 @@ def build_packet(root: Path, rid: str, ms: dict, depth: str, base: str | None,
         clipped = len(lines) > FILE_CAP
         if len(body) + min(len(lines), FILE_CAP) > cap:
             truncated += 1
+            left_out.append(rel)
             continue
         shown += 1
         if clipped:
@@ -427,7 +455,7 @@ def build_packet(root: Path, rid: str, ms: dict, depth: str, base: str | None,
     text = "\n".join(head + body) + "\n"
     removed_lines = {k: v[:200] for k, v in removed_by_file.items() if v}
     return text, {"coverage": coverage, "lines": len(head) + len(body), "files_shown": shown,
-                  "symbols": len(symbols), "callers": len(callers), "removed": removed_lines}
+                  "symbols": len(symbols), "callers": len(callers), "removed": removed_lines, "left_out": left_out}
 
 
 def gate3_status(root: Path) -> str | None:
@@ -447,6 +475,10 @@ def gate3_status(root: Path) -> str | None:
 def parse_findings(text: str) -> tuple[list[dict], int]:
     """JSON lines (or one JSON array) -> (objects, junk line count)."""
     stripped = text.strip()
+    if stripped.startswith("```"):
+        # A fenced reply: drop the fence lines so a fenced JSON array still parses whole.
+        stripped = "\n".join(ln for ln in stripped.splitlines()
+                             if not ln.strip().startswith("```")).strip()
     if stripped.startswith("["):
         try:
             arr = json.loads(stripped)
@@ -533,7 +565,7 @@ def fingerprint(rel: str, symbol: str, claim: str) -> str:
 
 
 def _near(f: dict, rel: str, line: int, category: str, fp: str, evidence: str = "") -> bool:
-    """Same defect? Same fingerprint, or close by with the same category or the same quoted code.
+    """Same defect? Same fingerprint, or close by with overlapping quoted code.
 
     Critics label categories freely ("correctness" vs "error-handling" for one None + 1), so a
     shared category alone misses duplicates; identical quoted evidence at the same spot catches them.
@@ -543,8 +575,14 @@ def _near(f: dict, rel: str, line: int, category: str, fp: str, evidence: str = 
     if f.get("file") != rel or abs(int(f.get("line") or 0) - line) > MERGE_WINDOW:
         return False
     mine, theirs = _evidence(evidence), _evidence(f.get("evidence", ""))
-    same_code = bool(mine and theirs) and mine[0] == theirs[0]   # same first quoted line
-    return (f.get("category") or "") == category or same_code
+    if not (mine and theirs):
+        return False
+    # Overlapping first quoted lines (one inside the other) at the same spot are one defect,
+    # whatever the category. A shared category alone is not: it merged two different defects
+    # a line apart in the 1.6.0 self-review, and a merge loses a defect where a duplicate
+    # costs one refuter verdict. Under 8 characters only an exact match counts.
+    short, long_ = sorted((mine[0], theirs[0]), key=len)
+    return short == long_ or (len(short) >= 8 and short in long_)
 
 
 def ingest(root: Path, rv: dict, rnd: dict, role: str, items: list[dict],
@@ -629,7 +667,9 @@ def ingest(root: Path, rv: dict, rnd: dict, role: str, items: list[dict],
 
 def snapshot(root: Path, rnd: dict, fid: str, allow: list[str]) -> dict:
     fix = rnd.get("fix")
-    if not fix or fix.get("scope") is not None:
+    # Start a new baseline only after a passing scope check. After a breach the old
+    # baseline must stand, or the stray edit would be hashed as clean.
+    if not fix or fix.get("scope") == "ok":
         files = sorted(set(_changed(root)) | set(allow))
         fix = {"at": _now(), "allow": {}, "files": {p: _hash(root, p) for p in files},
                "scope": None, "modified": []}
@@ -648,6 +688,20 @@ def scope_check(root: Path, fix: dict) -> tuple[list[str], list[str]]:
     # the change set, and "clean" never equals a content hash.
     allowed = {p for paths in fix["allow"].values() for p in paths}
     return modified, [p for p in modified if p not in allowed]
+
+
+def guard_digest(root: Path, rv: dict) -> str:
+    """What a fixer must never change: review decisions and config, state, charter, verify records.
+
+    The change set leaves out .agent/, so these are pinned at the first ticket and compared
+    at scope. Ticket text is left out: storing a ticket is the orchestrator's own write.
+    """
+    keep = [[f.get("id"), f.get("status"), f.get("severity"), f.get("reason"), f.get("resolved_at")]
+            for f in rv["findings"]]
+    h = hashlib.sha256(json.dumps([keep, rv["config"]], sort_keys=True).encode("utf-8"))
+    for name in (_dcio.STATE_NAME, "charter.json", dc_verify.RECORDS_NAME):
+        h.update(_hash(root, f"{_dcio.AGENT_DIR_NAME}/{name}").encode("utf-8"))
+    return h.hexdigest()[:16]
 
 
 # -- advisor -----------------------------------------------------------------------
@@ -1052,6 +1106,7 @@ def main() -> int:
                 "id": rid, "milestone": ms["id"], "depth": depth, "base": args.base,
                 "at": _now(), "gate3": gate3, "files": files, "runs": [],
                 "coverage": meta["coverage"], "packet_lines": meta["lines"],
+                "left_out": meta["left_out"],
                 "removed": meta["removed"], "fix": None, "finished": None, "stamp": None,
                 "verdict": "RUNNING"})
         change(apply_round)
@@ -1084,6 +1139,12 @@ def main() -> int:
 
     if args.cmd == "ingest":
         items, junk = parse_findings(_read_input(args.file))
+        if not items and junk:
+            # Something came back but nothing parsed. Recording it would log a finder that
+            # read the code and found nothing, and finish would pass the round on it.
+            print(f"REVIEW {args.round} {args.role}: NOT-INGESTED: {junk} unparsable line(s), "
+                  "no findings. Nothing recorded; ask the agent again for JSON lines or `NO FINDINGS`.")
+            return _dcio.EXIT_NO_CHECKS
         decisions = _decision_lines(root)
         counts: dict = {}
 
@@ -1191,6 +1252,8 @@ def main() -> int:
             f["ticket"] = text[:TICKET_CAP]
             f["ticket_round"] = rnd["id"]
             fix = snapshot(root, rnd, args.id, allow)
+            if not fix.get("guard"):
+                fix["guard"] = guard_digest(root, rv)
             out.append(f"REVIEW ticket {args.id} stored | fixer may change: {', '.join(allow)} | "
                        f"snapshot {len(fix['files'])} file(s)")
         hand = write_handoff(agent, review_of(change(apply_ticket)), args.round)
@@ -1205,6 +1268,8 @@ def main() -> int:
             if not fix or not fix.get("allow"):
                 raise DcError(f"round {args.round} has no fix tickets")
             modified, breach = scope_check(root, fix)
+            if fix.get("guard") and guard_digest(root, rv) != fix["guard"]:
+                breach = breach + [".agent/ (review findings or config, state, charter or verify records)"]
             fix["modified"] = modified
             fix["scope"] = "breach" if breach else "ok"
             fix["checked_at"] = _now()
@@ -1227,6 +1292,10 @@ def main() -> int:
             if args.reopen:
                 f["status"] = "open"
                 f["resolved_at"] = None
+                # A reopened finding needs a new ticket, fixer run and scope check: the
+                # failed attempt's ticket must not let `resolve --fixed` pass.
+                f["ticket"] = ""
+                f["ticket_round"] = None
                 f["refuter_note"] = _clip(f"re-check: {args.note}", TEXT_CAP["note"]) if args.note \
                     else f.get("refuter_note", "")
                 out.append(f"REVIEW {f['id']} reopened")
@@ -1275,7 +1344,9 @@ def main() -> int:
             fix = rnd.get("fix")
             if fix and fix.get("scope") != "ok":
                 raise DcError("the fix tickets have no passing scope check")
-            files = sorted(set(rnd["files"]) | set((fix or {}).get("modified", [])))
+            # Files left out at the packet cap were never read: never stamp them as reviewed.
+            files = sorted((set(rnd["files"]) - set(rnd.get("left_out") or []))
+                           | set((fix or {}).get("modified", [])))
             rnd["stamp"] = {p: _hash(root, p) for p in files}
             rnd["finished"] = _now()
             still = blocking(mine)
