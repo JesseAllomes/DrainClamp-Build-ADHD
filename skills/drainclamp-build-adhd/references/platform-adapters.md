@@ -41,6 +41,14 @@ hooks, which this skill does not install. The parent persists whatever the scout
 results come back with a `TRUNCATED n/N` header and a narrowing hint (which path or symbol to
 re-query), and the parent re-scopes rather than accepting a silent truncation.
 
+Gate 6 adds four definitions beside the scout, installed the same way: `dca-critic`, `dca-checker`
+and `dca-refuter` (read-only like the scout) and `dca-fixer` (Read, Edit, Write; no shell). None
+has an agent-spawning tool, so the per-round cap in `dc_review.py run` cannot be exceeded from inside
+a subagent. Their frontmatter sets `model` and `effort`; the orchestrator may override `model` per
+call from `dc_review.py config`. Subagents cannot ask the user anything, so every decision stays
+with the main session. A host without subagents runs Gate 6 inline and the round is labelled
+`COVERAGE: partial (inline, not independent)`. Inline review is weaker, so the label stays visible.
+
 ## Skill discovery
 
 Canonical copy: `~/.agents/skills/drainclamp-build-adhd/`.

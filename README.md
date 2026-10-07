@@ -2,12 +2,12 @@
 
 A token-minimal architect and auditor skill for **Claude Code**, **Codex**, and **Grok**.
 
-A session gate plus six conditional gates over one repository change, with durable state on disk so the work survives a
+A session gate plus seven conditional gates over one repository change (the seventh an optional adversarial review), with durable state on disk so the work survives a
 context reset. Stdlib-only Python 3. No third-party dependencies.
 
 > **Status: feature complete.** Every gate has a script and a reference, `dc_install.py` installs the
-> skill without ever clobbering what it does not own, and the read-only `dca-scout` subagent ships for
-> hosts that expose one.
+> skill without ever clobbering what it does not own, and the read-only `dca-scout` subagent plus the
+> Gate 6 review roster ship for hosts that expose subagents.
 
 ## Why
 
@@ -31,6 +31,7 @@ once. Three consequences drive the whole design:
 | 3 | Select checks | verification config changed, or `DC:VERIFY` empty | fingerprint unchanged |
 | 4 | Implement | always | — |
 | 5 | Reset | at a real milestone boundary | mid-milestone |
+| 6 | Review | review mode on, at milestone close (after 3, before 5), or on request | mode `off` (the default) |
 
 Each gate loads only its own reference file. The skill body stays small; the detail is paged in on
 demand.
@@ -108,9 +109,10 @@ is unignored you get one warning and nothing else.
 | `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
 | `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok; `--project` attributes Claude tokens to chunks and milestones. Aggregates only, never transcript text |
 | `dc_audit.py` | Gate 0: five-part freshness test, depth-2 rollups, stack, dead-code candidates |
+| `dc_review.py` | Gate 6: review packet, citation check, dedupe, suppression, agent cap, fixer scope, roadmap guard |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests tied to a tree fingerprint |
 | `dc_selftest.py` | Materialises `tests/fixtures/`, runs the whole suite matrix |
-| `dc_install.py` | Links the skill into each host, installs `dca-scout`, refuses to touch anything it does not own |
+| `dc_install.py` | Links the skill into each host, installs `dca-scout` and the Gate 6 roster, refuses to touch anything it does not own |
 
 ### Measuring the overhead
 
@@ -151,6 +153,31 @@ Dashboards are not DrainClamp's job. project-board is a separate tool that reads
 DrainClamp's project list and these files (never writing them) and adds status, % complete, value and
 your time across every project, DrainClamp or not. When it creates, completes or reopens a DrainClamp
 project it calls `dc_project.py create` / `complete` / `reopen`, the same commands you can run yourself.
+
+### Gate 6: adversarial review
+
+Optional, off by default (`dc_review.py config --mode milestone|final`). With it on, a milestone
+cannot be marked `done` until a review round clears it. Per round, at most six subagent runs:
+
+| Role | Agent | Model | Job |
+|---|---|---|---|
+| critic A, critic B | `dca-critic` | sonnet, high | correctness lens; safety lens |
+| checker | `dca-checker` | haiku, medium | goal met, every new branch tested |
+| refuter, re-check | `dca-refuter` | sonnet, high | disprove each finding; confirm each fix |
+| fixer | `dca-fixer` | sonnet, medium | apply the user-approved ticket exactly, nothing else |
+
+The main session (Opus, high effort, by default) orchestrates and adjudicates, and the user makes
+every fix / waive / dismiss call. Accuracy comes from independence: two lenses, then a refuter that
+defaults to `REFUTED`. Cost stays low because:
+
+- Gate 3 must be green first.
+- The packet is built by a script, so agents read one file rather than the conversation.
+- Each finding's quoted evidence is checked against the file before any model reads it.
+- Duplicates merge, and waived or dismissed findings never come back.
+- The fixer's file scope is checked by hash, not trust.
+
+Findings live in the sidecar under `review`, which project-board shows as an "Adversarial review"
+section.
 
 ### The sandbox
 
@@ -290,10 +317,13 @@ py -3 -B tests/t_identity.py   # the checkout agrees about its own name
 py -3 -B tests/t_structure.py  # the layout install and forks assume
 py -3 -B tests/t_install.py    # ownership, refusal, never deleting the checkout
 py -3 -B tests/t_selftest.py   # the fixtures themselves
-py -3 -B tests/t_skeleton.py   # one change through all six gates
+py -3 -B tests/t_review.py     # Gate 6: packet, citations, merge, suppression, cap, scope, guard
+py -3 -B tests/t_review_feed.py # the review block project-board reads
+py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 planted defects, 1 decoy
+py -3 -B tests/t_skeleton.py   # one change through the core gates
 ```
 
-634 checks across 20 suites, no third-party runner. Fixtures are generated, never hand-edited:
+757 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes

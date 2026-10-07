@@ -86,6 +86,23 @@ check("a scout definition exists at the repository root", bool(scouts), str(scou
 nested_scout = sorted(p.name for p in (skill / "agents").glob("*.md")) if (skill / "agents").is_dir() else []
 check("no scout definition nested inside the skill", not nested_scout, str(nested_scout))
 
+# Gate 6's roster. The read-only roles must not be able to write, and no role may
+# spawn agents (that is how the per-round cap could be exceeded unseen). Model and
+# effort are set per role so the orchestrator's routing has a default to fall back on.
+ROSTER = {"dca-critic.md": False, "dca-checker.md": False, "dca-refuter.md": False,
+          "dca-fixer.md": True}
+for name, writes in ROSTER.items():
+    path = ROOT / "agents" / name
+    if not path.is_file():
+        check(f"{name} exists at the repository root", False)
+        continue
+    head = path.read_text(encoding="utf-8").split("---")[1]
+    tools = {t.strip() for t in re.search(r"^tools:(.*)$", head, re.M).group(1).split(",")}
+    check(f"{name} has model and effort", re.search(r"^model: \S+", head, re.M) is not None
+          and re.search(r"^effort: (low|medium|high|xhigh|max)$", head, re.M) is not None)
+    check(f"{name} cannot spawn agents or run a shell", not tools & {"Agent", "Task", "Bash"}, str(tools))
+    check(f"{name} write access matches its role", bool(tools & {"Edit", "Write"}) == writes, str(tools))
+
 # Grok catalogs plugins from `.grok-plugin/marketplace.json`. A Claude-style
 # `"source": "./"` at marketplace root is registered as a source and then
 # silently dropped from the catalog, so `grok plugin install <name>` cannot

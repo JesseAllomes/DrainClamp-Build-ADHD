@@ -44,6 +44,9 @@ CAPSULE_CAP = 15
 
 LISTS = ("errors", "todos", "time")
 PREFIX = {"errors": "e", "todos": "t", "time": "s"}
+# Gate 6 finding statuses that keep a milestone open. The review block itself is
+# owned by dc_review.py; the capsule only counts these.
+REVIEW_BLOCKING = ("candidate", "open", "fixing")
 
 
 def _now() -> datetime:
@@ -213,6 +216,12 @@ def capsule(root: Path, data: dict) -> list[str]:
     n_done = sum(1 for c in chunks if c.get("done"))
     lines.append(f"Milestone {ms['id']} ({ms['status']}): {_clip(ms['goal'])} "
                  f"| chunks {n_done}/{len(chunks)}")
+    review = data.get("review") if isinstance(data.get("review"), dict) else {}
+    held = [f for f in review.get("findings") or [] if isinstance(f, dict)
+            and f.get("milestone") == ms["id"] and f.get("status") in REVIEW_BLOCKING]
+    if held:
+        lines.append(f"Review: {len(held)} blocking ({' '.join(f['id'] for f in held[:6])}) "
+                     "- waiting on you (dc_review.py status)")
     nxt = next((c for c in chunks if not c.get("done")), None)
     if not chunks:
         lines.append("No chunks yet: split this milestone with `dc_project.py chunk add`.")

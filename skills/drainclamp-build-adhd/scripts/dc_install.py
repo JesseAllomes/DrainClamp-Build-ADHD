@@ -85,6 +85,10 @@ TARGETS: tuple[Target, ...] = (
 )
 
 AGENT_FILE = "dca-scout.md"
+# Every subagent definition this checkout ships: the scout, plus Gate 6's
+# review roster. Each is installed, checked and removed on its own, so one
+# hand-edited definition never blocks the others.
+AGENT_FILES = (AGENT_FILE, "dca-critic.md", "dca-checker.md", "dca-refuter.md", "dca-fixer.md")
 
 # Classification of whatever currently sits at the install path.
 ABSENT = "ABSENT"
@@ -116,7 +120,7 @@ def source_skill() -> Path:
     return candidate
 
 
-def source_agent(source: Path) -> Path:
+def source_agent(source: Path, name: str = AGENT_FILE) -> Path:
     """The scout definition, wherever this checkout keeps it.
 
     Claude Code's plugin loader only reads agents from `agents/` at the plugin
@@ -126,8 +130,8 @@ def source_agent(source: Path) -> Path:
     copied out on its own, still has it beside the skill; both are accepted
     rather than making one layout an error.
     """
-    root = source.parent.parent / "agents" / AGENT_FILE
-    return root if root.is_file() else source / "agents" / AGENT_FILE
+    root = source.parent.parent / "agents" / name
+    return root if root.is_file() else source / "agents" / name
 
 
 # --------------------------------------------------------------------------
@@ -459,15 +463,21 @@ def install_one(target: Target, home: Path, source: Path, args) -> tuple[str, st
     return "INSTALLED", f"{target.rel}/{SKILL_NAME} -- {mechanism} ({hosts})"
 
 
-def agent_paths(target: Target, home: Path, source: Path) -> tuple[Path, Path] | None:
-    """(source definition, install path) for the scout, or None if N/A here."""
+def agent_paths(target: Target, home: Path, source: Path,
+                name: str = AGENT_FILE) -> tuple[Path, Path] | None:
+    """(source definition, install path) for one agent, or None if N/A here."""
     directory = target.agent_path(home)
     if directory is None:
         return None
-    return source_agent(source), directory / AGENT_FILE
+    return source_agent(source, name), directory / name
 
 
-def install_agent(target: Target, home: Path, source: Path, args) -> tuple[str, str] | None:
+def _label(name: str) -> str:
+    return "dc-scout" if name == AGENT_FILE else name[:-3]
+
+
+def install_agent(target: Target, home: Path, source: Path, args,
+                  name: str = AGENT_FILE) -> tuple[str, str] | None:
     """Copy the scout definition next to the host's other agents.
 
     Always a copy, never a link: an agent definition is one small file, and a
@@ -476,66 +486,69 @@ def install_agent(target: Target, home: Path, source: Path, args) -> tuple[str, 
     agents configured, and dropping a lone file into a directory the host does
     not read would be install theatre.
     """
-    paths = agent_paths(target, home, source)
+    paths = agent_paths(target, home, source, name)
     if paths is None:
         return None
     definition, path = paths
     if not definition.is_file():
-        return "SKIP", f"{target.agent_rel}/{AGENT_FILE} -- not in this checkout"
+        return "SKIP", f"{target.agent_rel}/{name} -- not in this checkout"
     if not path.parent.is_dir():
-        return "SKIP", (f"{target.agent_rel} -- directory absent; dc-scout not "
-                        "installed (create it to enable the scout)")
+        if name != AGENT_FILE:
+            return None  # one absence line per host, said by the scout
+        return "SKIP", (f"{target.agent_rel} -- directory absent; subagents not "
+                        "installed (create it to enable dc-scout and the Gate 6 roster)")
 
-    entry = entry_for(path.parent, AGENT_FILE)
+    entry = entry_for(path.parent, name)
     state, detail = classify(path, entry, definition)
 
     # Ours and identical to the definition in this checkout: nothing to do.
     # Ours but *older* than the checkout gets refreshed without asking — we are
     # only overwriting a file we wrote and nobody has touched since.
     if state == COPY_OURS and _hash_file(path) == _hash_file(definition):
-        return "ALREADY", f"{target.agent_rel}/{AGENT_FILE} -- {detail}"
+        return "ALREADY", f"{target.agent_rel}/{name} -- {detail}"
     if state == COPY_DRIFTED and not args.force:
-        return "REFUSED", (f"{target.agent_rel}/{AGENT_FILE} -- {detail}. "
+        return "REFUSED", (f"{target.agent_rel}/{name} -- {detail}. "
                            "Re-run with --force to overwrite your changes.")
     if state not in (ABSENT, COPY_OURS, COPY_DRIFTED):
-        return "REFUSED", (f"{target.agent_rel}/{AGENT_FILE} -- {detail}, so it "
+        return "REFUSED", (f"{target.agent_rel}/{name} -- {detail}, so it "
                            "will not be replaced. Move it aside and re-run.")
     if args.dry_run:
         verb = "would refresh" if state != ABSENT else "would install"
-        return "DRY-RUN", f"{target.agent_rel}/{AGENT_FILE} -- {verb}"
+        return "DRY-RUN", f"{target.agent_rel}/{name} -- {verb}"
 
     shutil.copyfile(str(definition), str(path))
-    record(path.parent, AGENT_FILE, "file", definition,
-           {AGENT_FILE: _hash_file(path)})
-    return "INSTALLED", f"{target.agent_rel}/{AGENT_FILE} -- dc-scout (read-only)"
+    record(path.parent, name, "file", definition,
+           {name: _hash_file(path)})
+    return "INSTALLED", f"{target.agent_rel}/{name} -- {_label(name)}"
 
 
-def uninstall_agent(target: Target, home: Path, source: Path, args) -> tuple[str, str] | None:
-    paths = agent_paths(target, home, source)
+def uninstall_agent(target: Target, home: Path, source: Path, args,
+                    name: str = AGENT_FILE) -> tuple[str, str] | None:
+    paths = agent_paths(target, home, source, name)
     if paths is None:
         return None
     definition, path = paths
-    entry = entry_for(path.parent, AGENT_FILE)
+    entry = entry_for(path.parent, name)
     if not path.parent.is_dir():
         return None
     state, detail = classify(path, entry, definition)
 
     if state == ABSENT:
         if entry:
-            forget(path.parent, AGENT_FILE)
+            forget(path.parent, name)
             return "CLEANED", f"{target.agent_rel} -- ledger entry for a file that is gone"
         return None
     if state not in (COPY_OURS, COPY_DRIFTED):
-        return "REFUSED", f"{target.agent_rel}/{AGENT_FILE} -- {detail}; not ours to remove"
+        return "REFUSED", f"{target.agent_rel}/{name} -- {detail}; not ours to remove"
     if state == COPY_DRIFTED and not args.force:
-        return "REFUSED", (f"{target.agent_rel}/{AGENT_FILE} -- {detail}. "
+        return "REFUSED", (f"{target.agent_rel}/{name} -- {detail}. "
                            "Re-run with --force to delete it anyway.")
     if args.dry_run:
-        return "DRY-RUN", f"{target.agent_rel}/{AGENT_FILE} -- would remove"
+        return "DRY-RUN", f"{target.agent_rel}/{name} -- would remove"
 
     path.unlink()
-    forget(path.parent, AGENT_FILE)
-    return "REMOVED", f"{target.agent_rel}/{AGENT_FILE}"
+    forget(path.parent, name)
+    return "REMOVED", f"{target.agent_rel}/{name}"
 
 
 def uninstall_one(target: Target, home: Path, source: Path, args) -> tuple[str, str]:
@@ -595,26 +608,31 @@ def check_one(target: Target, home: Path, source: Path) -> tuple[bool, list[str]
         lines.append(f"PROBLEM  {target.rel}/{SKILL_NAME} -- {state}: {detail}")
         healthy = False
 
-    paths = agent_paths(target, home, source)
-    if paths is not None:
+    for name in AGENT_FILES:
+        paths = agent_paths(target, home, source, name)
+        if paths is None:
+            break
         definition, agent = paths
+        label = _label(name)
+        if not definition.is_file():
+            continue
         if not agent.parent.is_dir():
-            lines.append(f"ABSENT   {target.agent_rel}/{AGENT_FILE} -- host has no "
-                         "agents directory; dc-scout not installed")
+            lines.append(f"ABSENT   {target.agent_rel}/{name} -- host has no "
+                         f"agents directory; {label} not installed")
+            continue
+        astate, adetail = classify(agent, entry_for(agent.parent, name), definition)
+        if astate == ABSENT:
+            lines.append(f"MISSING  {target.agent_rel}/{name} -- {label} "
+                         "not installed")
+        elif astate == COPY_OURS:
+            current = _hash_file(agent) == _hash_file(definition)
+            lines.append(f"OK       {target.agent_rel}/{name} -- {label}"
+                         + ("" if current else " (older than this checkout; "
+                                               "re-run the installer)"))
         else:
-            astate, adetail = classify(agent, entry_for(agent.parent, AGENT_FILE), definition)
-            if astate == ABSENT:
-                lines.append(f"MISSING  {target.agent_rel}/{AGENT_FILE} -- dc-scout "
-                             "not installed")
-            elif astate == COPY_OURS:
-                current = _hash_file(agent) == _hash_file(definition)
-                lines.append(f"OK       {target.agent_rel}/{AGENT_FILE} -- dc-scout"
-                             + ("" if current else " (older than this checkout; "
-                                                   "re-run the installer)"))
-            else:
-                lines.append(f"PROBLEM  {target.agent_rel}/{AGENT_FILE} -- "
-                             f"{astate}: {adetail}")
-                healthy = False
+            lines.append(f"PROBLEM  {target.agent_rel}/{name} -- "
+                         f"{astate}: {adetail}")
+            healthy = False
 
     for name in duplicates(target_dir, source):
         lines.append(f"DUPLICATE {target.rel}/{name} resolves to the same checkout; "
@@ -651,7 +669,7 @@ def main() -> int:
                         help="overwrite or delete an edited copy we own; never "
                              "touches anything we do not own")
     parser.add_argument("--no-agent", action="store_true",
-                        help="skip the dc-scout subagent definition")
+                        help="skip the subagent definitions (scout and Gate 6 roster)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print what would happen, change nothing")
     args = parser.parse_args()
@@ -682,7 +700,7 @@ def main() -> int:
     for target in targets:
         outcomes = [act(target, home, source, args)]
         if not args.no_agent:
-            outcomes.append(act_agent(target, home, source, args))
+            outcomes.extend(act_agent(target, home, source, args, name) for name in AGENT_FILES)
         for outcome in outcomes:
             if outcome is None:
                 continue

@@ -37,6 +37,9 @@ from _dcio import DcError
 
 VERIFY_LOG = "verify.log"
 RECORDS_NAME = "verify-records.json"
+# Records keyed `tier:<tier>` hold the last tier outcome and the tree it ran
+# against, so Gate 6 can refuse to review code Gate 3 has not passed.
+TIER_RECORD_PREFIX = "tier:"
 MAX_OUTPUT_LINES = 10
 MAX_ROWS = 6
 
@@ -686,7 +689,11 @@ def main() -> int:
     emit(args.tier, rows, changed, origin, source, notes)
     if any(row["status"] == APPROVAL for row in rows):
         print_approval(rows)
-    return exit_code_for(rows)
+    rc = exit_code_for(rows)
+    if args.base is None:
+        save_record(agent, TIER_RECORD_PREFIX + args.tier, "tier",
+                    "pass" if rc == _dcio.EXIT_OK else "fail", "verify.log", tree_fingerprint(root))
+    return rc
 
 
 if __name__ == "__main__":

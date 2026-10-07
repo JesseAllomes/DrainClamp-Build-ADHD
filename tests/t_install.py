@@ -305,6 +305,13 @@ check("the scout is installed where the host reads agents",
       out.stdout.strip().splitlines()[-2])
 check("the installed scout is byte-identical to the checkout's definition",
       agent_file(home).read_bytes() == DEFINITION.read_bytes())
+roster = [n for n in dc_install.AGENT_FILES if n != dc_install.AGENT_FILE]
+check("the Gate 6 roster is installed beside the scout",
+      all((home / ".claude" / "agents" / n).read_bytes() == dc_install.source_agent(SOURCE, n).read_bytes()
+          for n in roster), out.stdout)
+chk = run(home, "--host", "claude", "--check")
+check("--check reports every agent", all(f"OK       .claude/agents/{n}" in chk.stdout
+                                         for n in dc_install.AGENT_FILES), chk.stdout)
 
 out = run(home, "--host", "claude")
 check("re-installing an up-to-date scout is a no-op",
@@ -334,7 +341,8 @@ check("--force overwrites a scout we own",
 
 out = run(home, "--host", "claude", "--uninstall")
 check("uninstall removes the scout it owns",
-      out.returncode == 0 and not agent_file(home).exists(),
+      out.returncode == 0 and not agent_file(home).exists()
+      and not any((home / ".claude" / "agents" / n).exists() for n in dc_install.AGENT_FILES),
       out.stdout.strip().splitlines()[-2])
 
 # A definition somebody else wrote by hand is not ours to replace.

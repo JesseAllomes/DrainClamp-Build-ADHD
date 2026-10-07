@@ -512,6 +512,23 @@ def expand(entries: list[str], root: Path) -> tuple[set[str], list[str], list[st
     return members, unresolved, escaped
 
 
+def review_blocking(root: Path) -> int:
+    """Gate 6 findings still blocking, read straight from the sidecar.
+
+    Read-only and tolerant: a missing or damaged sidecar counts as none here,
+    because dc_project refuses it loudly on the next write anyway.
+    """
+    try:
+        data = json.loads(_dcio.read_text(root / _dcio.AGENT_DIR_NAME
+                                          / "drainclamp-project.json") or "{}")
+    except ValueError:
+        return 0
+    review = data.get("review") if isinstance(data, dict) else None
+    findings = review.get("findings") if isinstance(review, dict) else None
+    return sum(1 for f in findings or [] if isinstance(f, dict)
+               and f.get("status") in ("candidate", "open", "fixing"))
+
+
 def purge_check(state: State, root: Path, context_high: bool) -> tuple[str, str]:
     """Return (verdict_line, human_line). Missing data never yields PURGE."""
     rows = parse_roadmap(state.sections["ROADMAP"])
@@ -528,6 +545,14 @@ def purge_check(state: State, root: Path, context_high: bool) -> tuple[str, str]
             f"COMPLETE ({len(rows)}/{len(rows)} milestones done)",
             f"DRAINCLAMP: All {len(rows)} milestones done. "
             "State saved to .agent/drainclamp-state.md.",
+        )
+
+    held = review_blocking(root)
+    if held:
+        return (
+            f"HOLD (review open: {held})",
+            "DRAINCLAMP: State saved to .agent/drainclamp-state.md. "
+            f"Context retained ({held} review finding(s) waiting on a decision).",
         )
 
     reason: str | None = None
@@ -824,6 +849,12 @@ def main() -> int:
             parse_roadmap(content)
 
         def apply_set(state: State) -> None:
+            if args.section == "ROADMAP":
+                # Gate 6: a milestone with blocking review findings, or one the
+                # review mode requires and no current round cleared, stays open.
+                import dc_review  # lazy: dc_review -> dc_project -> dc_state
+                dc_review.guard_roadmap(root, parse_roadmap(state.sections["ROADMAP"]),
+                                        parse_roadmap(content))
             state.sections[args.section] = content.strip("\n")
 
         gen = mutate(state_path, agent, apply_set, expect=args.expect)

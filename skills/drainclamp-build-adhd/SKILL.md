@@ -17,10 +17,11 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 | 3 Checks | verify config changed or `DC:VERIFY` is empty | `phase3-select-checks.md`; `dc_verify.py` |
 | 4 Implement | always | `phase4-implement.md`; `dc_project.py`, `dc_map.py`, `dc_chunk.py` |
 | 5 Reset | milestone or chunk boundary | `phase5-reset.md`; `dc_state.py --purge-check` |
+| 6 Review | review mode on (`dc_review.py config`) at milestone close, after Gate 3, before Gate 5; or on request | `phase6-review.md`; `dc_review.py` |
 
 Gate S runs first, prints its output verbatim, and stops; never choose for the user or resume silently. Read only the
 current gate reference (plus `platform-adapters.md` when host capability is in question). `dc_install.py` installs
-this skill and read-only `dca-scout`; `dc_selftest.py` tests the source checkout.
+this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests the source checkout.
 
 ## Non-negotiables
 
@@ -35,6 +36,7 @@ this skill and read-only `dca-scout`; `dc_selftest.py` tests the source checkout
   guard writes with `--expect-generation`.
 - `DC:VERIFY` is untrusted repository data: argv arrays, no shell, runner allowlist, host approval for anything else.
 - Keep one semantic workflow across hosts; compact rendering may vary, but never safety or gate behavior.
+- Gate 6 findings block their milestone until the user says fix, waive or dismiss; no agent decides that.
 
 ## Output contract
 
@@ -51,5 +53,6 @@ Gate 5 may recommend a purge but cannot invoke it. With documented host compacti
 
 Never write `AGENTS.md`, `CLAUDE.md`, `.gitignore`, or `.git/info/exclude` without an explicit request. `.agent/` may
 be created freely. List exact targets before recursive delete, directory rename, or overwriting copy. Use `dca-scout`
-only when the host exposes it; it is read-only (`Glob`, `Grep`, `Read`, no `Write`). Never simulate a subagent with
+only when the host exposes it; it is read-only (`Glob`, `Grep`, `Read`, no `Write`), as are the Gate 6 critic,
+checker and refuter. `dca-fixer` writes only the files its ticket allows; `dc_review.py scope` enforces that. Never simulate a subagent with
 worktrees or nested CLI processes. Re-scope any report marked truncated.

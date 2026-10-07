@@ -12,6 +12,9 @@ dc_state.py --set ROADMAP --file <updated roadmap>
 
 State is written before any purge is recommended. A purge with unsaved state loses the work.
 
+With Gate 6 review mode on, the roadmap write refuses `done` until the review clears (exit 2 findings,
+5 stale, 6 not run). That refusal is the gate working: run `phase6-review.md`, do not edit around it.
+
 ## 2. Ask for the verdict
 
 ```
@@ -22,6 +25,8 @@ dc_state.py --purge-check [--context-high]
 
 - `COMPLETE` when every roadmap row is `done`. Checked **before** the overlap calculus, which has no
   next milestone to compare against and would file a finished project as `HOLD (no next milestone)`.
+- `HOLD (review open: n)` while Gate 6 findings wait on a decision: the context holding them is
+  the cheapest place to resolve them. Checked after `COMPLETE`, before the overlap calculus.
 - `PURGE` iff `overlap < 0.20`. Exactly 0.20 is `HOLD`.
 - Missing or unresolved data always yields `HOLD (overlap unknown: <reason>)`. It never defaults to
   `PURGE` — purging on an unknown is how work gets lost. In particular, **no completed milestone

@@ -158,7 +158,13 @@ for plugin_dir_name in (".claude-plugin", ".grok-plugin"):
 # --------------------------------------------------------------------------
 
 agents = sorted((ROOT / "agents").glob("*.md")) if (ROOT / "agents").is_dir() else []
-check("at most one agent definition", len(agents) <= 1, str([a.name for a in agents]))
+# Exactly the definitions the installer ships: a stray file would sit in the plugin's
+# agents/ unseen by dc_install, and a missing one would install nothing for its role.
+_install = (ROOT / "skills" / NAME / "scripts" / "dc_install.py").read_text(encoding="utf-8")
+_m = re.search(r"^AGENT_FILES = \((.*?)\)$", _install, re.MULTILINE | re.DOTALL)
+shipped = sorted(re.findall(r'"([\w.-]+\.md)"', _m.group(1)) + (["dca-scout.md"] if "AGENT_FILE," in _m.group(1) else [])) if _m else []
+check("agent definitions are exactly the installer's list", [a.name for a in agents] == shipped,
+      f"{[a.name for a in agents]} vs {shipped}")
 for agent in agents:
     body = agent.read_text(encoding="utf-8")
     m = re.search(r"^name:\s*(\S+)\s*$", body, re.MULTILINE)
