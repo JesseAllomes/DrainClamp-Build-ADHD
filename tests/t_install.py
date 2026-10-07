@@ -407,6 +407,32 @@ out = run(home, "--host", "codex", "--agents-only", "--uninstall", "--force")
 check("uninstall removes every Codex agent it wrote",
       out.returncode == 0 and not list(codex_dir.glob("dca-*.toml")), out.stdout)
 
+# --- Grok: per-type model pins in ~/.grok/config.toml ----------------------
+home = new_home()
+(home / ".grok").mkdir()
+gcfg = home / ".grok" / "config.toml"
+gcfg.write_text('[models]\ndefault = "grok-4.6"\n', encoding="utf-8")
+out = run(home, "--host", "agents", "--agents-only")
+pins = tomllib.loads(gcfg.read_text(encoding="utf-8"))
+check("Grok pins land in config.toml beside the user's own tables",
+      out.returncode == 0 and pins["models"]["default"] == "grok-4.6"
+      and pins["subagents"]["models"]["drainclamp-build-adhd:dca-checker"] == "grok-4.7-build-fast"
+      and pins["subagents"]["models"]["drainclamp-build-adhd:dca-critic"] == "grok-4.6"
+      and "drainclamp-build-adhd:dca-scout" not in pins["subagents"]["models"], out.stdout)
+out = run(home, "--host", "agents", "--agents-only")
+check("a second run leaves the pins alone", out.returncode == 0 and "ALREADY" in out.stdout, out.stdout)
+out = run(home, "--host", "agents", "--agents-only", "--check")
+check("--check reports the Grok pins", "OK       .grok/config.toml -- Gate 6 model pins" in out.stdout, out.stdout)
+out = run(home, "--host", "agents", "--agents-only", "--uninstall")
+check("uninstall removes only our block",
+      out.returncode == 0 and gcfg.read_text(encoding="utf-8") == '[models]\ndefault = "grok-4.6"\n',
+      repr(gcfg.read_text(encoding="utf-8")))
+gcfg.write_text('[subagents.models]\nexplore = "grok-4.6"\n', encoding="utf-8")
+out = run(home, "--host", "agents", "--agents-only")
+check("a user's own [subagents.models] is refused and left as it was",
+      out.returncode == 2 and gcfg.read_text(encoding="utf-8") == '[subagents.models]\nexplore = "grok-4.6"\n',
+      out.stdout)
+
 check("the checkout is intact after the whole suite",
       source_files() == BASELINE, f"{source_files()} files, baseline {BASELINE}")
 

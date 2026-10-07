@@ -36,7 +36,10 @@ directory already exists — it never creates it, because a definition in a dire
 read is install theatre.
 
 Grok loads the plugin's `agents/` directory itself and lists each as
-`drainclamp-build-adhd:dca-*`; `spawn_subagent` takes the role's `model`. Codex reads custom agents
+`drainclamp-build-adhd:dca-*`. Its remote settings can hide `spawn_subagent`'s `model` argument
+(subagent model inheritance), so `dc_install.py --host agents` pins each role's model as a marked
+block under `[subagents.models]` in `~/.grok/config.toml`, which that setting does not affect. It
+refuses, and prints the lines, when the config already has its own `[subagents.models]`. Codex reads custom agents
 as TOML from `~/.codex/agents/`, and its plugins cannot ship them, so `dc_install.py --host codex`
 generates `dca-*.toml` from the same definitions: `name`, `description`, `developer_instructions`,
 the role's `model` and `model_reasoning_effort` from the Codex roster, and `sandbox_mode`

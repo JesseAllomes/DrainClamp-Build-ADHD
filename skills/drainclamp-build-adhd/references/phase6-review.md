@@ -38,11 +38,12 @@ changed after the review (`STALE`, exit 5). Turning review on is the user's call
   | Host | Agent names | How a role gets its model |
   |---|---|---|
   | Claude Code | `drainclamp-build-adhd:dca-critic` (plugin) or `dca-critic` (copied) | Agent tool `model` per spawn |
-  | Grok | `drainclamp-build-adhd:dca-critic` as `subagent_type` | `spawn_subagent` `model` per spawn |
+  | Grok | `drainclamp-build-adhd:dca-critic` as `subagent_type` | pinned in `~/.grok/config.toml` `[subagents.models]` at install (no per-type effort) |
   | Codex | `dca-critic` (spawn by naming it) | baked into `~/.codex/agents/dca-*.toml` at install |
 
-  Codex reads the model from the agent file, so changing its roster means re-running
-  `dc_install.py --host codex --agents-only [--project <root>]` from the installed plugin.
+  Grok and Codex read the model from those files, not from the spawn call (Grok's remote settings
+  can hide its `model` argument), so changing their roster means re-running
+  `dc_install.py --host codex|agents --agents-only [--project <root>]` from the installed plugin.
   Register each run with the model it actually ran on.
 - **Cross-model review.** Review state lives in `.agent/`, not in a host. To have another model
   family attack the change, run the round from another host in the same repository: build in one,

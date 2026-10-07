@@ -24,8 +24,10 @@ import hashlib
 import json
 import os
 import shutil
+import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -532,12 +534,89 @@ def agent_bytes(target: Target, definition: Path, args) -> bytes:
     return definition.read_bytes()
 
 
-def codex_models(project: str | None) -> dict[str, str]:
-    """The Codex roster: dc_review's defaults, or one project's configured override."""
-    import dc_project  # noqa: E402  (lazy: only Codex agents need the review config)
+def host_models(project: str | None, host: str) -> dict[str, str]:
+    """A host's review roster: dc_review's defaults, or one project's configured override."""
+    import dc_project  # noqa: E402  (lazy: only the agent steps need the review config)
     import dc_review  # noqa: E402
     data = dc_project.load(Path(project).expanduser().resolve() / _dcio.AGENT_DIR_NAME) if project else {}
-    return dc_review.models_for(dc_review.review_of(data)["config"], "codex")
+    return dc_review.models_for(dc_review.review_of(data)["config"], host)
+
+
+# Grok loads the plugin's agents itself, but its remote settings can hide the spawn
+# tool's `model` argument (subagent model inheritance). Per-type pins in
+# `~/.grok/config.toml` are documented as unaffected, so the roster is written there
+# as one marked block this installer owns. The model only: Grok has no per-type effort.
+GROK_CONFIG = ".grok/config.toml"
+GROK_BEGIN = "# >>> drainclamp-build-adhd: Gate 6 models (dc_install.py writes this block) >>>"
+GROK_END = "# <<< drainclamp-build-adhd <<<"
+GROK_PLUGIN = "drainclamp-build-adhd"
+
+
+def grok_block(models: dict[str, str]) -> str:
+    lines = [GROK_BEGIN, "[subagents.models]"]
+    for name, role in sorted(CODEX_ROLES.items()):
+        model = models.get(role, "").partition("/")[0]
+        if model:
+            lines.append(f"{json.dumps(f'{GROK_PLUGIN}:{name[:-3]}')} = {json.dumps(model)}")
+    return "\n".join(lines + [GROK_END]) + "\n"
+
+
+def split_grok(text: str) -> tuple[str, str | None, str]:
+    """(before, our block or None, after) of a Grok config."""
+    start = text.find(GROK_BEGIN)
+    end = text.find(GROK_END, start + 1) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return text, None, ""
+    stop = end + len(GROK_END)
+    if text[stop:stop + 1] == "\n":
+        stop += 1
+    return text[:start], text[start:stop], text[stop:]
+
+
+def grok_pins(home: Path, args) -> tuple[str, str] | None:
+    """Write, refresh or (with --uninstall) remove the Grok model pins."""
+    path = home / GROK_CONFIG
+    if not path.parent.is_dir():
+        return None  # no ~/.grok: Grok is not installed here, nothing to pin
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    before, ours, after = split_grok(text)
+    outside = before + after
+    if args.uninstall:
+        if ours is None:
+            return None
+        new = before.rstrip("\n") + ("\n" if before.strip() else "") + after
+        verb, done = "would remove", ("REMOVED", f"{GROK_CONFIG} -- Gate 6 model pins")
+    else:
+        if re.search(r"(?m)^\s*\[\s*subagents\s*\.\s*models\s*\]|subagents\s*\.\s*models\s*\.", outside):
+            return "REFUSED", (f"{GROK_CONFIG} -- already has its own [subagents.models]; add these "
+                               "lines to it yourself:\n" + grok_block(args.grok_models))
+        block = grok_block(args.grok_models)
+        if ours == block:
+            return "ALREADY", f"{GROK_CONFIG} -- Gate 6 model pins current"
+        new = before + block + after if ours is not None else \
+            text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
+        verb = "would refresh" if ours is not None else "would add"
+        done = ("INSTALLED", f"{GROK_CONFIG} -- Gate 6 model pins")
+    try:
+        tomllib.loads(new)
+    except tomllib.TOMLDecodeError as exc:
+        return "REFUSED", f"{GROK_CONFIG} -- the result would not parse ({exc}); left untouched"
+    if args.dry_run:
+        return "DRY-RUN", f"{GROK_CONFIG} -- {verb} the Gate 6 model pins"
+    _dcio.atomic_write(path, new)
+    return done
+
+
+def grok_check(home: Path, args) -> list[str]:
+    path = home / GROK_CONFIG
+    if not path.parent.is_dir():
+        return []
+    _, ours, _ = split_grok(path.read_text(encoding="utf-8") if path.is_file() else "")
+    if ours is None:
+        return [f"MISSING  {GROK_CONFIG} -- Gate 6 model pins not installed (subagents inherit)"]
+    if ours != grok_block(args.grok_models):
+        return [f"OK       {GROK_CONFIG} -- Gate 6 model pins (differ from this roster; re-run the installer)"]
+    return [f"OK       {GROK_CONFIG} -- Gate 6 model pins"]
 
 
 def install_agent(target: Target, home: Path, source: Path, args,
@@ -766,12 +845,15 @@ def main() -> int:
     source = source_skill()
     home = Path(args.home).expanduser().resolve() if args.home else Path.home()
     targets = selected(args)
-    args.codex_models = codex_models(args.project)
+    args.codex_models = host_models(args.project, "codex")
+    args.grok_models = host_models(args.project, "grok")
 
     if args.check:
         problems = 0
         for target in targets:
             healthy, lines = check_one(target, home, source, args)
+            if target.key == "agents" and not args.no_agent:
+                lines += grok_check(home, args)
             problems += 0 if healthy else 1
             for line in lines:
                 print(line)
@@ -787,6 +869,8 @@ def main() -> int:
         outcomes = [] if args.agents_only else [act(target, home, source, args)]
         if not args.no_agent:
             outcomes.extend(act_agent(target, home, source, args, name) for name in AGENT_FILES)
+            if target.key == "agents":
+                outcomes.append(grok_pins(home, args))
         for outcome in outcomes:
             if outcome is None:
                 continue

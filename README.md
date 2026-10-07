@@ -256,8 +256,15 @@ If the source is already added, refresh it first with
 
 Use this **or** `dc_install.py` for Grok, not both. `dc_install.py --uninstall --host agents`
 removes the skill-link install if you are switching. Reload plugins (`r` in the Plugins
-tab) or start a new session after install. The plugin brings the `dca-*` subagents too; Gate 6
-passes each role its Grok model at spawn (`dc_review.py config` shows the roster).
+tab) or start a new session after install. The plugin brings the `dca-*` subagents too. To run
+each Gate 6 role on its own Grok model (`dc_review.py config` shows the roster), pin them once from
+the plugin's copy; this adds one marked block to `~/.grok/config.toml` and makes no skill link:
+
+```powershell
+py -3 -B (Get-ChildItem "$HOME\.grok\installed-plugins\drainclamp-build-adhd-*\skills\drainclamp-build-adhd\scripts\dc_install.py").FullName --host agents --agents-only
+```
+
+Re-run it after `grok plugin update` if the roster changed.
 
 ### Codex plugin
 
@@ -355,7 +362,7 @@ py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 pl
 py -3 -B tests/t_skeleton.py   # one change through the core gates
 ```
 
-820 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
+825 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes
