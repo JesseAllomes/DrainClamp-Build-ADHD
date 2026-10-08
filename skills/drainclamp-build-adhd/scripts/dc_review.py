@@ -271,6 +271,9 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
         return "NOT-RUN", _dcio.EXIT_NO_CHECKS, ["not reviewed, left out at the packet cap: "
                                                  + ", ".join(unseen[:5])
                                                  + (f" (+{len(unseen) - 5})" if len(unseen) > 5 else "")]
+    if last.get("skipped"):
+        # The user's call, recorded with its reason: never shown as a pass.
+        return "REVIEW-SKIPPED", _dcio.EXIT_OK, [f"round {last['id']} skipped by the user: {last['skipped']}"]
     tag = "" if last.get("coverage") == "full" else f" COVERAGE: {last.get('coverage')}"
     return "REVIEW-PASS", _dcio.EXIT_OK, [f"round {last['id']}{tag}"]
 
@@ -1022,6 +1025,11 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument("--round", required=True)
     ab.add_argument("--reason", required=True)
 
+    sk = sub.add_parser("skip", help="the user skips this review (a small release); recorded, never a pass")
+    sk.add_argument("--milestone")
+    sk.add_argument("--reason", required=True, help="the user's reason, as given")
+    sk.add_argument("--base", help="change set relative to this ref")
+
     for name in ("status", "check"):
         st = sub.add_parser(name, help="verdict for a milestone" + (" as exit code" if name == "check" else ""))
         st.add_argument("--milestone")
@@ -1494,6 +1502,38 @@ def main() -> int:
         write_handoff(agent, review_of(change(apply_abort)), args.round)
         print(out[0])
         return _dcio.EXIT_NO_CHECKS
+
+    if args.cmd == "skip":
+        # One review per release, and the user may skip a small one. The skip is a
+        # finished round with no runs: it stamps the change set, so an edit after it
+        # is STALE, and it never clears a finding or reads as REVIEW-PASS.
+        if len(_norm(args.reason)) < 3:
+            raise DcError("skip needs the user's reason (--reason)")
+        ms = _milestone(root, args.milestone)
+        files = _changed(root, args.base)
+        gate3 = gate3_status(root) or "not checked"
+
+        def apply_skip(rv: dict) -> None:
+            block = blocking(rv["findings"], ms["id"])
+            if block:
+                raise DcError(f"findings block {ms['id']} ({' '.join(f['id'] for f in block[:8])}): "
+                              "decide them first; a skip never clears a finding", _dcio.EXIT_CHECK_FAILED)
+            if any(r.get("milestone") == ms["id"] and not r.get("finished") and not r.get("aborted")
+                   for r in rv["rounds"]):
+                raise DcError(f"a review round for {ms['id']} is still open: finish or abort it first")
+            rid = dc_project._next_id(rv["rounds"], "R")
+            now = _now()
+            rv["rounds"].append({
+                "id": rid, "milestone": ms["id"], "depth": "skipped", "base": args.base, "at": now,
+                "gate3": gate3, "files": files, "runs": [], "coverage": "skipped", "packet_lines": 0,
+                "removed": {}, "fix": None, "finished": now, "stamp": {p: _hash(root, p) for p in files},
+                "verdict": "SKIPPED", "skipped": _clip(args.reason, TEXT_CAP["reason"]),
+                "decided_by": "user"})
+            out.append(f"REVIEW {rid} {ms['id']} SKIPPED by the user ({len(files)} changed file(s) "
+                       f"stamped): {_clip(args.reason, TEXT_CAP['reason'])}")
+        change(apply_skip)
+        print(out[0])
+        return _dcio.EXIT_OK
 
     if args.cmd in ("status", "check"):
         data = dc_project.load(agent)

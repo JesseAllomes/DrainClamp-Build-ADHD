@@ -409,6 +409,28 @@ def fixing_repo(name, *batch):
     return root
 
 
+# -- the user skips a small release's review --------------------------------------------------------
+sk = make_repo("skip")
+rv(sk, "config", "--mode", "milestone")
+rc, out = rv(sk, "skip", "--milestone", "m1", "--reason", "x")
+check("skip needs a real reason", rc != 0 and "reason" in out, out)
+green(sk)
+rv(sk, "packet", "--milestone", "m1")
+rc, out = rv(sk, "skip", "--milestone", "m1", "--reason", "docs-only release")
+check("skip refused while a round is open", rc != 0 and "still open" in out, out)
+rv(sk, "abort", "--round", "R1", "--reason", "switching to a skip")
+rc, out = rv(sk, "skip", "--milestone", "m1", "--reason", "docs-only release")
+check("skip records a finished round with the user's reason", rc == 0 and "SKIPPED by the user" in out, out)
+code, out = rv(sk, "check", "--milestone", "m1")
+check("a skipped review lets the milestone close but never reads as a pass",
+      code == 0 and "REVIEW-SKIPPED" in out and "REVIEW-PASS" not in out and "docs-only release" in out, out)
+rc, out = set_roadmap(sk, "done")
+check("the roadmap guard accepts a skipped review", rc == 0, out)
+(sk / "a.py").write_text(A_PY + "\n# after the skip\n", encoding="utf-8")
+code, out = rv(sk, "check", "--milestone", "m1")
+check("an edit after the skip is STALE (exit 5)", code == 5 and "a.py" in out, out)
+
+
 # -- scope names a ticket whose files did not change -----------------------------------------------
 bl = fixing_repo("blocked", finding("loop stops one item early", "for i in range(len(items) - 1):"))
 rv(bl, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")

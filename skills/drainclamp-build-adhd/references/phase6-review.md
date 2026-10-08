@@ -10,12 +10,17 @@ dedupe, suppression, agent cap, fixer scope, verdict. Run it, never re-implement
 |---|---|
 | `off` (default) | only when the user asks |
 | `milestone` | at every milestone close: after Gate 3's milestone tier passes, before Gate 5 |
-| `final` | once, before the last milestone closes; it reviews the whole change |
+| `final` | once, before the last milestone closes; it reviews the whole change. For a repo that ships releases, that is one review per release: run it **before** the release is pushed, with `--base` at the last released commit |
 
 The mode is enforced, not advisory: `dc_state.py --set ROADMAP` refuses to mark a row `done` while
 findings block it (exit 2), when no finished round covers it (`NOT-RUN`, exit 6), or when its files
 changed after the review (`STALE`, exit 5). Turning review on is the user's call:
-`dc_review.py config --mode milestone`.
+`dc_review.py config --mode final --depth quick` (one quick review per release) or `--mode milestone`.
+
+**Skipping a small release** is also the user's call, never yours: offer it, and on the user's word run
+`dc_review.py skip --milestone <m> --reason "<their reason>"`. It records a finished round with no
+agents: the milestone may close, `check` shows `REVIEW-SKIPPED` (never `REVIEW-PASS`), an edit after
+it is `STALE`, and it refuses while findings block or a round is open.
 
 ## Roster and models
 
