@@ -283,6 +283,25 @@ check("proposed advisor ideas are listed as waiting on the user",
 out = gate_capsule({"config": {"mode": "off"}, "ideas": [{"id": "i1", "status": "denied"}]})
 check("no proposed ideas, no advisor line", "Advisor:" not in out, out)
 
+# path-only targets: a large file gets an index hint, a small or missing one a plain read
+sized = make_repo("sized", "| m1 | sized | big.py | active |")
+(sized / "big.py").write_text("x = 1\n" * 300, encoding="utf-8")
+(sized / "small.py").write_text("x = 1\n" * 10, encoding="utf-8")
+proj(sized, "chunk", "add", "--milestone", "m1", "--goal", "sized",
+     "--targets", "big.py;small.py;new.py")
+rc, out = proj(sized, "next")
+check("large path-only target is indexed first",
+      "dc_map.py --path big.py  (300 lines: index, then read one range)" in out, out)
+check("small path-only target is read whole", "  read small.py" in out, out)
+check("missing path-only target falls back to read", "  read new.py" in out, out)
+check("hint without a root stays a plain read", dc_project.read_hint("big.py") == "read big.py")
+(sized / "big.md").write_text("line\n" * 300, encoding="utf-8")
+check("large unsupported target is not sent to dc_map",
+      dc_project.read_hint("big.md", sized) == "read big.md  (300 lines: no index for this type; read one range)",
+      dc_project.read_hint("big.md", sized))
+check("large supported target still indexed",
+      dc_project.read_hint("big.py", sized).startswith("dc_map.py --path big.py"))
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

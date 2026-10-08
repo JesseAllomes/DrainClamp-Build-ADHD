@@ -410,7 +410,7 @@ def fixing_repo(name, *batch):
 
 
 # -- replies read straight from a Claude Code subagent transcript (t2) ------------------------------
-def transcript(name, agent_type, *messages, folder=None):
+def transcript(name, agent_type, *messages, folder=None, usage=None):
     """A subagent transcript as Claude Code writes it: JSON lines plus a .meta.json."""
     folder = folder or tmp / "transcripts"
     folder.mkdir(parents=True, exist_ok=True)
@@ -419,6 +419,8 @@ def transcript(name, agent_type, *messages, folder=None):
         for block in content:   # Claude Code writes one line per content block of a message
             rows.append({"type": "assistant", "uuid": f"u{n}-{len(rows)}",
                          "message": {"id": f"msg{n}", "role": "assistant", "content": [block]}})
+            if usage:   # every streamed line of a call repeats that call's usage
+                rows[-1]["message"]["usage"] = dict(usage)
     path = folder / f"agent-{name}.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     (folder / f"agent-{name}.meta.json").write_text(
@@ -438,7 +440,9 @@ rv(tx, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
 rv(tx, "run", "--round", "R1", "--role", "refuter", "--model", "sonnet")
 crit = transcript("a1111111111111111", "dca-critic",
                   [{"type": "text", "text": "Reading the packet."}, {"type": "tool_use", "name": "Read", "input": {}}],
-                  [handback(finding("loop stops one item early", "for i in range(len(items) - 1):"))])
+                  [handback(finding("loop stops one item early", "for i in range(len(items) - 1):"))],
+                  usage={"input_tokens": 100, "cache_creation_input_tokens": 10,
+                         "cache_read_input_tokens": 1000, "output_tokens": 50})
 rc, out = rv(tx, "ingest", "--round", "R1", "--role", "refuter", "--from-transcript", str(crit))
 check("ingest takes only finder roles", rc != 0, out)
 rc, out = rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(crit))
@@ -455,6 +459,26 @@ rc, out = rv(tx, "adjudicate", "--round", "R1", "--from-transcript", "a222222222
 os.environ.pop("CLAUDE_CONFIG_DIR")
 check("an agent id finds its transcript; the last message's text is the reply",
       rc == 0 and "r1 [high] open" in out, out)
+
+def run_tokens(root, role):
+    rnd = next(r for r in side(root)["rounds"] if r["id"] == "R1")
+    return next(r for r in rnd["runs"] if r["role"] == role).get("tokens")
+
+
+tok = run_tokens(tx, "critic-a")
+check("a transcript's usage is stored on its run, each streamed call once",
+      tok and tok["calls"] == 2 and tok["total"] == 2320 and tok["output"] == 100, tok)
+rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(crit))
+check("ingesting the same transcript again does not double its tokens",
+      (run_tokens(tx, "critic-a") or {}).get("total") == 2320, run_tokens(tx, "critic-a"))
+check("a transcript without usage leaves its run uncounted", run_tokens(tx, "refuter") is None,
+      run_tokens(tx, "refuter"))
+rc, out = rv(tx, "status", "--milestone", "m1")
+check("status prints each round's token total and says which runs it misses",
+      "tokens R1: 2,320 total, 100 output (critic-a 2,320) COVERAGE: partial (1/2 runs counted)" in out, out)
+rc, out = rv(tx, "status", "--milestone", "m1", "--json")
+check("status --json carries the per-round token totals",
+      rc == 0 and json.loads(out)["tokens"]["R1"]["total"] == 2320, out[-300:])
 plain = tmp / "transcripts" / "codex-reply.txt"
 plain.write_text(finding("x", "def parse(items):") + "\n", encoding="utf-8")
 rc, out = rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(plain))
@@ -468,6 +492,66 @@ check("a transcript that ends mid-work is refused, never read as a reply",
 rc, out = rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(crit),
              "--file", "-", stdin="")
 check("--file and --from-transcript are exclusive", rc != 0 and "not allowed with" in out, out)
+
+# -- replies read straight from a Codex spawned agent's rollout (i8) --------------------------------
+def rollout(thread, role, *events, folder=None):
+    """A Codex rollout as the CLI writes it: session_meta first, then event records."""
+    folder = folder or tmp / "rollouts"
+    folder.mkdir(parents=True, exist_ok=True)
+    spawn = {"agent_nickname": "Ada", "agent_path": "/root/review", "agent_role": role, "depth": 1,
+             "parent_thread_id": "01a10000-0000-7000-8000-000000000000"}
+    rows = [{"type": "session_meta", "payload": {"id": thread, "source": {"subagent": {"thread_spawn": spawn}},
+                                                 "base_instructions": {"text": "Gate 6 review."}}}]
+    rows += [{"timestamp": "2026-10-08T01:00:00Z", "type": "event_msg", "payload": e} for e in events]
+    path = folder / f"rollout-2026-10-08T10-00-00-{thread}.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    return path
+
+
+def done_msg(text):
+    return {"type": "task_complete", "last_agent_message": text}
+
+
+def tokens_msg(inp, cached, out, total):
+    usage = {"input_tokens": inp, "cached_input_tokens": cached, "cache_write_input_tokens": 0,
+             "output_tokens": out, "reasoning_output_tokens": 0, "total_tokens": inp + out}
+    return {"type": "token_count", "info": {"last_token_usage": usage,
+                                            "total_token_usage": dict(usage, total_tokens=total)}}
+
+
+cx = make_repo("codex-rollout")
+rv(cx, "config", "--mode", "milestone")
+green(cx)
+rv(cx, "packet", "--milestone", "m1")
+rv(cx, "run", "--round", "R1", "--role", "critic-a", "--model", "gpt-6.1-sol")
+rv(cx, "run", "--round", "R1", "--role", "refuter", "--model", "gpt-6.1-sol")
+crit_cx = rollout("01a10000-0000-7000-8000-00000000c0de", "dca-critic",
+                  {"type": "task_started"}, tokens_msg(1000, 600, 40, 1040),
+                  done_msg(finding("loop stops one item early", "for i in range(len(items) - 1):")))
+rc, out = rv(cx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(crit_cx))
+check("ingest reads a Codex agent's last task_complete message", rc == 0 and "1 new" in out, out)
+tok = next(r for r in next(r for r in side(cx)["rounds"] if r["id"] == "R1")["runs"]
+           if r["role"] == "critic-a").get("tokens")
+check("a Codex rollout's usage is stored on its run, input counted once",
+      tok and (tok["calls"], tok["input"], tok["cache_read"], tok["total"]) == (1, 400, 600, 1040), tok)
+rc, out = rv(cx, "adjudicate", "--round", "R1", "--from-transcript", str(crit_cx))
+check("a Codex critic's rollout is refused as the refuter's", rc != 0 and "not dca-refuter" in out, out)
+guard = rollout("01a10000-0000-7000-8000-0000000000aa", None, done_msg("APPROVE"))
+rc, out = rv(cx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(guard))
+check("a Codex rollout with no agent role is refused for a reviewer role",
+      rc != 0 and "dca-critic" in out and "nothing read" in out, out)
+again = rollout("01a10000-0000-7000-8000-0000000000bb", "dca-critic",
+                done_msg("NO FINDINGS"), {"type": "task_started"})
+rc, out = rv(cx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(again))
+check("a Codex rollout working on a later task is refused, not read as its old reply",
+      rc != 0 and "ends without a final reply" in out, out)
+os.environ["CODEX_HOME"] = str(tmp / "codex-home")
+rollout("01a10000-0000-7000-8000-00000000f00d", "dca-refuter",
+        {"type": "task_started"}, done_msg(json.dumps({"id": "r1", "verdict": "CONFIRMED", "note": "n-1"})),
+        folder=tmp / "codex-home" / "sessions" / "2026" / "10" / "08")
+rc, out = rv(cx, "adjudicate", "--round", "R1", "--from-transcript", "01a10000-0000-7000-8000-00000000f00d")
+os.environ.pop("CODEX_HOME")
+check("a Codex thread id finds its rollout under CODEX_HOME", rc == 0 and "r1 [high] open" in out, out)
 
 # -- the user skips a small release's review --------------------------------------------------------
 sk = make_repo("skip")

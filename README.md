@@ -107,7 +107,7 @@ is unignored you get one warning and nothing else.
 | `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never indexes a temp-directory repo, never trusts a corrupt file |
 | `dc_session.py` | Gate S: the project menu, plus `--complete` and `--reopen` |
 | `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
-| `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok; `--project` attributes Claude tokens to chunks and milestones. Aggregates only, never transcript text |
+| `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok; `--project` attributes Claude and Codex tokens to chunks and milestones. Aggregates only, never transcript text |
 | `dc_audit.py` | Gate 0: five-part freshness test, depth-2 rollups, stack, dead-code candidates |
 | `dc_review.py` | Gate 6: review packet, citation check, dedupe, suppression, agent cap, fixer scope, roadmap guard |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests tied to a tree fingerprint |
@@ -125,17 +125,20 @@ py -3 -B skills/drainclamp-build-adhd/scripts/dc_tokens.py
 ```
 
 It reports three exclusive buckets (`none`, `base`, `adhd`) across Claude, Codex and Grok. Claude
-uses session-median context/fresh values; Codex uses the final session token total; Grok remains
-session-level and never invents a cache split. Thin samples are marked `n<3`.
+uses session-median context/fresh values; Codex uses the final session token total, whose input
+already holds the cached part, so cached tokens count once; Grok remains session-level and never
+invents a cache split. Thin samples are marked `n<3`.
 
 Use `--claude`, `--codex`, or `--grok` to isolate a host; `--transcripts` aliases `--claude`.
 
-`--project <root>` attributes Claude tokens to that project's chunks and milestones. A call belongs to
+`--project <root>` attributes Claude and Codex tokens to that project's chunks and milestones. A call belongs to
 a chunk when it lands after the previous chunk was ticked and by the time this one was, clipped to the
 start of the tracked time session; calls in a session but between chunks are reported as outside.
-`--save` stores the totals in the sidecar, where project-board can show them. Claude only (Codex and Grok transcripts carry
-no per-call timestamps), and untracked time is not counted, so totals are a floor. One API call is
-streamed as several transcript records; they are counted once, by message and request id.
+`--save` stores the totals in the sidecar, where project-board can show them, with a per-host split.
+Grok is left out (its transcripts carry no per-call timestamps), and untracked time is not counted,
+so totals are a floor. One Claude API call is streamed as several transcript records; they are
+counted once, by message and request id. A Codex rollout logs one `token_count` per call; a repeat
+whose running total did not move is skipped.
 
 The static table estimates resident `SKILL.md` and paged references (bytes/4; not a host bill).
 
@@ -148,6 +151,8 @@ State schema v1 is frozen, so what the workflow tracks beyond the roadmap lives 
 Gate 4 reads only those), errors, to-dos, build time and tokens. Every write bumps `rev`; a writer
 holding an old revision is refused, never merged. `dc_project.py next` prints a dozen-line resume
 capsule instead of the whole state file, and ticking a chunk runs a chunk-boundary purge check.
+Its read hints are sized: a whole-file target over 120 lines is indexed first (`dc_map.py --path`),
+then read one range.
 When a milestone's chunks are done the capsule says whether Gate 6 must clear it first, so a resumed
 agent learns about the review before its roadmap write is refused. It also lists advisor ideas still
 waiting on you.
@@ -176,8 +181,10 @@ defaults to `REFUTED`. Cost stays low because:
 
 - Gate 3 must be green first.
 - The packet is built by a script, so agents read one file rather than the conversation.
-- On Claude Code, `ingest --from-transcript <agent id>` reads each reply from the subagent's own
-  transcript, so findings never round-trip through the orchestrator's output.
+- `ingest --from-transcript` reads each reply from the agent's own log: a Claude Code subagent
+  transcript (or its agent id), or a Codex spawned agent's rollout (or its thread id), whose role
+  must match. Findings never round-trip through the orchestrator's output, and the run's token
+  counts are stored on the round; `dc_review.py status` prints each round's total.
 - Each finding's quoted evidence is checked against the file before any model reads it.
 - Duplicates merge, and waived or dismissed findings never come back.
 - The fixer's file scope is checked by hash, not trust.
@@ -372,7 +379,7 @@ py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 pl
 py -3 -B tests/t_skeleton.py   # one change through the core gates
 ```
 
-876 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
+908 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes

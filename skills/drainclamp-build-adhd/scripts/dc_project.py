@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import _dcio
+import dc_chunk
 import dc_registry
 import dc_state
 from _dcio import DcError
@@ -195,10 +196,22 @@ def _clip(text: str) -> str:
     return text if len(text) <= NOTE_CAP else text[:NOTE_CAP - 3] + "..."
 
 
-def read_hint(target: str) -> str:
+def read_hint(target: str, root: Path | None = None) -> str:
+    """A large path-only target is indexed when dc_map has a grammar for it, else read by range."""
+    from dc_map import SUPPORTED  # deferred: keep module import light
     path, _, symbol = target.partition("::")
     if symbol:
         return f"dc_chunk.py --symbol {symbol} --path {path}"
+    full = (root / path) if root is not None else None
+    if full is not None and _dcio.is_within(full, root) and full.is_file():
+        try:
+            total = dc_chunk.line_count(full)
+        except DcError:
+            total = 0
+        if total > dc_chunk.SMALL_FILE_LINES and Path(path).suffix.lower() in SUPPORTED:
+            return f"dc_map.py --path {path}  ({total} lines: index, then read one range)"
+        elif total > dc_chunk.SMALL_FILE_LINES:
+            return f"read {path}  ({total} lines: no index for this type; read one range)"
     return f"read {path}"
 
 
@@ -273,7 +286,7 @@ def capsule(root: Path, data: dict) -> list[str]:
             lines.append("Targets: " + ", ".join(nxt["targets"][:4])
                          + (f" (+{len(nxt['targets']) - 4})" if len(nxt["targets"]) > 4 else ""))
             for t in nxt["targets"][:3]:
-                lines.append("  " + read_hint(t))
+                lines.append("  " + read_hint(t, root))
     last = [c for c in chunks if c.get("done")]
     if last:
         lines.append(f"Last done: {last[-1]['id']} - {_clip(last[-1].get('note') or last[-1]['goal'])}")

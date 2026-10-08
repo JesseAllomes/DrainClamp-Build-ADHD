@@ -127,7 +127,7 @@ def codex_usage(inp, cached, write_n, out, reasoning=0):
         "cache_write_input_tokens": write_n,
         "output_tokens": out,
         "reasoning_output_tokens": reasoning,
-        "total_tokens": inp + cached + write_n + out + reasoning,
+        "total_tokens": inp + out,   # Codex: input holds the cached and cache-write parts
     }
 
 
@@ -138,17 +138,17 @@ write(codex / "2026" / "08" / "rollout-base.jsonl", [
         "type": "session_meta", "base_instructions": "use drainclamp-build gates"}}),
     codex_event({"type": "user_message", "content": "go"}),
     codex_event({"type": "token_count", "info": {
-        "last_token_usage": codex_usage(10, 10, 10, 5),
-        "total_token_usage": codex_usage(10, 10, 10, 5),
+        "last_token_usage": codex_usage(25, 10, 0, 5),
+        "total_token_usage": codex_usage(25, 10, 0, 5),
         "model_context_window": 100000}}),
     codex_event({"type": "token_count", "info": {
-        "last_token_usage": codex_usage(10, 90, 10, 5),
-        "total_token_usage": codex_usage(10, 90, 10, 5),
+        "last_token_usage": codex_usage(110, 90, 10, 5),
+        "total_token_usage": codex_usage(110, 90, 10, 5),
         "model_context_window": 100000}}),
     codex_event({"type": "user_message", "content": "again"}),
     codex_event({"type": "token_count", "info": {
-        "last_token_usage": codex_usage(20, 200, 20, 10, 3),
-        "total_token_usage": codex_usage(30, 290, 30, 15, 3),
+        "last_token_usage": codex_usage(240, 200, 20, 10, 3),
+        "total_token_usage": codex_usage(350, 290, 30, 15, 3),
         "model_context_window": 100000}}),
 ])
 
@@ -226,8 +226,12 @@ check("claude scoreboard is session median",
 
 codex_h = data["hosts"]["codex"]
 check("codex base classified from session_meta", codex_h["base"]["sessions"] == 1)
-check("codex uses last total, not streamed snapshots",
+check("codex uses last total, not streamed snapshots; input is the uncached part",
       codex_h["base"]["input"] == 30, codex_h["base"]["input"])
+check("codex cache writes mapped to created", codex_h["base"]["created"] == 30, codex_h["base"]["created"])
+check("codex context is the whole prompt, cached part counted once",
+      (codex_h["base"]["first_context"], codex_h["base"]["last_context"]) == (25, 240),
+      (codex_h["base"]["first_context"], codex_h["base"]["last_context"]))
 check("codex cached input mapped to read",
       codex_h["base"]["read"] == 290, codex_h["base"]["read"])
 check("codex reasoning kept separate",
@@ -397,6 +401,61 @@ check("--save without --project is a usage error",
 empty_run = dc_tokens.project_tokens(bad, pclaude)
 check("project with no sidecar reports nothing",
       empty_run["chunks"] == {} and empty_run["transcripts"] == 0, empty_run)
+
+
+# --- Codex rollouts: one token_count per call; input_tokens already holds the cached part ----------
+def rollout_call(inp, cached, out, total_in, total_out, stamp):
+    """A Codex token_count record as the CLI writes it (total_tokens = input + output)."""
+    return json.dumps({"timestamp": stamp, "type": "event_msg", "payload": {"type": "token_count", "info": {
+        "last_token_usage": {"input_tokens": inp, "cached_input_tokens": cached, "cache_write_input_tokens": 0,
+                             "output_tokens": out, "reasoning_output_tokens": 0, "total_tokens": inp + out},
+        "total_token_usage": {"input_tokens": total_in, "cached_input_tokens": 0, "cache_write_input_tokens": 0,
+                              "output_tokens": total_out, "reasoning_output_tokens": 0,
+                              "total_tokens": total_in + total_out}}}})
+
+
+pcodex = tmp / "pcodex"
+write(pcodex / "2026" / "01" / "05" / "rollout-a.jsonl", [
+    json.dumps({"type": "session_meta", "payload": {"type": "session_meta", "cwd": str(proj),
+                                                    "base_instructions": SECRET}}),
+    rollout_call(100, 60, 5, 100, 5, D + "10:12:00Z"),      # m1/c1
+    rollout_call(100, 60, 5, 100, 5, D + "10:12:01Z"),      # repeat: running total unchanged
+    rollout_call(200, 150, 9, 300, 14, D + "10:35:00Z"),    # m1/c2
+])
+rc = dc_tokens.read_codex(pcodex / "2026" / "01" / "05" / "rollout-a.jsonl", dc_tokens.root_needles(proj))
+check("codex rollout: one row per call, a repeated total skipped", rc is not None and len(rc.calls) == 2,
+      rc and rc.calls)
+check("codex rollout: fresh is input minus cached, cached is read",
+      rc is not None and rc.calls[0] == (D + "10:12:00Z", 40, 0, 60, 5), rc and rc.calls[:1])
+check("codex rollout: naming the root is a mention", rc is not None and rc.mentions)
+write(pcodex / "2026" / "01" / "05" / "rollout-b.jsonl", [
+    json.dumps({"type": "session_meta", "payload": {"type": "session_meta", "cwd": "C:/elsewhere"}}),
+    rollout_call(900, 0, 9, 900, 9, D + "10:12:00Z"),
+])
+stored["tokens"] = None   # undo the malformed field the save check left behind
+side.write_text(json.dumps(stored), encoding="utf-8")
+both = dc_tokens.project_tokens(proj, pclaude, pcodex)
+check("project: Codex calls join Claude's in the chunk window",
+      (both["chunks"]["m1/c1"]["calls"], both["chunks"]["m1/c1"]["fresh"],
+       both["chunks"]["m1/c1"]["read"]) == (3, 62, 60), both["chunks"].get("m1/c1"))
+check("project: hosts split files and the calls they put in a session",
+      both["hosts"] == {"claude": {"files": 2, "calls": 4}, "codex": {"files": 1, "calls": 2}},
+      both["hosts"])
+check("project: a rollout that never names the root is left out", both["transcripts"] == 3,
+      both["transcripts"])
+check("project: coverage names both hosts", "codex" in both["coverage"], both["coverage"])
+cli = run_cli("--project", str(proj), "--claude", str(pclaude), "--codex", str(pcodex))
+check("project CLI reads Codex rollouts with --codex",
+      cli.returncode == 0 and "codex" in cli.stdout and SECRET not in cli.stdout + cli.stderr,
+      cli.stdout[:300] + cli.stderr[-300:])
+
+_saved = os.environ.get("CODEX_HOME")
+os.environ["CODEX_HOME"] = str(tmp / "codexhome")
+check("default_codex honours CODEX_HOME", dc_tokens.default_codex() == tmp / "codexhome" / "sessions", dc_tokens.default_codex())
+if _saved is None:
+    os.environ.pop("CODEX_HOME", None)
+else:
+    os.environ["CODEX_HOME"] = _saved
 
 print()
 print("FAILURES:", fails if fails else "none")

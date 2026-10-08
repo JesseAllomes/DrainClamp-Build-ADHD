@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -242,7 +243,7 @@ def default_claude() -> Path:
 
 
 def default_codex() -> Path:
-    return Path.home() / ".codex" / "sessions"
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
 
 
 def default_grok() -> Path:
@@ -347,7 +348,7 @@ def context_of(inp: int, created: int, read: int) -> int:
 
 @dataclass
 class ClaudeFile:
-    """One Claude transcript reduced to its API calls; text itself is never kept."""
+    """One transcript (Claude, or a Codex rollout) reduced to its API calls; text is never kept."""
 
     calls: list[tuple[str, int, int, int, int]]  # (timestamp, input, created, read, output)
     bucket: str
@@ -434,9 +435,59 @@ def _codex_usage(block: object) -> tuple[int, int, int, int, int] | None:
     )
 
 
+def codex_call(block: object) -> tuple[int, int, int, int] | None:
+    """(fresh, cache_write, read, output) of one Codex usage block, in Claude's terms.
+
+    Codex input_tokens is the whole prompt (total_tokens = input + output), so the cached and
+    cache-write parts are inside it; fresh is what is left. Reasoning is inside output.
+    """
+    usage = _codex_usage(block)
+    if usage is None:
+        return None
+    inp, write, cached, out, _ = usage
+    return max(inp - cached - write, 0), write, cached, out
+
+
+def read_codex(path: Path, needles: tuple[str, ...] = ()) -> ClaudeFile | None:
+    """A Codex rollout reduced to its calls, like read_claude: one row per token_count.
+
+    A token_count whose running total did not move repeats the previous call and is skipped.
+    """
+    calls: list[tuple[str, int, int, int, int]] = []
+    mentions, prev = False, None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if needles and not mentions:
+                    low = line.lower()
+                    mentions = any(needle in low for needle in needles)
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                payload = record.get("payload") if isinstance(record, dict) else None
+                if not isinstance(payload, dict) or payload.get("type") != "token_count":
+                    continue
+                info = payload.get("info")
+                if not isinstance(info, dict):
+                    continue
+                total = _codex_usage(info.get("total_token_usage"))
+                if total is not None and total == prev:
+                    continue
+                prev = total
+                call = codex_call(info.get("last_token_usage"))
+                if call is None:
+                    continue
+                stamp = record.get("timestamp")
+                calls.append((stamp if isinstance(stamp, str) else "", *call))
+    except OSError:
+        return None
+    return ClaudeFile(calls, "none", mentions)
+
+
 def scan_codex(path: Path) -> Session | None:
     session = Session(bucket="none", host="codex")
-    last_total: tuple[int, int, int, int, int] | None = None
+    last_total: dict | None = None
     user_messages = 0
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -457,7 +508,7 @@ def scan_codex(path: Path) -> Session | None:
                 info = payload.get("info")
                 if not isinstance(info, dict):
                     continue
-                last = _codex_usage(info.get("last_token_usage"))
+                last = codex_call(info.get("last_token_usage"))
                 total = _codex_usage(info.get("total_token_usage"))
                 if last is not None:
                     ctx = context_of(last[0], last[1], last[2])
@@ -465,12 +516,13 @@ def scan_codex(path: Path) -> Session | None:
                         session.first_context = ctx
                     session.last_context = ctx
                 if total is not None:
-                    last_total = total
+                    last_total = info["total_token_usage"]
     except OSError:
         return None
     if last_total is None:
         return None
-    session.input, session.created, session.read, session.output, session.reasoning = last_total
+    session.input, session.created, session.read, session.output = codex_call(last_total)
+    session.reasoning = add_int(last_total, "reasoning_output_tokens")
     session.turns = user_messages or 1
     return session
 
@@ -801,8 +853,8 @@ def report(cfg: Config) -> int:
 # Chunks carry `done_at` and build time is kept as sessions, so a chunk's window
 # is (previous chunk done, this chunk done], clipped to the start of the time
 # session it finished in. Calls in a time session but in no chunk window are
-# `outside` -- planning, review, the Gate 5 report. Only Claude transcripts
-# carry per-call timestamps, so this is Claude-only and says so.
+# `outside` -- planning, review, the Gate 5 report. Claude transcripts and Codex
+# rollouts carry per-call timestamps; Grok does not, so it is left out and says so.
 
 PROJECT_FIELDS = ("calls", "fresh", "read", "output")
 
@@ -860,7 +912,7 @@ def _zero() -> dict:
     return {name: 0 for name in PROJECT_FIELDS}
 
 
-def project_tokens(root: Path, claude: Path | None) -> dict:
+def project_tokens(root: Path, claude: Path | None, codex: Path | None = None) -> dict:
     import dc_project
 
     data = dc_project.load(root / _dcio.AGENT_DIR_NAME)
@@ -870,19 +922,26 @@ def project_tokens(root: Path, claude: Path | None) -> dict:
     for key in chunks:
         milestones.setdefault(key.split("/")[0], _zero())
     outside, files = _zero(), 0
+    hosts: dict[str, dict] = {}
     earliest = min((s for s, _ in sessions), default=None)
-    if claude is not None and claude.is_dir() and earliest is not None:
+    sources = [("claude", claude, iter_claude_project, read_claude),
+               ("codex", codex, iter_codex, read_codex)]
+    for host, base, walk, reader in sources:
+        if base is None or not base.is_dir() or earliest is None:
+            continue
         needles = root_needles(root)
-        for path in iter_claude_project(claude):
+        tally = hosts.setdefault(host, {"files": 0, "calls": 0})
+        for path in walk(base):
             try:
                 if path.stat().st_mtime < earliest.timestamp():
                     continue
             except OSError:
                 continue
-            parsed = read_claude(path, needles)
+            parsed = reader(path, needles)
             if parsed is None or not parsed.mentions:
                 continue
             files += 1
+            tally["files"] += 1
             for stamp, inp, created, read, output in parsed.calls:
                 when = _when(stamp)
                 if when is None:
@@ -890,22 +949,26 @@ def project_tokens(root: Path, claude: Path | None) -> dict:
                 key = next((k for k, s, e in windows if s < when <= e), None)
                 if key is None and not any(s <= when <= e for s, e in sessions):
                     continue
+                tally["calls"] += 1
                 cells = [chunks[key], milestones[key.split("/")[0]]] if key else [outside]
                 for cell in cells:
                     cell["calls"] += 1
                     cell["fresh"] += inp + created
                     cell["read"] += read
                     cell["output"] += output
-    return {"root": str(root), "transcripts": files, "chunks": chunks,
+    return {"root": str(root), "transcripts": files, "hosts": hosts, "chunks": chunks,
             "milestones": milestones, "outside": outside, "unwindowed": unwindowed,
-            "coverage": "partial: claude transcripts only; windows from chunk done_at "
-                        "and time sessions; a transcript counts when it names the root"}
+            "coverage": "partial: claude transcripts and codex rollouts only; windows from chunk "
+                        "done_at and time sessions; a transcript counts when it names the root"}
 
 
 def print_project(result: dict) -> None:
     print(f"DRAINCLAMP: project tokens  {Path(result['root']).name}  "
           f"transcripts={result['transcripts']}")
     print(f"COVERAGE: {result['coverage']}")
+    if result.get("hosts"):
+        print("hosts: " + ", ".join(f"{h} {v['files']} file(s) {v['calls']} call(s)"
+                                    for h, v in result["hosts"].items()))
     print(f"{'':<14}{'calls':>7}{'fresh':>12}{'read':>14}{'output':>10}")
 
     def row(label: str, cell: dict) -> None:
@@ -930,7 +993,7 @@ def save_project(root: Path, result: dict) -> int:
     agent = root / _dcio.AGENT_DIR_NAME
     if not dc_project.sidecar_path(agent).is_file():
         raise _dcio.DcError("no .agent/drainclamp-project.json; nothing to attribute to")
-    keep = {k: result[k] for k in ("transcripts", "chunks", "milestones", "outside",
+    keep = {k: result[k] for k in ("transcripts", "hosts", "chunks", "milestones", "outside",
                                     "unwindowed", "coverage")}
     keep["at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -943,7 +1006,7 @@ def save_project(root: Path, result: dict) -> int:
 
 def project_report(cfg: Config) -> int:
     try:
-        result = project_tokens(cfg.project, cfg.claude)
+        result = project_tokens(cfg.project, cfg.claude, cfg.codex)
     except _dcio.DcError as exc:
         print(f"DRAINCLAMP: {exc}", file=sys.stderr)
         return exc.code
@@ -980,7 +1043,7 @@ def parse_args(argv: list[str] | None = None) -> Config:
                         help="skip the static skill-size table")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--project", default=None, metavar="ROOT",
-                        help="attribute Claude usage to ROOT's chunks and milestones")
+                        help="attribute Claude and Codex usage to ROOT's chunks and milestones")
     parser.add_argument("--save", action="store_true",
                         help="with --project: store the totals in ROOT's sidecar for the board")
     args = parser.parse_args(argv)

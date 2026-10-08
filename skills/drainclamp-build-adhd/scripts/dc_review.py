@@ -33,6 +33,7 @@ import _dcio
 import dc_map
 import dc_project
 import dc_state
+import dc_tokens
 import dc_verify
 from _dcio import DcError
 
@@ -248,6 +249,7 @@ def _read_input(path: str) -> str:
 # so the script can read the reply itself. Any other format is refused, never guessed at.
 
 AGENT_ID_RE = re.compile(r"^(?:agent-)?(a[0-9a-f]{8,40})$")
+CODEX_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 AGENT_TYPE = {"critic-a": "dca-critic", "critic-b": "dca-critic", "checker": "dca-checker",
               "refuter": "dca-refuter", "advisor": "dca-advisor"}
 
@@ -265,17 +267,75 @@ def transcript_path(value: str) -> Path:
             return hits[0]
         if hits:
             raise DcError(f"agent id {m.group(1)} matches {len(hits)} transcripts; pass the file path")
-    raise DcError(f"no transcript at {value!r} (a .jsonl path or a Claude Code agent id)")
+    if CODEX_ID_RE.match(value.strip()):
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        hits = sorted((home / "sessions").rglob(f"rollout-*-{value.strip()}.jsonl"))
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise DcError(f"thread id {value.strip()} matches {len(hits)} rollouts; pass the file path")
+    raise DcError(f"no transcript at {value!r} (a .jsonl path, a Claude Code agent id or a Codex thread id)")
+
+
+def _is_rollout(text: str) -> bool:
+    """A Codex rollout opens with a session_meta record; a Claude transcript never does."""
+    for line in text.splitlines():
+        if line.strip():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                return False
+            return isinstance(entry, dict) and entry.get("type") == "session_meta"
+    return False
+
+
+def rollout_answer(path: Path, text: str, role: str) -> str:
+    """A Codex spawned agent's reply: the last task_complete message, if no task started after it.
+
+    The role comes from session_meta source.subagent.thread_spawn.agent_role; a rollout without
+    one (the user's own session, Codex's guardian) is refused for a reviewer role.
+    """
+    kind, reply = "", None
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        payload = entry.get("payload") if isinstance(entry, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if entry.get("type") == "session_meta":
+            spawn = ((payload.get("source") or {}).get("subagent") or {})                 if isinstance(payload.get("source"), dict) else {}
+            spawn = spawn.get("thread_spawn") if isinstance(spawn, dict) else None
+            kind = str(spawn.get("agent_role") or "") if isinstance(spawn, dict) else ""
+        elif payload.get("type") == "task_started":
+            reply = None
+        elif payload.get("type") == "task_complete":
+            msg = payload.get("last_agent_message")
+            reply = msg if isinstance(msg, str) and msg.strip() else None
+    want = AGENT_TYPE.get(role)
+    if want and kind.rsplit(":", 1)[-1] != want:
+        raise DcError(f"{path.name} is {('a ' + kind) if kind else 'not a spawned agent'} run, "
+                      f"not {want} ({role}); nothing read")
+    if reply is None:
+        raise DcError(f"{path.name} ends without a final reply (still running, or stopped); nothing read")
+    return reply
 
 
 def transcript_answer(value: str, role: str) -> str:
-    """The subagent's final reply from a Claude Code transcript, for `role`.
+    """The subagent's final reply from a Claude Code transcript or Codex rollout, for `role`.
 
     The reply is the last SubagentHandback message, else the text of the last assistant
     message. A transcript whose meta file names another agent type is refused, so a
     critic's output cannot be filed as the refuter's.
     """
     path = transcript_path(value)
+    try:
+        text = _dcio.read_text(path) or ""
+    except (UnicodeDecodeError, OSError) as exc:
+        raise DcError(f"cannot read {path}: {exc}") from exc
+    if _is_rollout(text):
+        return rollout_answer(path, text, role)
     meta_file = path.with_name(path.stem + ".meta.json")
     try:
         meta = json.loads(_dcio.read_text(meta_file) or "{}")
@@ -285,10 +345,6 @@ def transcript_answer(value: str, role: str) -> str:
     want = AGENT_TYPE.get(role)
     if kind and want and kind.rsplit(":", 1)[-1] != want:
         raise DcError(f"{path.name} is a {kind} run, not {want} ({role}); nothing read")
-    try:
-        text = _dcio.read_text(path) or ""
-    except (UnicodeDecodeError, OSError) as exc:
-        raise DcError(f"cannot read {path}: {exc}") from exc
     handback, last_id, last_text, working, seen = None, None, [], False, 0
     for line in text.splitlines():
         try:
@@ -327,6 +383,50 @@ def _reply(args, role: str) -> str:
     if getattr(args, "from_transcript", None):
         return transcript_answer(args.from_transcript, role)
     return _read_input(args.file)
+
+
+def transcript_tokens(args) -> dict | None:
+    """Token counts of a `--from-transcript` run, each call once (dc_tokens read_claude/read_codex)."""
+    if not getattr(args, "from_transcript", None):
+        return None
+    path = transcript_path(args.from_transcript)
+    try:
+        rollout = _is_rollout(_dcio.read_text(path) or "")
+    except (UnicodeDecodeError, OSError):
+        return None
+    got = (dc_tokens.read_codex if rollout else dc_tokens.read_claude)(path)
+    if got is None or not got.calls:
+        return None
+    inp, made, read, out = (sum(c[i] for c in got.calls) for i in range(1, 5))
+    return {"transcript": path.name, "calls": len(got.calls), "input": inp, "cache_write": made,
+            "cache_read": read, "output": out, "total": inp + made + read + out}
+
+
+def _stamp_tokens(runs: list, roles: tuple, usage: dict | None) -> None:
+    """Put `usage` on the run that already holds this transcript, else the first uncounted one."""
+    if not usage:
+        return
+    mine = [r for r in runs if isinstance(r, dict) and r.get("role") in roles]
+    hit = next((r for r in mine if (r.get("tokens") or {}).get("transcript") == usage["transcript"]), None)         or next((r for r in mine if not r.get("tokens")), None)
+    if hit is not None:
+        hit["tokens"] = usage
+
+
+def round_tokens(rv: dict, milestone: str | None) -> dict:
+    """{round id: totals} over the runs that carry token counts; counts only, never a cost."""
+    out: dict = {}
+    for rnd in rv["rounds"]:
+        if not isinstance(rnd, dict) or (milestone and rnd.get("milestone") != milestone):
+            continue
+        runs = [r for r in rnd.get("runs") or [] if isinstance(r, dict)]
+        counted = [r for r in runs if isinstance(r.get("tokens"), dict)]
+        if counted:
+            out[str(rnd.get("id"))] = {
+                "total": sum(int(r["tokens"].get("total") or 0) for r in counted),
+                "output": sum(int(r["tokens"].get("output") or 0) for r in counted),
+                "runs": len(runs), "counted": len(counted),
+                "by_role": [[r.get("role"), int(r["tokens"].get("total") or 0)] for r in counted]}
+    return out
 
 
 # -- verdict ---------------------------------------------------------------------
@@ -1146,13 +1246,13 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--role", required=True, choices=FINDER_ROLES)
     ig = i.add_mutually_exclusive_group(required=True)
     ig.add_argument("--file", help="JSON lines, or - for stdin")
-    ig.add_argument("--from-transcript", help="Claude Code subagent transcript (.jsonl) or agent id, instead of --file")
+    ig.add_argument("--from-transcript", help="Claude Code subagent transcript or Codex agent rollout (.jsonl), agent id or Codex thread id, instead of --file")
 
     a = sub.add_parser("adjudicate", help="record refuter verdicts or an orchestrator override")
     a.add_argument("--round", required=True)
     ag = a.add_mutually_exclusive_group()
     ag.add_argument("--file", help="refuter JSON lines {id, verdict, note}, or -")
-    ag.add_argument("--from-transcript", help="Claude Code subagent transcript (.jsonl) or agent id, instead of --file")
+    ag.add_argument("--from-transcript", help="Claude Code subagent transcript or Codex agent rollout (.jsonl), agent id or Codex thread id, instead of --file")
     a.add_argument("--set", action="append", default=[], help="id=open|refuted (orchestrator)")
     a.add_argument("--note", default="")
 
@@ -1188,7 +1288,7 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--model", default="", help="e.g. opus/high, or inline")
     sgg = sg.add_mutually_exclusive_group(required=True)
     sgg.add_argument("--file", help="JSON lines, or -")
-    sgg.add_argument("--from-transcript", help="Claude Code subagent transcript (.jsonl) or agent id, instead of --file")
+    sgg.add_argument("--from-transcript", help="Claude Code subagent transcript or Codex agent rollout (.jsonl), agent id or Codex thread id, instead of --file")
 
     tr = sub.add_parser("triage", help="advisor: the user's call per idea")
     tr.add_argument("--set", action="append", required=True,
@@ -1352,6 +1452,7 @@ def main() -> int:
 
     if args.cmd == "ingest":
         items, junk = parse_findings(_reply(args, args.role))
+        usage = transcript_tokens(args)
         if not items and junk:
             # Something came back but nothing parsed. Recording it would log a finder that
             # read the code and found nothing, and finish would pass the round on it.
@@ -1369,6 +1470,7 @@ def main() -> int:
                 raise DcError(f"no registered {args.role} run in {args.round}: "
                               "dc_review.py run first (the cap counts every agent)")
             counts.update(ingest(root, rv, rnd, args.role, items, decisions))
+            _stamp_tokens(rnd["runs"], (args.role,), usage)
             out.extend(table([_finding(rv, i) for i in counts["kept"]]))
         hand = write_handoff(agent, review_of(change(apply_ingest)), args.round)
         print(f"REVIEW {args.round} {args.role}: {counts['in']} in, {len(counts['kept'])} new, "
@@ -1384,12 +1486,14 @@ def main() -> int:
     if args.cmd == "adjudicate":
         verdicts, junk = parse_findings(_reply(args, "refuter")) \
             if args.file or args.from_transcript else ([], 0)
+        usage = transcript_tokens(args)
         overrides = _parse_sets(args.set)
 
         def apply_adj(rv: dict) -> None:
             rnd = _round(rv, args.round)
             if verdicts and not any(r["role"] in JUDGE_ROLES for r in rnd["runs"]):
                 raise DcError(f"no registered refuter run in {args.round}")
+            _stamp_tokens(rnd["runs"], JUDGE_ROLES, usage)
             for v in verdicts:
                 fid = str(v.get("id", ""))
                 word = str(v.get("verdict", "")).upper()
@@ -1614,6 +1718,7 @@ def main() -> int:
 
     if args.cmd == "suggest":
         items, junk = parse_findings(_reply(args, "advisor"))
+        usage = transcript_tokens(args)
         counts: dict = {}
 
         def apply_suggest(rv: dict) -> None:
@@ -1625,6 +1730,8 @@ def main() -> int:
             brief = _dcio.read_text(agent / REVIEW_DIR / adv["id"] / "brief.md") or ""
             adv["model"] = _clip(args.model or rv["config"]["models"].get("advisor", ""), 40)
             counts.update(ingest_ideas(root, rv, adv, items, brief))
+            if usage:
+                adv["tokens"] = usage
             out.extend(idea_table([i for i in rv["ideas"] if i["id"] in adv["ideas"]]))
         change(apply_suggest)
         print(f"ADVICE {args.advice}: {counts['in']} in, {len(counts['kept'])} new, "
@@ -1736,7 +1843,8 @@ def main() -> int:
         mine = [f for f in rv["findings"] if args.all or f.get("milestone") == ms["id"]]
         if args.json:
             print(json.dumps({"milestone": ms["id"], "verdict": name, "mode": cfg["mode"],
-                              "detail": detail, "findings": mine, "precision": precision(rv)},
+                              "detail": detail, "findings": mine, "precision": precision(rv),
+                              "tokens": round_tokens(rv, None if args.all else ms["id"])},
                              indent=2, sort_keys=True))
             return rc if args.cmd == "check" else _dcio.EXIT_OK
         counts = {s: sum(1 for f in mine if f.get("status") == s)
@@ -1748,6 +1856,11 @@ def main() -> int:
         prec = precision(rv)
         if prec:
             print("precision: " + ", ".join(f"{k} {v['upheld']}/{v['found']}" for k, v in sorted(prec.items())))
+        for rid, t in round_tokens(rv, None if args.all else ms["id"]).items():
+            print(f"tokens {rid}: {t['total']:,} total, {t['output']:,} output ("
+                  + ", ".join(f"{role} {n:,}" for role, n in t["by_role"]) + ")"
+                  + ("" if t["counted"] == t["runs"]
+                     else f" COVERAGE: partial ({t['counted']}/{t['runs']} runs counted)"))
         if rv["ideas"] or (cfg["mode"] != "off" and cfg.get("advisor", "off") != "off"):
             ic = {s: sum(1 for i in rv["ideas"] if i.get("status") == s) for s in IDEA_TRIAGE.values()}
             print(f"advisor {cfg.get('advisor')}: ideas " + " ".join(f"{k} {v}" for k, v in ic.items() if v)
