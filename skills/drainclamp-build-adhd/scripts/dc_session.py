@@ -48,36 +48,40 @@ def day(entry: dict) -> str:
     return (entry.get("last") or "unknown")[:10]
 
 
+def review(root: str) -> str:
+    """`review: n blocking` while Gate 6 findings hold the project, else ''."""
+    try:
+        n = dc_state.review_blocking(Path(root))
+    except OSError:
+        # Same tolerance as progress(): the flag is a hint, never a gate.
+        return ""
+    return f"review: {n} blocking" if n else ""
+
+
 def row(index: int, entry: dict) -> str:
-    detail = progress(entry["root"])
+    detail = ", ".join(d for d in (progress(entry["root"]), review(entry["root"])) if d)
     suffix = f", {detail}" if detail else ""
-    return f"({index}) - {entry.get('name') or entry['root']} (last worked {day(entry)}{suffix})"
+    name = entry.get("name")
+    # The full path tells two same-named checkouts apart and says where the
+    # session will resume, so it is printed even when the name is present.
+    label = f"{name} — {entry['root']}" if name else entry["root"]
+    return f"({index}) - {label} (last worked {day(entry)}{suffix})"
 
 
-MENU_CAP = 10
-
-
-def menu(home: str | None, show_all: bool) -> int:
+def menu(home: str | None) -> int:
     active = dc_registry.listing("active", home)
     complete = dc_registry.listing("complete", home)
 
-    total = len(active)
-    shown = active if show_all else active[:MENU_CAP]
-
+    # Every active project is listed: a capped menu made the user re-run with
+    # --all to reach a project the cap hid, which is a second question.
     print("DRAINCLAMP: what are you working on now?")
-    for i, entry in enumerate(shown, start=1):
+    for i, entry in enumerate(active, start=1):
         print("  " + row(i, entry))
     if not active:
         print("  (no active projects)")
-    if len(shown) < total:
-        # Rule 10: a cap must never read as the whole list. The numbering below
-        # continues past the cap, so --all is the only way to reach the rest.
-        print(f"  SHOWING {len(shown)}/{total} — re-run with --all for the rest")
 
-    # Action numbers continue past the full count, not the shown count, so a
-    # capped menu can never offer "a new project" under a number that already
-    # belongs to a project the cap hid.
-    n = total
+    # Action numbers continue past the projects, so they never collide with one.
+    n = len(active)
     print(f"  ({n + 1}) - a new project")
     if active:
         print(f"  ({n + 2}) - mark a project complete")
@@ -112,12 +116,17 @@ def main() -> int:
                         help="numbered list of completed projects")
     parser.add_argument("--register", help="add a repository to the registry")
     parser.add_argument("--forget", help="menu number or path to drop from the index")
-    parser.add_argument("--all", action="store_true", help="show every project, uncapped")
+    parser.add_argument("--all", action="store_true",
+                        help="accepted for old callers; every project is always listed")
     parser.add_argument("--json", action="store_true", help="machine-readable listing")
     args = parser.parse_args()
 
     if args.register:
-        entry = dc_registry.touch(Path(args.register).expanduser(), args.home)
+        target = Path(args.register).expanduser()
+        if dc_registry.throwaway(target, args.home):
+            print(f"DRAINCLAMP: not registered: {target.resolve()} is in the temp directory.")
+            return _dcio.EXIT_OK
+        entry = dc_registry.touch(target, args.home)
         print(f"DRAINCLAMP: registered {entry['name']} ({entry['root']})")
         return _dcio.EXIT_OK
 
@@ -161,7 +170,7 @@ def main() -> int:
         }, indent=2, sort_keys=True))
         return _dcio.EXIT_OK
 
-    return menu(args.home, args.all)
+    return menu(args.home)
 
 
 if __name__ == "__main__":

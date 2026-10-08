@@ -151,6 +151,91 @@ try:
 except OSError:
     pass
 
+# 5a. an empty lock (owner between create and write) is owned until the file ages out
+(tmp / _dcio.LOCK_NAME).write_text("", encoding="utf-8")
+try:
+    _dcio.FileLock(tmp, timeout=0.4).acquire()
+    stolen = True
+except _dcio.DcError:
+    stolen = False
+check("a fresh empty lock is not broken", not stolen)
+old = time.time() - _dcio.LOCK_STALE_SECONDS - 60
+os.utime(tmp / _dcio.LOCK_NAME, (old, old))
+lk_empty = _dcio.FileLock(tmp, timeout=2.0)
+try:
+    lk_empty.acquire()
+    aged = True
+except _dcio.DcError as exc:
+    aged = exc
+check("an aged empty lock is broken", aged is True, str(aged))
+if aged is True:
+    lk_empty.release()
+
+# 5b. Windows races between holders and waiters (e1: flaky concurrent appends).
+# A waiter reading the lock made the holder's delete fail (WinError 32), which
+# stranded the lock until every other waiter timed out.
+import threading  # noqa: E402
+
+held = _dcio.FileLock(tmp, timeout=0.5)
+held.acquire()
+reader = open(tmp / _dcio.LOCK_NAME, encoding="utf-8")
+threading.Timer(0.3, reader.close).start()
+try:
+    held.release()
+    released = True
+except OSError as exc:
+    released = exc
+check("release waits out a transient reader instead of stranding the lock",
+      released is True and not (tmp / _dcio.LOCK_NAME).exists(), str(released))
+
+# Creating the lock while the last holder's file is still delete-pending raises
+# PermissionError on Windows: that is a busy lock, not a crash.
+real_open, raised = os.open, []
+
+
+def delete_pending(path, flags, *rest):
+    if not raised and os.name == "nt" and str(path).endswith(_dcio.LOCK_NAME):
+        raised.append(path)
+        raise PermissionError(13, "Permission denied", str(path))
+    return real_open(path, flags, *rest)
+
+
+os.open = delete_pending
+try:
+    lk3 = _dcio.FileLock(tmp, timeout=1.0)
+    lk3.acquire()
+    retried = True
+except (OSError, _dcio.DcError) as exc:
+    retried = exc
+finally:
+    os.open = real_open
+check("a delete-pending lock file is retried, not raised", retried is True, str(retried))
+if retried is True:
+    lk3.release()
+
+# An ACL denial is not a busy lock: on timeout it is named, not blamed on a peer.
+def always_denied(path, flags, *rest):
+    if str(path).endswith(_dcio.LOCK_NAME):
+        raise PermissionError(13, "Permission denied", str(path))
+    return real_open(path, flags, *rest)
+
+
+os.open = always_denied
+try:
+    _dcio.FileLock(tmp, timeout=0.3).acquire()
+    denied = "acquired"
+except (OSError, _dcio.DcError) as exc:
+    denied = exc
+finally:
+    os.open = real_open
+if os.name == "nt":
+    check("a lasting permission denial is reported as one",
+          isinstance(denied, _dcio.DcError) and "permission denied" in str(denied)
+          and "another DrainClamp process" not in str(denied), str(denied))
+else:
+    check("a permission denial off Windows raises at once",
+          isinstance(denied, PermissionError), str(denied))
+
 # 6. _process_alive agrees with reality
 check("_process_alive(self) is True", _dcio._process_alive(os.getpid()))
 check("_process_alive(dead pid) is False", not _dcio._process_alive(dead.pid))

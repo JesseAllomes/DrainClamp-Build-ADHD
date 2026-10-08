@@ -202,6 +202,40 @@ def read_hint(target: str) -> str:
     return f"read {path}"
 
 
+CLOSE = "close the milestone (Gate 4 log, Gate 5: dc_state.py --purge-check)."
+
+
+def close_line(root: Path, data: dict, rows: list[dict], mid: str) -> str:
+    """How to close `mid` once its chunks are done: through Gate 6 when review applies.
+
+    The rule is dc_review.guard_roadmap's: every milestone under `milestone` mode, only
+    the last open one under `final`. Saying so here spares a resumed agent the refused
+    roadmap write (NOT-RUN) that would otherwise be its first sign of the gate.
+    Blocking findings come first in every mode but off, as they do in the guard.
+    """
+    review = data.get("review") if isinstance(data.get("review"), dict) else {}
+    cfg = review.get("config") if isinstance(review.get("config"), dict) else {}
+    mode = cfg.get("mode", "off")
+    last_open = [r["id"] for r in rows if r["status"] != "done"] == [mid]
+    if mode != "off":
+        held = [str(f.get("id", "?")) for f in review.get("findings") or []
+                if isinstance(f, dict) and f.get("status") in REVIEW_BLOCKING
+                and (last_open or f.get("milestone") == mid)]
+        if held:
+            return (f"resolve Gate 6 findings first ({' '.join(held[:6])}; "
+                    f"dc_review.py status), then {CLOSE}")
+    if mode != "milestone" and not (mode == "final" and last_open):
+        return CLOSE
+    import dc_review  # deferred: dc_review imports this module
+    try:
+        name = dc_review.verdict(root, data, mid)[0]
+    except DcError:
+        name = "UNREADABLE"
+    if name in ("REVIEW-PASS", "REVIEW-SKIPPED"):
+        return f"Gate 6 {name}; {CLOSE}"
+    return f"Gate 3 milestone tier, then Gate 6 (dc_review.py check: {name}), then {CLOSE}"
+
+
 def capsule(root: Path, data: dict) -> list[str]:
     """The resume view: what to do next and what to read, nothing else."""
     rows = roadmap(root)
@@ -222,11 +256,16 @@ def capsule(root: Path, data: dict) -> list[str]:
     if held:
         lines.append(f"Review: {len(held)} blocking ({' '.join(f['id'] for f in held[:6])}) "
                      "- waiting on you (dc_review.py status)")
+    ideas = [i["id"] for i in review.get("ideas") or [] if isinstance(i, dict)
+             and i.get("status") == "proposed" and i.get("id")]
+    if ideas:
+        lines.append(f"Advisor: {len(ideas)} idea(s) to triage ({' '.join(ideas[:6])}) "
+                     "- waiting on you (dc_review.py status)")
     nxt = next((c for c in chunks if not c.get("done")), None)
     if not chunks:
         lines.append("No chunks yet: split this milestone with `dc_project.py chunk add`.")
     elif nxt is None:
-        lines.append("All chunks done: close the milestone (Gate 4 log, Gate 5).")
+        lines.append("All chunks done: " + close_line(root, data, rows, ms["id"]))
     else:
         est = f" (~{nxt['est_min']} min)" if nxt.get("est_min") else ""
         lines.append(f"Next chunk: {nxt['id']} - {_clip(nxt['goal'])}{est}")
@@ -253,8 +292,7 @@ def boundary(data: dict, root: Path, mid: str, cid: str,
     done = next(c for c in chunks if c["id"] == cid)
     nxt = next((c for c in chunks if not c.get("done")), None)
     if nxt is None:
-        return [f"Milestone {mid}: all chunks done. Close it with Gate 5 "
-                "(dc_state.py --purge-check)."]
+        return [f"Milestone {mid}: all chunks done: " + close_line(root, data, roadmap(root), mid)]
     verdict, human = dc_state.chunk_purge_check(done.get("targets", []),
                                                 nxt.get("targets", []), root, context_high)
     return [f"Next chunk: {nxt['id']} - {_clip(nxt['goal'])}", verdict, human]

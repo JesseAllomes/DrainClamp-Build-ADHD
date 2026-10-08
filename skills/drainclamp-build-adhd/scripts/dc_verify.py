@@ -172,6 +172,18 @@ def git_lines(root: Path, *args: str) -> list[str] | None:
     return done.stdout.splitlines()
 
 
+def git_ref(base: str) -> str:
+    """A `--base` value, refused when git would read it as an option.
+
+    `git diff -x...HEAD` is not a ref; a value like `--output=<path>` makes git write
+    a file. The ref goes before `--`, so nothing else stops it.
+    """
+    if base.startswith("-"):
+        raise DcError(f"--base must name a git ref, not an option: {base!r}",
+                      _dcio.EXIT_UNSAFE_COMMAND)
+    return base
+
+
 def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     """(repo-relative paths, how they were derived).
 
@@ -181,6 +193,7 @@ def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     an empty change set — an empty set would silently verify nothing.
     """
     if base:
+        git_ref(base)
         lines = git_lines(root, "diff", "--name-only", f"{base}...HEAD")
         if lines is None:
             lines = git_lines(root, "diff", "--name-only", base)

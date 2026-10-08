@@ -43,8 +43,8 @@ question:
 
 ```
 DRAINCLAMP: what are you working on now?
-  (1) - lightyear-qbo (last worked 2026-08-11, 4/7 done)
-  (2) - drainclamp-build-adhd (last worked 2026-08-13, 6/6 done)
+  (1) - lightyear-qbo — C:/Projects/lightyear-qbo (last worked 2026-08-11, 4/7 done, review: 2 blocking)
+  (2) - drainclamp-build-adhd — C:/Projects/drainclamp-build-adhd (last worked 2026-08-13, 6/6 done)
   (3) - a new project
   (4) - mark a project complete
   (5) - reopen a completed project
@@ -52,10 +52,10 @@ Reply with a number. No gate runs until you do.
 ```
 
 The menu is printed by `dc_session.py`, not described in `SKILL.md`, so the always-loaded skill body
-pays about 55 tokens for the gate and nothing for its output. It caps at ten projects and says
-`SHOWING n/N`; `--all` lifts the cap, and `--forget` drops an index entry without touching the
-repository it points at. Action numbers continue past the full count, never the shown count, so a
-capped menu cannot offer "a new project" under a number the cap hid.
+pays about 55 tokens for the gate and nothing for its output. It lists every active project with
+its full path, so two checkouts of the same name stay distinct, and flags one whose Gate 6 findings
+still block it. `--forget` drops an index entry without touching the repository it points at.
+Action numbers continue past the last project, so they never collide with one.
 
 ## Design commitments
 
@@ -104,7 +104,7 @@ is unignored you get one warning and nothing else.
 | `dc_map.py` | Symbol index: Python via stdlib `ast`, JavaScript via a bounded regex scanner; cached on `path + mtime_ns + size` |
 | `dc_chunk.py` | Range reader; refuses ambiguous symbols; advises on read sizing |
 | `dc_state.py` | Schema v1 state, crash-recoverable log rollover, purge calculus, narrow promotion |
-| `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never trusts a corrupt file |
+| `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never indexes a temp-directory repo, never trusts a corrupt file |
 | `dc_session.py` | Gate S: the project menu, plus `--complete` and `--reopen` |
 | `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
 | `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok; `--project` attributes Claude tokens to chunks and milestones. Aggregates only, never transcript text |
@@ -148,6 +148,9 @@ State schema v1 is frozen, so what the workflow tracks beyond the roadmap lives 
 Gate 4 reads only those), errors, to-dos, build time and tokens. Every write bumps `rev`; a writer
 holding an old revision is refused, never merged. `dc_project.py next` prints a dozen-line resume
 capsule instead of the whole state file, and ticking a chunk runs a chunk-boundary purge check.
+When a milestone's chunks are done the capsule says whether Gate 6 must clear it first, so a resumed
+agent learns about the review before its roadmap write is refused. It also lists advisor ideas still
+waiting on you.
 
 Dashboards are not DrainClamp's job. project-board is a separate tool that reads
 DrainClamp's project list and these files (never writing them) and adds status, % complete, value and
@@ -173,6 +176,8 @@ defaults to `REFUTED`. Cost stays low because:
 
 - Gate 3 must be green first.
 - The packet is built by a script, so agents read one file rather than the conversation.
+- On Claude Code, `ingest --from-transcript <agent id>` reads each reply from the subagent's own
+  transcript, so findings never round-trip through the orchestrator's output.
 - Each finding's quoted evidence is checked against the file before any model reads it.
 - Duplicates merge, and waived or dismissed findings never come back.
 - The fixer's file scope is checked by hash, not trust.
@@ -217,6 +222,11 @@ the next mutation reconciles them by id. There is no ordering that loses an entr
 `os.replace()` fails with `PermissionError` while *any* process holds the destination open —
 including read-only holders like OneDrive, an editor, or the search indexer. `atomic_write` retries
 briefly, then fails loudly. A partial file is never written.
+
+The same rule bites lock files. A waiter that reads the lock to check its owner holds it open, and
+then the owner's delete fails; a lock file being deleted can be neither opened nor created. So
+`FileLock` retries its release, treats a delete-pending lock as busy rather than forbidden, and
+checks for a dead owner once a second instead of on every poll.
 
 ## Install
 
@@ -362,13 +372,19 @@ py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 pl
 py -3 -B tests/t_skeleton.py   # one change through the core gates
 ```
 
-831 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
+876 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes
 to the same HEAD on every run and every host — materialising twice is asserted to be a no-op. Anything
 the platform refuses to create is reported as `SKIPPED` — a missing fixture that looks like a passing
 test is the failure that guards against.
+
+`dc_state.py` registers every repository it writes to (and `dc_project.py create` the one it makes),
+so every suite points `DRAINCLAMP_HOME` at a temporary directory before it imports anything. As a
+backstop, a registry outside the temp directory never indexes a repository inside it, and drops any
+such entry it already holds: a stress harness's scratch repositories cannot flood the Gate S menu.
+A harness that makes repositories anywhere else still needs its own `DRAINCLAMP_HOME`.
 
 ## License
 

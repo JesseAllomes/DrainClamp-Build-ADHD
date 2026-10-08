@@ -61,6 +61,7 @@ LOCK_STALE_SECONDS = 300
 # appenders can spend most of that budget before it ever reaches the lock.
 LOCK_WAIT_SECONDS = 30.0
 LOCK_POLL_SECONDS = 0.05
+LOCK_STALE_CHECK_SECONDS = 1.0
 
 # Windows only lets a file be renamed over when nothing else has it open.
 # External holders (OneDrive, editors, indexers) are usually momentary.
@@ -236,6 +237,7 @@ class FileLock:
         self.path = Path(directory) / name
         self.timeout = timeout
         self._held = False
+        self._denied = False
 
     def _payload(self) -> str:
         return json.dumps({"pid": os.getpid(), "acquired": time.time()})
@@ -245,6 +247,14 @@ class FileLock:
             fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             return False
+        except PermissionError:
+            # Windows: the previous holder's lock file is still being deleted
+            # (delete-pending), so it can be neither opened nor created. Busy, not
+            # forbidden. Elsewhere this error means the directory is read-only.
+            if os.name == "nt":
+                self._denied = True
+                return False
+            raise
         except OSError as exc:
             if exc.errno == errno.EEXIST:
                 return False
@@ -256,7 +266,10 @@ class FileLock:
 
     def _break_if_dead(self) -> bool:
         """Remove the lock only when its owner is provably gone."""
-        raw = read_text(self.path)
+        try:
+            raw = read_text(self.path)
+        except OSError:
+            return False  # held open or being deleted: owned for now
         if raw is None:
             return True  # vanished; caller retries
         try:
@@ -264,8 +277,13 @@ class FileLock:
             pid = int(info.get("pid", -1))
             acquired = float(info.get("acquired", 0.0))
         except (ValueError, TypeError):
-            # Unparseable lock: treat as owned until it ages out, then drop it.
-            pid, acquired = -1, 0.0
+            # Unparseable (an owner between create and write, or a torn file): owned
+            # until the file itself ages out, then dropped.
+            pid = -1
+            try:
+                acquired = self.path.stat().st_mtime
+            except OSError:
+                return False
         if time.time() - acquired < LOCK_STALE_SECONDS:
             return False
         if pid > 0 and _process_alive(pid):
@@ -279,12 +297,25 @@ class FileLock:
         return True
 
     def acquire(self) -> None:
+        self._denied = False
         deadline = time.monotonic() + self.timeout
+        next_check = 0.0
         while True:
             if self._try_acquire():
                 return
-            self._break_if_dead()
+            # Reading the lock opens it, and on Windows an open file cannot be deleted:
+            # waiters reading it every poll made the holder's release fail. A stale
+            # lock is minutes old, so checking once a second loses nothing.
+            if time.monotonic() >= next_check:
+                self._break_if_dead()
+                next_check = time.monotonic() + LOCK_STALE_CHECK_SECONDS
             if time.monotonic() >= deadline:
+                if self._denied and not self.path.exists():
+                    raise DcError(
+                        f"could not create {self.path} within {self.timeout:.0f}s: permission "
+                        f"denied; check write access to {self.path.parent}",
+                        EXIT_INTERNAL,
+                    )
                 raise DcError(
                     f"could not acquire {self.path} within {self.timeout:.0f}s; "
                     "another DrainClamp process is active",
@@ -295,10 +326,21 @@ class FileLock:
     def release(self) -> None:
         if not self._held:
             return
+        # Windows refuses the delete while another process has the file open (a
+        # waiter, an indexer). Give up early and the lock outlives its holder until it
+        # goes stale, so every waiter times out: retry like atomic_write does.
+        deadline = time.monotonic() + REPLACE_RETRY_SECONDS
         try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+            while True:
+                try:
+                    self.path.unlink()
+                    return
+                except FileNotFoundError:
+                    return
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(REPLACE_POLL_SECONDS)
         finally:
             self._held = False
 

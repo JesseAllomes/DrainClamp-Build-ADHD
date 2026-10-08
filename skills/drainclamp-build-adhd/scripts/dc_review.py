@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -241,6 +242,93 @@ def _read_input(path: str) -> str:
     return text
 
 
+# -- host transcripts ------------------------------------------------------------------
+# A finder's reply relayed through the orchestrator costs its tokens twice: once read, once
+# written back into `--file -`. On Claude Code the subagent's transcript is already on disk,
+# so the script can read the reply itself. Any other format is refused, never guessed at.
+
+AGENT_ID_RE = re.compile(r"^(?:agent-)?(a[0-9a-f]{8,40})$")
+AGENT_TYPE = {"critic-a": "dca-critic", "critic-b": "dca-critic", "checker": "dca-checker",
+              "refuter": "dca-refuter", "advisor": "dca-advisor"}
+
+
+def transcript_path(value: str) -> Path:
+    """A transcript file, or a Claude Code agent id looked up under ~/.claude/projects."""
+    path = Path(value).expanduser()
+    if path.is_file():
+        return path
+    m = AGENT_ID_RE.match(value.strip())
+    if m:
+        home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+        hits = sorted((home / "projects").glob(f"*/*/subagents/agent-{m.group(1)}.jsonl"))
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise DcError(f"agent id {m.group(1)} matches {len(hits)} transcripts; pass the file path")
+    raise DcError(f"no transcript at {value!r} (a .jsonl path or a Claude Code agent id)")
+
+
+def transcript_answer(value: str, role: str) -> str:
+    """The subagent's final reply from a Claude Code transcript, for `role`.
+
+    The reply is the last SubagentHandback message, else the text of the last assistant
+    message. A transcript whose meta file names another agent type is refused, so a
+    critic's output cannot be filed as the refuter's.
+    """
+    path = transcript_path(value)
+    meta_file = path.with_name(path.stem + ".meta.json")
+    try:
+        meta = json.loads(_dcio.read_text(meta_file) or "{}")
+    except (ValueError, UnicodeDecodeError, OSError):
+        meta = {}
+    kind = str(meta.get("agentType") or "") if isinstance(meta, dict) else ""
+    want = AGENT_TYPE.get(role)
+    if kind and want and kind.rsplit(":", 1)[-1] != want:
+        raise DcError(f"{path.name} is a {kind} run, not {want} ({role}); nothing read")
+    try:
+        text = _dcio.read_text(path) or ""
+    except (UnicodeDecodeError, OSError) as exc:
+        raise DcError(f"cannot read {path}: {exc}") from exc
+    handback, last_id, last_text, working, seen = None, None, [], False, 0
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        msg = entry.get("message") if isinstance(entry, dict) and entry.get("type") == "assistant" else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        seen += 1
+        mid = msg.get("id") or entry.get("uuid")
+        if mid != last_id:
+            last_id, last_text, working = mid, [], False
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("name") == "SubagentHandback" \
+                    and isinstance(block.get("input"), dict) and isinstance(block["input"].get("message"), str):
+                handback = block["input"]["message"]
+            elif block.get("type") == "tool_use":
+                working = True   # a message that calls a tool is a step, not the reply
+            elif block.get("type") == "text" and isinstance(block.get("text"), str):
+                last_text.append(block["text"])
+    if not seen:
+        raise DcError(f"{path.name} is not a Claude Code subagent transcript; pass the reply with --file")
+    if handback is not None:
+        return handback
+    if working or not last_text:
+        raise DcError(f"{path.name} ends without a final reply (still running, or stopped); nothing read")
+    return "\n".join(last_text)
+
+
+def _reply(args, role: str) -> str:
+    """`--from-transcript` or `--file`, whichever the command was given."""
+    if getattr(args, "from_transcript", None):
+        return transcript_answer(args.from_transcript, role)
+    return _read_input(args.file)
+
+
 # -- verdict ---------------------------------------------------------------------
 
 def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]]:
@@ -348,7 +436,7 @@ def annotate(diff_text: str) -> tuple[list[str], set[int], list[str]]:
 
 def file_diff(root: Path, rel: str, base: str | None, tracked: bool) -> str:
     if tracked:
-        ref = base or "HEAD"
+        ref = dc_verify.git_ref(base) if base else "HEAD"
         return _git(root, "diff", "-U3", ref, "--", rel) or ""
     path = root / rel
     if path.is_symlink() or not _dcio.is_within(path, root):
@@ -700,12 +788,49 @@ def snapshot(root: Path, rnd: dict, fid: str, allow: list[str]) -> dict:
     if not fix or fix.get("scope") == "ok":
         files = sorted(set(_changed(root)) | set(allow))
         fix = {"at": _now(), "allow": {}, "files": {p: _hash(root, p) for p in files},
-               "scope": None, "modified": []}
+               "scope": None, "modified": [], "ignored": _ignored(root)}
         rnd["fix"] = fix
     for p in allow:
         fix["files"].setdefault(p, _hash(root, p))
     fix["allow"][fid] = sorted(set(fix["allow"].get(fid, [])) | set(allow))
     return fix
+
+
+# Build and test caches: tests write here between the fixer and a later scope run, and
+# a fixer has no reason to. Everything else gitignored is watched.
+CACHE_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
+               ".hypothesis", ".cache", ".gradle", ".next", ".turbo", ".parcel-cache",
+               "htmlcov", "build", "dist", "target"}
+OUTPUT_FILES = {".coverage", "coverage.xml"}  # test-run output, rewritten by every run
+IGNORED_CAP = 20000
+
+
+def _ignored(root: Path) -> dict | None:
+    """Gitignored files outside .agent/, caches and build/test output -> size:mtime, or None past the cap.
+
+    The change set is git's, so a fixer write into a gitignored path never reaches it.
+    A stat per file keeps this cheap enough for a virtualenv; the fixer's Write and Edit
+    always move mtime.
+    """
+    out = _git(root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+    if out is None:
+        return None
+    sig: dict = {}
+    for rel in out.split("\0"):
+        if not rel or rel == ".agent" or rel.startswith(".agent/") or rel.endswith(".pyc") \
+                or CACHE_PARTS & set(rel.split("/")[:-1]) \
+                or rel.rsplit("/", 1)[-1] in OUTPUT_FILES \
+                or rel.rsplit("/", 1)[-1].startswith(".coverage.") \
+                or any(p.endswith(".egg-info") for p in rel.split("/")[:-1]):
+            continue
+        if len(sig) >= IGNORED_CAP:
+            return None
+        try:
+            st = (root / rel).stat()
+        except OSError:
+            continue
+        sig[rel] = f"{st.st_size}:{st.st_mtime_ns}"
+    return sig
 
 
 def scope_check(root: Path, fix: dict) -> tuple[list[str], list[str]]:
@@ -714,20 +839,62 @@ def scope_check(root: Path, fix: dict) -> tuple[list[str], list[str]]:
     modified = sorted(p for p in candidates if _hash(root, p) != fix["files"].get(p, "clean"))
     # A file absent from the snapshot was clean then: any change to it now shows up in
     # the change set, and "clean" never equals a content hash.
+    now = _ignored(root) if isinstance(fix.get("ignored"), dict) else None
+    if now is None:
+        fix["ignored_partial"] = "ignored" in fix   # a pre-1.9.0 fix never pinned them
+    else:
+        before = fix["ignored"]
+        modified = sorted(set(modified) | {p for p in set(now) | set(before)
+                                           if now.get(p) != before.get(p) and p not in candidates})
     allowed = {p for paths in fix["allow"].values() for p in paths}
     return modified, [p for p in modified if p not in allowed]
 
 
-def guard_digest(root: Path, rv: dict) -> str:
+def record_pins(root: Path) -> dict:
+    """Each verify record -> a hash of its entry, pinned at the first ticket."""
+    records = dc_verify.load_records(root / _dcio.AGENT_DIR_NAME)
+    return {str(k): hashlib.sha256(json.dumps(v, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+            for k, v in (records.items() if isinstance(records, dict) else [])}
+
+
+def record_breach(root: Path, pins: dict, old: dict) -> list[str]:
+    """Verify records changed since the pin that no real run on this tree explains.
+
+    `dc_verify.py` writes a record stamped with the tree it ran on, so a run between
+    the fixer and a later scope check (the documented order is scope, then tests)
+    moves a record legitimately. A record is accepted when it vouches for the current
+    tree, which only a real run can compute, and either the tree moved or the status
+    held. A flipped status on an unchanged tree is a breach.
+    """
+    tree = dc_verify.tree_fingerprint(root)
+    records = dc_verify.load_records(root / _dcio.AGENT_DIR_NAME)
+    records = records if isinstance(records, dict) else {}
+    now = record_pins(root)
+    out = []
+    for rid in sorted(set(pins) | set(now)):
+        if pins.get(rid) == now.get(rid):
+            continue
+        new, was = records.get(rid), old.get(rid)
+        fresh = isinstance(new, dict) and tree is not None and new.get("tree") == tree
+        held = isinstance(was, dict) and isinstance(new, dict) and (
+            was.get("tree") != new.get("tree") or was.get("status") == new.get("status"))
+        if not (fresh and (was is None or held)):
+            out.append(rid)
+    return out
+
+
+def guard_digest(root: Path, rv: dict, records: bool = True) -> str:
     """What a fixer must never change: review decisions and config, state, charter, verify records.
 
     The change set leaves out .agent/, so these are pinned at the first ticket and compared
     at scope. Ticket text is left out: storing a ticket is the orchestrator's own write.
+    Verify records are pinned per entry (record_pins) for tickets stored since 1.9.0;
+    `records` keeps the whole-file pin for a fix begun before that.
     """
     keep = [[f.get("id"), f.get("status"), f.get("severity"), f.get("reason"), f.get("resolved_at")]
             for f in rv["findings"]]
     h = hashlib.sha256(json.dumps([keep, rv["config"]], sort_keys=True).encode("utf-8"))
-    for name in (_dcio.STATE_NAME, "charter.json", dc_verify.RECORDS_NAME):
+    for name in (_dcio.STATE_NAME, "charter.json") + ((dc_verify.RECORDS_NAME,) if records else ()):
         h.update(_hash(root, f"{_dcio.AGENT_DIR_NAME}/{name}").encode("utf-8"))
     return h.hexdigest()[:16]
 
@@ -977,11 +1144,15 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("ingest", help="validate and record a finder's output")
     i.add_argument("--round", required=True)
     i.add_argument("--role", required=True, choices=FINDER_ROLES)
-    i.add_argument("--file", required=True, help="JSON lines, or - for stdin")
+    ig = i.add_mutually_exclusive_group(required=True)
+    ig.add_argument("--file", help="JSON lines, or - for stdin")
+    ig.add_argument("--from-transcript", help="Claude Code subagent transcript (.jsonl) or agent id, instead of --file")
 
     a = sub.add_parser("adjudicate", help="record refuter verdicts or an orchestrator override")
     a.add_argument("--round", required=True)
-    a.add_argument("--file", help="refuter JSON lines {id, verdict, note}, or -")
+    ag = a.add_mutually_exclusive_group()
+    ag.add_argument("--file", help="refuter JSON lines {id, verdict, note}, or -")
+    ag.add_argument("--from-transcript", help="Claude Code subagent transcript (.jsonl) or agent id, instead of --file")
     a.add_argument("--set", action="append", default=[], help="id=open|refuted (orchestrator)")
     a.add_argument("--note", default="")
 
@@ -1015,7 +1186,9 @@ def build_parser() -> argparse.ArgumentParser:
     sg = sub.add_parser("suggest", help="advisor: record the advisor's ideas")
     sg.add_argument("--advice", required=True)
     sg.add_argument("--model", default="", help="e.g. opus/high, or inline")
-    sg.add_argument("--file", required=True, help="JSON lines, or -")
+    sgg = sg.add_mutually_exclusive_group(required=True)
+    sgg.add_argument("--file", help="JSON lines, or -")
+    sgg.add_argument("--from-transcript", help="Claude Code subagent transcript (.jsonl) or agent id, instead of --file")
 
     tr = sub.add_parser("triage", help="advisor: the user's call per idea")
     tr.add_argument("--set", action="append", required=True,
@@ -1178,7 +1351,7 @@ def main() -> int:
         return _dcio.EXIT_OK
 
     if args.cmd == "ingest":
-        items, junk = parse_findings(_read_input(args.file))
+        items, junk = parse_findings(_reply(args, args.role))
         if not items and junk:
             # Something came back but nothing parsed. Recording it would log a finder that
             # read the code and found nothing, and finish would pass the round on it.
@@ -1209,7 +1382,8 @@ def main() -> int:
         return _dcio.EXIT_OK
 
     if args.cmd == "adjudicate":
-        verdicts, junk = parse_findings(_read_input(args.file)) if args.file else ([], 0)
+        verdicts, junk = parse_findings(_reply(args, "refuter")) \
+            if args.file or args.from_transcript else ([], 0)
         overrides = _parse_sets(args.set)
 
         def apply_adj(rv: dict) -> None:
@@ -1293,7 +1467,9 @@ def main() -> int:
             f["ticket_round"] = rnd["id"]
             fix = snapshot(root, rnd, args.id, allow)
             if not fix.get("guard"):
-                fix["guard"] = guard_digest(root, rv)
+                fix["guard"] = guard_digest(root, rv, records=False)
+                fix["records"] = record_pins(root)
+                fix["records_at"] = dc_verify.load_records(agent)
             out.append(f"REVIEW ticket {args.id} stored | fixer may change: {', '.join(allow)} | "
                        f"snapshot {len(fix['files'])} file(s)")
         hand = write_handoff(agent, review_of(change(apply_ticket)), args.round)
@@ -1308,8 +1484,13 @@ def main() -> int:
             if not fix or not fix.get("allow"):
                 raise DcError(f"round {args.round} has no fix tickets")
             modified, breach = scope_check(root, fix)
-            if fix.get("guard") and guard_digest(root, rv) != fix["guard"]:
+            pinned = isinstance(fix.get("records"), dict)
+            if fix.get("guard") and guard_digest(root, rv, records=not pinned) != fix["guard"]:
                 breach = breach + [".agent/ (review findings or config, state, charter or verify records)"]
+            if pinned:
+                forged = record_breach(root, fix["records"], fix.get("records_at") or {})
+                if forged:
+                    breach = breach + [f".agent/{dc_verify.RECORDS_NAME} ({', '.join(forged[:4])})"]
             fix["modified"] = modified
             fix["scope"] = "breach" if breach else "ok"
             fix["checked_at"] = _now()
@@ -1319,6 +1500,9 @@ def main() -> int:
                 out.append("Nothing is accepted. Restore those files (the user decides how), then rerun scope.")
             else:
                 out.append(f"REVIEW scope ok: {len(modified)} file(s) changed, all inside tickets")
+            if fix.pop("ignored_partial", False):
+                out.append(f"  COVERAGE: partial (gitignored files not watched: git could not list them "
+                           f"or there are over {IGNORED_CAP})")
             for fid, paths in sorted(fix["allow"].items()):
                 if not any(p in modified for p in paths):
                     out.append(f"  {fid}: none of its files changed (fixer BLOCKED?)")
@@ -1419,12 +1603,17 @@ def main() -> int:
         rel = (folder / "brief.md").relative_to(root).as_posix()
         print(f"ADVICE {aid} after {ms['id']}: brief {rel} | {text.count(chr(10))} lines | "
               f"purpose lines {len(purpose)}" + ("" if purpose else " (none recorded: COVERAGE: partial)"))
+        if purpose and all(re.sub(r"^P\d+: ", "", p).startswith("[README") for p in purpose):
+            # A README paragraph says what the project is, rarely what it must not do: the
+            # advisor then has no objectives, out_of_scope or never lines to weigh ideas by.
+            print("PURPOSE: README only (no objectives, out_of_scope, never) - dc_project.py charter "
+                  "fills them | COVERAGE: partial")
         print(f"spawn dca-advisor once: `Advisor brief: {rel}. Output JSON lines only.`, then "
               f"dc_review.py suggest --advice {aid} --model <m> --file -")
         return _dcio.EXIT_OK
 
     if args.cmd == "suggest":
-        items, junk = parse_findings(_read_input(args.file))
+        items, junk = parse_findings(_reply(args, "advisor"))
         counts: dict = {}
 
         def apply_suggest(rv: dict) -> None:

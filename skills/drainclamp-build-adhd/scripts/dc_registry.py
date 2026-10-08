@@ -9,12 +9,18 @@ The registry is a cache, never an authority. Every read prunes entries whose
 root or state file has gone, and a corrupt file is replaced rather than
 repaired -- losing the index costs a rescan, while trusting a damaged one
 would point work at the wrong repository.
+
+A repository in the system temp directory is a throwaway (a test, a stress
+harness), so a registry outside it never indexes one: otherwise every scratch
+repository a script makes lands in the Gate S menu and stays while its
+directory does.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -85,15 +91,28 @@ def state_file(root: Path | str) -> Path:
     return Path(root) / _dcio.AGENT_DIR_NAME / _dcio.STATE_NAME
 
 
-def prune(reg: dict) -> tuple[dict, list[dict]]:
-    """Drop entries whose repository or state file has gone.
+def _within(path: Path, parent: Path) -> bool:
+    return _key(path) == _key(parent) or _key(path).startswith(_key(parent) + "/")
+
+
+def throwaway(root: Path | str, home: Path | str | None = None) -> bool:
+    """True for a temp-directory repository that this registry should not index.
+
+    A registry that is itself in the temp directory (a test's) indexes anything.
+    """
+    temp = Path(tempfile.gettempdir()).resolve()
+    return _within(Path(root).resolve(), temp) and not _within(home_dir(home).resolve(), temp)
+
+
+def prune(reg: dict, home: Path | str | None = None) -> tuple[dict, list[dict]]:
+    """Drop entries whose repository or state file has gone, and throwaways.
 
     Returns (registry, dropped). Pruning is not a mutation of disk on its own;
     the caller saves if it wants the result persisted.
     """
     kept, dropped = [], []
     for entry in reg.get("projects", []):
-        if state_file(entry["root"]).is_file():
+        if state_file(entry["root"]).is_file() and not throwaway(entry["root"], home):
             kept.append(entry)
         else:
             dropped.append(entry)
@@ -121,9 +140,12 @@ def touch(root: Path | str, home: Path | str | None = None,
     """Record that `root` was worked on now. Never changes an existing status.
 
     Marking a project complete is a deliberate act; a later write to its state
-    must not silently reopen it.
+    must not silently reopen it. A throwaway gets an entry that is never saved.
     """
     resolved = Path(root).resolve()
+    if throwaway(resolved, home):
+        return {"root": str(resolved).replace("\\", "/"), "name": name or resolved.name,
+                "status": "active", "last": _now()}
     lock_dir = home_dir(home)
     lock_dir.mkdir(parents=True, exist_ok=True)
     with _dcio.FileLock(lock_dir):
@@ -187,7 +209,7 @@ def listing(status: str = "active", home: Path | str | None = None) -> list[dict
     The sort is the numbering the menu shows, so a follow-up `--complete 2`
     resolves against the same order the user read.
     """
-    reg, dropped = prune(load(home))
+    reg, dropped = prune(load(home), home)
     if dropped:
         try:
             save(reg, home)

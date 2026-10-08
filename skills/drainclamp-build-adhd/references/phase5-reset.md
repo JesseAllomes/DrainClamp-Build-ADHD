@@ -84,7 +84,7 @@ chunk in the milestone. It compares their **targets** by path, so two symbols of
 |---|---|
 | `PURGE (chunk overlap NN%)` or `PURGE (chunk context-high; ...)` | its `DRAINCLAMP:` line, then `Run /compact now, then resume with dc_project.py next.` (host support unknown: `Start a fresh session and resume with dc_project.py next.`) |
 | `HOLD (chunk ...)` | its `DRAINCLAMP:` line; continue with the next chunk |
-| `all chunks done` | close the milestone: section 1, then `--purge-check` |
+| `all chunks done` | close the milestone: section 1, then `--purge-check`. When the line names Gate 6, run Gate 3 milestone tier and Gate 6 first |
 
 - The chunk tick is the save: the sidecar already holds the note, and `next` rebuilds the resume
   view from it. No state-file write is needed mid-milestone.

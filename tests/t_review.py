@@ -409,6 +409,66 @@ def fixing_repo(name, *batch):
     return root
 
 
+# -- replies read straight from a Claude Code subagent transcript (t2) ------------------------------
+def transcript(name, agent_type, *messages, folder=None):
+    """A subagent transcript as Claude Code writes it: JSON lines plus a .meta.json."""
+    folder = folder or tmp / "transcripts"
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = [{"type": "user", "message": {"role": "user", "content": "Gate 6 review."}}]
+    for n, content in enumerate(messages):
+        for block in content:   # Claude Code writes one line per content block of a message
+            rows.append({"type": "assistant", "uuid": f"u{n}-{len(rows)}",
+                         "message": {"id": f"msg{n}", "role": "assistant", "content": [block]}})
+    path = folder / f"agent-{name}.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    (folder / f"agent-{name}.meta.json").write_text(
+        json.dumps({"agentType": f"drainclamp-build-adhd:{agent_type}"}), encoding="utf-8")
+    return path
+
+
+def handback(text):
+    return {"type": "tool_use", "name": "SubagentHandback", "input": {"message": text}}
+
+
+tx = make_repo("transcript")
+rv(tx, "config", "--mode", "milestone")
+green(tx)
+rv(tx, "packet", "--milestone", "m1")
+rv(tx, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+rv(tx, "run", "--round", "R1", "--role", "refuter", "--model", "sonnet")
+crit = transcript("a1111111111111111", "dca-critic",
+                  [{"type": "text", "text": "Reading the packet."}, {"type": "tool_use", "name": "Read", "input": {}}],
+                  [handback(finding("loop stops one item early", "for i in range(len(items) - 1):"))])
+rc, out = rv(tx, "ingest", "--round", "R1", "--role", "refuter", "--from-transcript", str(crit))
+check("ingest takes only finder roles", rc != 0, out)
+rc, out = rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(crit))
+check("ingest reads the SubagentHandback reply from the transcript", rc == 0 and "1 new" in out, out)
+rc, out = rv(tx, "adjudicate", "--round", "R1", "--from-transcript", str(crit))
+check("a critic's transcript is refused as the refuter's", rc != 0 and "not dca-refuter" in out, out)
+os.environ["CLAUDE_CONFIG_DIR"] = str(tmp / "claude-home")
+transcript("a2222222222222222", "dca-refuter",
+           [{"type": "text", "text": "Early narration, not the reply."}, {"type": "tool_use", "name": "Read", "input": {}}],
+           [{"type": "text", "text": json.dumps({"id": "r1", "verdict": "CONFIRMED", "note": "n-1"})},
+            {"type": "text", "text": "\n"}],
+           folder=tmp / "claude-home" / "projects" / "proj" / "sess" / "subagents")
+rc, out = rv(tx, "adjudicate", "--round", "R1", "--from-transcript", "a2222222222222222")
+os.environ.pop("CLAUDE_CONFIG_DIR")
+check("an agent id finds its transcript; the last message's text is the reply",
+      rc == 0 and "r1 [high] open" in out, out)
+plain = tmp / "transcripts" / "codex-reply.txt"
+plain.write_text(finding("x", "def parse(items):") + "\n", encoding="utf-8")
+rc, out = rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(plain))
+check("an unknown transcript format is refused, not guessed",
+      rc != 0 and "not a Claude Code subagent transcript" in out, out)
+cut = transcript("a3333333333333333", "dca-critic",
+                 [{"type": "text", "text": "Looking."}, {"type": "tool_use", "name": "Read", "input": {}}])
+rc, out = rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(cut))
+check("a transcript that ends mid-work is refused, never read as a reply",
+      rc != 0 and "ends without a final reply" in out, out)
+rc, out = rv(tx, "ingest", "--round", "R1", "--role", "critic-a", "--from-transcript", str(crit),
+             "--file", "-", stdin="")
+check("--file and --from-transcript are exclusive", rc != 0 and "not allowed with" in out, out)
+
 # -- the user skips a small release's review --------------------------------------------------------
 sk = make_repo("skip")
 rv(sk, "config", "--mode", "milestone")
@@ -478,6 +538,29 @@ adv_rec = side(an)["advice"]
 check("brief --anyway builds the brief and records the reason",
       rc == 0 and "ADVICE A1" in out and bool(adv_rec)
       and adv_rec[0]["anyway"] == "user wants ideas before the review ends", out)
+check("no purpose recorded is COVERAGE: partial, not README only",
+      "none recorded: COVERAGE: partial" in out and "README only" not in out, out)
+(an / "README.md").write_text("# anyway\n\nSums parser totals for an export.\n", encoding="utf-8")
+rc, out = rv(an, "brief", "--milestone", "m1", "--anyway", "again, with a README")
+check("a README-only purpose is flagged with the charter fix (t11)",
+      rc == 0 and "PURPOSE: README only (no objectives, out_of_scope, never)" in out
+      and "COVERAGE: partial" in out, out)
+rc, out = rv(adv, "brief", "--milestone", "m1")
+check("a charter purpose is not flagged", rc == 0 and "README only" not in out, out)
+
+# -- --base never reaches git as an option (t4) ---------------------------------------------------
+ob = make_repo("option-base")
+rv(ob, "config", "--mode", "milestone")
+green(ob)
+for cmd in (["packet", "--milestone", "m1"], ["skip", "--milestone", "m1", "--reason", "small"]):
+    rc, out = rv(ob, *cmd, "--base=--output=leak.txt")
+    check(f"{cmd[0]} refuses a --base that is a git option (exit 4)",
+          rc == 4 and "must name a git ref" in out and not (ob / "leak.txt").exists(), out)
+p_ = subprocess.run([sys.executable, "-B", str(SCRIPTS / "dc_verify.py"), "--root", str(ob), "--tier", "fast",
+                     "--base=--output=leak.txt"], capture_output=True, text=True)
+check("dc_verify refuses a --base that is a git option",
+      p_.returncode == 4 and "must name a git ref" in p_.stdout + p_.stderr and not (ob / "leak.txt").exists(),
+      p_.stdout + p_.stderr)
 
 # -- the per-agent findings cap --------------------------------------------------------------------
 pc = make_repo("per-agent-cap")
@@ -527,6 +610,73 @@ raw["review"]["config"]["mode"] = "off"
 car.write_text(json.dumps(raw), encoding="utf-8")
 rc, out = rv(gd, "scope", "--round", "R1")
 check("a fixer edit to the review store is a SCOPE-BREACH (exit 4)", rc == 4 and ".agent/" in out, out)
+
+# -- verify records: a real run after the fixer is no breach, a forged record is ---------------
+FIX = A_PY.replace("range(len(items) - 1)", "range(len(items))")
+vr = fixing_repo("records-rerun", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+dc_verify.save_record(vr / ".agent", "selftest", "sha256:abc", "pass", "s.log", dc_verify.tree_fingerprint(vr))
+rv(vr, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(vr / "a.py").write_text(FIX, encoding="utf-8")
+rc, out = rv(vr, "scope", "--round", "R1")
+check("scope ok after the fix", rc == 0 and "scope ok" in out, out)
+for tier in ("fast", "milestone"):
+    dc_verify.save_record(vr / ".agent", dc_verify.TIER_RECORD_PREFIX + tier, "tier", "pass", "verify.log",
+                          dc_verify.tree_fingerprint(vr))
+dc_verify.save_record(vr / ".agent", "selftest", "sha256:abc", "pass", "s.log", dc_verify.tree_fingerprint(vr))
+rc, out = rv(vr, "scope", "--round", "R1")
+check("a second scope after real dc_verify runs is not a breach (t3)", rc == 0 and "scope ok" in out, out)
+
+fr = fixing_repo("records-forged", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+dc_verify.save_record(fr / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", "tier", "fail", "verify.log",
+                      dc_verify.tree_fingerprint(fr))
+rv(fr, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+recs = json.loads((fr / ".agent" / dc_verify.RECORDS_NAME).read_text(encoding="utf-8"))
+recs["tier:milestone"]["status"] = "pass"
+(fr / ".agent" / dc_verify.RECORDS_NAME).write_text(json.dumps(recs), encoding="utf-8")
+rc, out = rv(fr, "scope", "--round", "R1")
+check("a record flipped to pass on an unchanged tree is a breach",
+      rc == 4 and "verify-records.json (tier:milestone)" in out, out)
+recs["tier:milestone"]["status"] = "fail"
+(fr / ".agent" / dc_verify.RECORDS_NAME).write_text(json.dumps(recs), encoding="utf-8")
+(fr / "a.py").write_text(FIX, encoding="utf-8")
+recs["selftest"] = {"digest": "sha256:abc", "tree": recs["tier:milestone"]["tree"], "status": "pass",
+                    "when": "2026-10-08T00:00:00+00:00", "log": ""}
+(fr / ".agent" / dc_verify.RECORDS_NAME).write_text(json.dumps(recs), encoding="utf-8")
+rc, out = rv(fr, "scope", "--round", "R1")
+check("a record added for a tree that is not the current one is a breach",
+      rc == 4 and "(selftest)" in out and "tier:milestone" not in out, out)
+
+# -- gitignored writes are seen (t6) ---------------------------------------------------------------
+ig = fixing_repo("ignored", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+(ig / ".gitignore").write_text("secrets/\n__pycache__/\n.coverage\nbuild/\n*.egg-info/\n", encoding="utf-8")
+(ig / "secrets").mkdir()
+(ig / "secrets" / "keep.env").write_text("A=1\n", encoding="utf-8")
+(ig / "secrets" / "allowed.env").write_text("B=1\n", encoding="utf-8")
+(ig / ".coverage").write_bytes(b"c1")
+(ig / "build").mkdir()
+(ig / "build" / "out.txt").write_text("1\n", encoding="utf-8")
+(ig / "pkg.egg-info").mkdir()
+(ig / "pkg.egg-info" / "PKG-INFO").write_text("1\n", encoding="utf-8")
+rv(ig, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py;secrets/allowed.env", "--file", "-",
+   stdin="TICKET r1\n")
+check("the snapshot pins gitignored files outside .agent/",
+      sorted((side(ig)["rounds"][0]["fix"].get("ignored") or {})) == ["secrets/allowed.env", "secrets/keep.env"],
+      side(ig)["rounds"][0]["fix"].get("ignored"))
+(ig / "a.py").write_text(FIX, encoding="utf-8")
+(ig / "secrets" / "allowed.env").write_text("B=22\n", encoding="utf-8")
+(ig / "__pycache__").mkdir()
+(ig / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"cache")
+(ig / ".coverage").write_bytes(b"coverage-run-2")
+(ig / "build" / "out.txt").write_text("changed by a build\n", encoding="utf-8")
+(ig / "pkg.egg-info" / "PKG-INFO").write_text("changed\n", encoding="utf-8")
+rc, out = rv(ig, "scope", "--round", "R1")
+check("an allowed gitignored file, test caches and build output are no breach", rc == 0 and "scope ok: 2 file(s)" in out, out)
+rv(ig, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(ig / "secrets" / "keep.env").write_text("A=changed\n", encoding="utf-8")
+(ig / "secrets" / "new.env").write_text("C=1\n", encoding="utf-8")
+rc, out = rv(ig, "scope", "--round", "R1")
+check("a write into a gitignored path outside the ticket is a SCOPE-BREACH",
+      rc == 4 and "secrets/keep.env" in out and "secrets/new.env" in out, out)
 
 # -- a ticket stored after a breach does not hide it ---------------------------------------------
 br = fixing_repo("breach-kept", finding("loop stops one item early", "for i in range(len(items) - 1):"),

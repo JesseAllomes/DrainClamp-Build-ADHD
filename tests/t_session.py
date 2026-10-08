@@ -43,7 +43,7 @@ def make_repo(name, roadmap="") -> Path:
 def session(*args):
     proc = subprocess.run(
         [sys.executable, "-B", str(SCRIPTS / "dc_session.py"), "--home", str(home), *args],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8")
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -148,8 +148,7 @@ state = dc_state.load(alpha / ".agent" / "drainclamp-state.md")
 verdict, _ = dc_state.purge_check(state, alpha, context_high=False)
 check("empty roadmap is not COMPLETE", not verdict.startswith("COMPLETE"), verdict)
 
-# 13. a long list is capped and says so, and its action numbers do not collide
-#     with the projects the cap hid.
+# 13. a long list is never capped, and its action numbers clear every project.
 bulk_home = tmp / "bulk-home"
 for i in range(14):
     dc_registry.touch(make_repo(f"bulk{i:02d}"), bulk_home)
@@ -159,18 +158,53 @@ def bulk(*args):
     proc = subprocess.run(
         [sys.executable, "-B", str(SCRIPTS / "dc_session.py"),
          "--home", str(bulk_home), *args],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8")
     return proc.returncode, proc.stdout + proc.stderr
 
 
 rc, out = bulk()
-check("long menu is capped", out.count("(last worked") == 10, out.count("(last worked"))
-check("cap declares what it hid", "SHOWING 10/14" in out, out.strip().splitlines()[-3:])
+check("long menu lists every project", out.count("(last worked") == 14, out.count("(last worked"))
+check("an uncapped menu declares no SHOWING", "SHOWING" not in out)
 check("action numbers clear the full count", "(15) - a new project" in out,
       [l for l in out.splitlines() if "new project" in l])
-rc, out = bulk("--all")
-check("--all uncaps the menu", out.count("(last worked") == 14, out.count("(last worked"))
-check("--all drops the SHOWING notice", "SHOWING" not in out)
+rc, out2 = bulk("--all")
+check("--all is accepted and changes nothing", rc == 0 and out2 == out)
+
+# 13b. each row names the project's full path, so same-named checkouts differ
+bulk03_root = dc_registry.find(dc_registry.load(bulk_home), tmp / "bulk03")["root"]
+check("menu row prints the full path", f"bulk03 — {bulk03_root} (" in out,
+      [l for l in out.splitlines() if "bulk03" in l])
+twin_home = tmp / "twin-home"
+for side in ("left", "right"):
+    twin = make_repo(f"{side}/same")
+    dc_registry.touch(twin, twin_home)
+rows = [dc_session.row(i, e) for i, e in enumerate(dc_registry.listing("active", twin_home), 1)]
+check("same-named projects are told apart by path",
+      len(rows) == 2 and rows[0].split(" (last")[0][4:] != rows[1].split(" (last")[0][4:], rows)
+
+# 13c. Gate 6 findings that block a project are flagged in its row
+flagged = make_repo("flagged", "| m1 | goal | a.py | active |")
+sidecar = flagged / ".agent" / "drainclamp-project.json"
+sidecar.write_text(json.dumps({"review": {"findings": [
+    {"id": "r1", "status": "open"}, {"id": "r2", "status": "fixing"},
+    {"id": "r3", "status": "fixed"}, {"id": "r4", "status": "waived"}]}}), encoding="utf-8")
+entry = {"root": str(flagged), "name": "flagged", "last": "2026-10-08"}
+line = dc_session.row(1, entry)
+check("blocking findings are flagged with their count", line.endswith(", review: 2 blocking)"), line)
+sidecar.write_text(json.dumps({"review": {"findings": [{"id": "r1", "status": "fixed"}]}}),
+                   encoding="utf-8")
+check("a settled review adds no flag", "review" not in dc_session.row(1, entry),
+      dc_session.row(1, entry))
+sidecar.write_text("{damaged", encoding="utf-8")
+check("a damaged sidecar adds no flag and no crash", "review" not in dc_session.row(1, entry))
+try:
+    def denied(_path):
+        raise PermissionError(13, "permission denied")
+
+    dc_session._dcio.read_text = denied
+    check("an unreadable sidecar adds no flag", dc_session.review(str(flagged)) == "")
+finally:
+    dc_session._dcio.read_text = read_text
 
 # 14. forgetting drops the index entry and nothing else
 victim = tmp / "bulk00"
@@ -182,6 +216,47 @@ check("forget leaves the state file alone",
       (victim / ".agent" / "drainclamp-state.md").is_file())
 check("a forgotten project can be re-registered",
       dc_registry.touch(victim, bulk_home)["status"] == "active")
+
+# 15. a throwaway repository in the temp directory never reaches a lasting registry
+fake_temp = tmp / "fake-temp"
+fake_temp.mkdir()
+lasting_home = tmp / "lasting-home"
+saved_tempdir = tempfile.tempdir
+try:
+    tempfile.tempdir = str(fake_temp)
+    throwaway = fake_temp / "dcstress-x"
+    (throwaway / ".agent").mkdir(parents=True)
+    (throwaway / ".agent" / "drainclamp-state.md").write_text(dc_state.template_text(),
+                                                               encoding="utf-8")
+    dc_registry.touch(throwaway, lasting_home)
+    check("a temp-dir repo is not indexed by a lasting registry",
+          dc_registry.find(dc_registry.load(lasting_home), throwaway) is None)
+    kept = make_repo("lasting")
+    dc_registry.touch(kept, lasting_home)
+    check("a repo outside the temp dir is still indexed",
+          dc_registry.find(dc_registry.load(lasting_home), kept) is not None)
+    temp_home = fake_temp / "dcreg-test"
+    dc_registry.touch(throwaway, temp_home)
+    check("a temp-dir registry (a test's) still indexes a temp-dir repo",
+          dc_registry.find(dc_registry.load(temp_home), throwaway) is not None)
+    polluted = dc_registry.load(lasting_home)
+    polluted["projects"].append({"root": str(throwaway).replace("\\", "/"), "name": "dcstress-x",
+                                 "status": "active", "last": "2026-10-08T00:00:00+00:00"})
+    dc_registry.save(polluted, lasting_home)
+    names = [e["name"] for e in dc_registry.listing("active", lasting_home)]
+    check("listing drops temp-dir entries already in a lasting registry", names == ["lasting"], names)
+    check("and saves the cleaned registry",
+          dc_registry.find(dc_registry.load(lasting_home), throwaway) is None)
+    proc = subprocess.run(
+        [sys.executable, "-B", str(SCRIPTS / "dc_session.py"), "--home", str(lasting_home),
+         "--register", str(throwaway)],
+        capture_output=True, text=True, encoding="utf-8", env={**os.environ, "TMP": str(fake_temp),
+                                                                "TEMP": str(fake_temp),
+                                                                "TMPDIR": str(fake_temp)})
+    check("--register says it skipped a temp-dir repo",
+          proc.returncode == 0 and "not registered" in proc.stdout, proc.stdout + proc.stderr)
+finally:
+    tempfile.tempdir = saved_tempdir
 
 print()
 print("FAILURES:", fails if fails else "none")

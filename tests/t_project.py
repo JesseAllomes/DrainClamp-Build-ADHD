@@ -227,6 +227,62 @@ kept = dc_project._validate(old)
 check("an older sidecar with board fields still loads, fields kept as found",
       kept["savings"] == {"baseline_min": 60} and kept["profile"] == {"summary": "x"} and kept["runs"] == [{"id": "r1"}])
 
+# Gate 6 in the resume view: the close line names the review when it applies, and
+# proposed advisor ideas are listed as waiting on the user.
+gate = make_repo("gate6", "| m1 | first | a.py | done |\n| m2 | last | b.py | active |")
+proj(gate, "chunk", "add", "--milestone", "m2", "--goal", "only", "--targets", "b.py")
+proj(gate, "chunk", "done", "--milestone", "m2", "--id", "c1")
+gside = gate / ".agent" / dc_project.SIDECAR_NAME
+
+
+def gate_capsule(review):
+    data = json.loads(gside.read_text(encoding="utf-8"))
+    data["review"] = review
+    gside.write_text(json.dumps(data), encoding="utf-8")
+    return "\n".join(dc_project.capsule(gate, dc_project.load(gate / ".agent")))
+
+
+out = gate_capsule({"config": {"mode": "off"}})
+check("review off: plain close line",
+      "All chunks done: close the milestone" in out and "Gate 6" not in out, out)
+out = gate_capsule({"config": {"mode": "final"}})
+check("final mode on the last open milestone names Gate 6 and its verdict",
+      "Gate 3 milestone tier, then Gate 6 (dc_review.py check: NOT-RUN), then close" in out, out)
+rc, out = proj(gate, "chunk", "done", "--milestone", "m2", "--id", "c1")
+check("chunk boundary gives the same Gate 6 close line",
+      "all chunks done: Gate 3 milestone tier, then Gate 6" in out and "--purge-check" in out, out)
+out = gate_capsule({"config": {"mode": "final"}, "rounds": [
+    {"id": "R1", "milestone": "m2", "finished": True, "stamp": {}, "coverage": "full"}]})
+check("a passed review says so instead of asking for Gate 6 again",
+      "Gate 6 REVIEW-PASS; close the milestone" in out and "Gate 3 milestone tier" not in out, out)
+early = make_repo("gate6-early", "| m1 | first | a.py | active |\n| m2 | last | b.py | pending |")
+proj(early, "chunk", "add", "--milestone", "m1", "--goal", "only", "--targets", "a.py")
+proj(early, "chunk", "done", "--milestone", "m1", "--id", "c1")
+eside = early / ".agent" / dc_project.SIDECAR_NAME
+edata = json.loads(eside.read_text(encoding="utf-8"))
+edata["review"] = {"config": {"mode": "final"}}
+eside.write_text(json.dumps(edata), encoding="utf-8")
+out = "\n".join(dc_project.capsule(early, dc_project.load(early / ".agent")))
+check("final mode before the last milestone: plain close line", "Gate 6" not in out, out)
+edata["review"] = {"config": {"mode": "milestone"}}
+eside.write_text(json.dumps(edata), encoding="utf-8")
+out = "\n".join(dc_project.capsule(early, dc_project.load(early / ".agent")))
+check("milestone mode names Gate 6 at every close", "then Gate 6 (dc_review.py check: NOT-RUN)" in out, out)
+edata["review"] = {"config": {"mode": "final"},
+                   "findings": [{"id": "r1", "status": "open", "milestone": "m1"}]}
+eside.write_text(json.dumps(edata), encoding="utf-8")
+out = "\n".join(dc_project.capsule(early, dc_project.load(early / ".agent")))
+check("final mode, not last: blocking findings come before the close",
+      "resolve Gate 6 findings first (r1; dc_review.py status), then close" in out, out)
+
+out = gate_capsule({"config": {"mode": "off"}, "ideas": [
+    {"id": "i1", "status": "proposed"}, {"id": "i2", "status": "accepted"},
+    {"id": "i3", "status": "shelved"}, {"id": "i4", "status": "proposed"}, "junk"]})
+check("proposed advisor ideas are listed as waiting on the user",
+      "Advisor: 2 idea(s) to triage (i1 i4) - waiting on you" in out, out)
+out = gate_capsule({"config": {"mode": "off"}, "ideas": [{"id": "i1", "status": "denied"}]})
+check("no proposed ideas, no advisor line", "Advisor:" not in out, out)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

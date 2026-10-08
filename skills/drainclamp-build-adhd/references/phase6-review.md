@@ -71,7 +71,10 @@ it is `STALE`, and it refuses while findings block or a round is open.
    short, because the agent definition carries the method and a stable prompt caches:
    `Gate 6 review. Packet: .agent/review/R1/packet.md. Lens: A (correctness). Output JSON lines only.`
 4. **Ingest each result verbatim:** `dc_review.py ingest --round R1 --role critic-a --file -`
-   (stdin heredoc). Never edit, merge or drop findings by hand. The script rejects fake citations,
+   (stdin heredoc). On Claude Code pass `--from-transcript <agent id>` instead of `--file -`: the
+   script reads the reply from the subagent's transcript, so it never passes through your output.
+   `adjudicate` and `suggest` take it too; it refuses another agent type's transcript, an unfinished
+   one, and any other host's format (use `--file` there). Never edit, merge or drop findings by hand. The script rejects fake citations,
    merges duplicates and suppresses what the user already waived or dismissed.
 5. **Refute.** No candidates: skip to step 13. Otherwise register `refuter` and spawn it with
    `Refute mode. Packet: <path>. Candidates: .agent/review/R1/candidates.jsonl.`, then
@@ -113,7 +116,9 @@ it is `STALE`, and it refuses while findings block or a round is open.
     applied. Two tickets editing the same lines belong in one ticket.
 11. **Scope, then tests.** `dc_review.py scope --round R1`. `SCOPE-BREACH` (exit 4): stop and show the
     user the stray files. Never revert them yourself, because they may hold the user's own work. Then
-    `dc_verify.py --tier fast`.
+    `dc_verify.py --tier fast`. Scope also watches gitignored files (build and test caches excepted)
+    and each verify record; a record a real `dc_verify.py` run wrote for the current tree passes, so
+    scope can be re-run after the tests.
 12. **Re-check.** Register `recheck`, spawn `dca-refuter` with
     `Re-check mode. Tickets: .agent/review/R1/tickets.md. Ids: r1 r3.` Then for each id:
     `RESOLVED` → `dc_review.py resolve --id r1 --fixed --note "<what changed>"`;
