@@ -27,7 +27,6 @@ import shutil
 import re
 import subprocess
 import sys
-import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -598,6 +597,10 @@ def grok_pins(home: Path, args) -> tuple[str, str] | None:
         verb = "would refresh" if ours is not None else "would add"
         done = ("INSTALLED", f"{GROK_CONFIG} -- Gate 6 model pins")
     try:
+        import tomllib  # 3.11+; only the Grok pins need it
+    except ImportError:
+        return "REFUSED", f"{GROK_CONFIG} -- Python 3.11+ is needed to check the edit; left untouched"
+    try:
         tomllib.loads(new)
     except tomllib.TOMLDecodeError as exc:
         return "REFUSED", f"{GROK_CONFIG} -- the result would not parse ({exc}); left untouched"
@@ -845,8 +848,10 @@ def main() -> int:
     source = source_skill()
     home = Path(args.home).expanduser().resolve() if args.home else Path.home()
     targets = selected(args)
-    args.codex_models = host_models(args.project, "codex")
-    args.grok_models = host_models(args.project, "grok")
+    # --check and agent installs render the roster; uninstall removes by ledger.
+    roster = args.check or not (args.uninstall or args.no_agent)
+    args.codex_models = host_models(args.project, "codex") if roster else {}
+    args.grok_models = host_models(args.project, "grok") if roster else {}
 
     if args.check:
         problems = 0

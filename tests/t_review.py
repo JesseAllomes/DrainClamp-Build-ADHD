@@ -429,6 +429,12 @@ check("the roadmap guard accepts a skipped review", rc == 0, out)
 (sk / "a.py").write_text(A_PY + "\n# after the skip\n", encoding="utf-8")
 code, out = rv(sk, "check", "--milestone", "m1")
 check("an edit after the skip is STALE (exit 5)", code == 5 and "a.py" in out, out)
+sc = make_repo("skip-clean")
+git(sc, "add", "-A")
+git(sc, "commit", "-qm", "release")
+rc, out = rv(sc, "skip", "--milestone", "m1", "--reason", "docs-only release")
+check("skip refuses an empty change set instead of stamping nothing",
+      rc != 0 and "no changed files" in out and not side(sc)["rounds"], out)
 
 
 # -- scope names a ticket whose files did not change -----------------------------------------------

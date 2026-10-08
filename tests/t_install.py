@@ -387,6 +387,9 @@ check("a second Codex install changes nothing", out.returncode == 0 and "INSTALL
 out = run(home, "--host", "codex", "--agents-only", "--check")
 check("--check --agents-only reports the Codex agents healthy",
       out.returncode == 0 and "OK       .codex/agents/dca-critic.toml" in out.stdout, out.stdout)
+out = run(home, "--host", "codex", "--check", "--no-agent")
+check("--check --no-agent still renders the roster for Codex agents",
+      "dca-critic.toml" in out.stdout and "older than this checkout" not in out.stdout, out.stdout)
 
 proj = Path(tempfile.mkdtemp(prefix="dcproj-"))
 (proj / ".agent").mkdir()
@@ -406,6 +409,20 @@ check("an edited Codex agent is refused", out.returncode == 2
 out = run(home, "--host", "codex", "--agents-only", "--uninstall", "--force")
 check("uninstall removes every Codex agent it wrote",
       out.returncode == 0 and not list(codex_dir.glob("dca-*.toml")), out.stdout)
+
+bad = Path(tempfile.mkdtemp(prefix="dcproj-"))
+(bad / ".agent").mkdir()
+(bad / ".agent" / "drainclamp-project.json").write_text(
+    json.dumps({"schema": 1, "rev": 1, "chunks": {}, "review": 5}), encoding="utf-8")
+out = run(home, "--host", "codex", "--agents-only", "--uninstall", "--project", str(bad))
+check("uninstall ignores a damaged review config it never needs",
+      out.returncode == 0 and "not an object" not in out.stdout + out.stderr, out.stdout + out.stderr)
+
+probe = subprocess.run(
+    [sys.executable, "-B", "-c",
+     "import sys; sys.modules['tomllib'] = None; sys.path.insert(0, sys.argv[1]); import dc_install",
+     str(SCRIPTS)], capture_output=True, text=True)
+check("the installer imports without tomllib (Python < 3.11)", probe.returncode == 0, probe.stderr)
 
 # --- Grok: per-type model pins in ~/.grok/config.toml ----------------------
 home = new_home()

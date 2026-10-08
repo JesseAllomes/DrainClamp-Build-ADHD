@@ -1511,6 +1511,9 @@ def main() -> int:
             raise DcError("skip needs the user's reason (--reason)")
         ms = _milestone(root, args.milestone)
         files = _changed(root, args.base)
+        if not files:
+            print(f"REVIEW NOT-RUN: no changed files to skip for {ms['id']}; pass --base <commit> to name the release.")
+            return _dcio.EXIT_NO_CHECKS
         gate3 = gate3_status(root) or "not checked"
 
         def apply_skip(rv: dict) -> None:
