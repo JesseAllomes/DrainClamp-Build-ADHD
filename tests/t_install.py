@@ -454,5 +454,38 @@ check("the checkout is intact after the whole suite",
       source_files() == BASELINE, f"{source_files()} files, baseline {BASELINE}")
 
 print()
+# Junction paths must stay literal; no embedded command is ever run.
+from unittest.mock import patch, Mock
+for unsafe in ('a&b', '%PAYLOAD%', 'a|b', 'a<b', 'a>b', 'a^b', 'a!b', 'a"b', 'a(b)', 'a\rb', 'a\nb'):
+    for side_name in ('link', 'target'):
+        link_path = new_home() / (unsafe if side_name == 'link' else 'ordinary')
+        target_path = new_home() / (unsafe if side_name == 'target' else 'ordinary')
+        with patch.object(dc_install.os, 'name', 'nt'), \
+                patch.object(dc_install.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 1, '', 'junction failed')) as shell, \
+                patch.object(dc_install.os, 'symlink') as native:
+            mechanism = dc_install.make_link(link_path, target_path)
+        check('unsafe junction ' + side_name + ' ' + repr(unsafe),
+              mechanism == 'symlink' and not shell.called
+              and native.call_args.args == (str(target_path), str(link_path)))
+with patch.object(dc_install.os, 'name', 'nt'), \
+        patch.object(dc_install.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 1, '', 'junction failed')) as shell, \
+        patch.object(dc_install.os, 'symlink', side_effect=OSError('refused')):
+    try:
+        dc_install.make_link(new_home() / 'a&b', new_home() / 'target')
+        safe_error = False
+    except dc_install.DcError as exc:
+        safe_error = '--copy' in str(exc) and 'unsafe' in str(exc) and not shell.called
+check('unsafe junction fallback failure keeps copy guidance', safe_error)
+for safe_name in ('ordinary', 'with spaces'):
+    link_path = new_home() / safe_name
+    target_path = new_home() / safe_name
+    with patch.object(dc_install.os, 'name', 'nt'), \
+            patch.object(dc_install.subprocess, 'run', return_value=Mock(returncode=0)) as shell, \
+            patch.object(Path, 'exists', return_value=True):
+        mechanism = dc_install.make_link(link_path, target_path)
+    check('safe junction branch ' + safe_name, mechanism == 'junction' and shell.called)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

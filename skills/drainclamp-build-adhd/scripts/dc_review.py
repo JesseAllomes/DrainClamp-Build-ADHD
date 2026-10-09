@@ -20,6 +20,7 @@ NOT-RUN / GATE3-RED 6. A skipped review is never a pass.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -431,6 +432,72 @@ def round_tokens(rv: dict, milestone: str | None) -> dict:
 
 # -- verdict ---------------------------------------------------------------------
 
+def _inventory(root: Path) -> list[str]:
+    try:
+        done = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=str(root), capture_output=True, text=True, encoding="utf-8",
+            errors="strict", timeout=60)
+    except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+        raise DcError("STALE: Git cannot report the review inventory", _dcio.EXIT_TIMEOUT) from exc
+    if done.returncode != 0:
+        raise DcError("STALE: Git cannot report the review inventory", _dcio.EXIT_TIMEOUT)
+    return sorted({p for p in done.stdout.split("\0") if p and p != ".agent"
+                   and not p.startswith(".agent/") and os.path.lexists(root / p)})
+
+
+def _introduced_unreviewed(rv: dict, milestone: str, inventory: list[str],
+                          prospective: set[str] | None = None, rnd: dict | None = None) -> list[str]:
+    rounds = [r for r in rv["rounds"] if r.get("milestone") == milestone
+              and not r.get("aborted")]
+    finished = [r for r in rounds if r.get("finished")
+                and isinstance(r.get("inventory"), list)]
+    first = finished[0] if finished else next(
+        (r for r in rounds if isinstance(r.get("inventory"), list)), rnd)
+    if first is None or not isinstance(first.get("inventory"), list):
+        return sorted(inventory)
+    reviewed = {p for r in finished for p in (r.get("stamp") or {})}
+    reviewed.update(prospective or set())
+    return sorted(set(inventory) - set(first["inventory"]) - reviewed)
+
+
+def _accepted_fix_digest(rnd: dict) -> str:
+    return hashlib.sha256(json.dumps(rnd.get("accepted_fix_batches") or [],
+                                    sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _checked_fixes(root: Path, rv: dict, rnd: dict) -> dict:
+    batches = list(rnd.get("accepted_fix_batches") or [])
+    current = rnd.get("fix")
+    if current:
+        if batches and current.get("accepted_batches_digest") != _accepted_fix_digest(rnd):
+            raise DcError("STALE: accepted fix evidence changed after scope", _dcio.EXIT_TIMEOUT)
+        batches.append(current)
+    latest: dict = {}
+    for batch in batches:
+        allow = batch.get("allow") or {}
+        if batch.get("scope") != "ok" or not allow:
+            raise DcError("STALE: fix batch has no passing scope evidence", _dcio.EXIT_TIMEOUT)
+        ticketed = {fid: _finding(rv, fid) for fid in allow}
+        if any(f.get("status") not in {"fixed", "waived", "dismissed"}
+               for f in ticketed.values()):
+            raise DcError("STALE: ticketed findings are not closed", _dcio.EXIT_TIMEOUT)
+        checked = batch.get("checked_hashes")
+        modified = set(batch.get("modified") or [])
+        allowed = {p for paths in allow.values() for p in paths}
+        fixed_paths = {p for fid, paths in allow.items()
+                       if ticketed[fid].get("status") == "fixed" for p in paths}
+        if (not isinstance(checked, dict) or not modified.issubset(allowed)
+                or not modified.issubset(checked)):
+            raise DcError("STALE: fix batch lacks authorized checked hashes", _dcio.EXIT_TIMEOUT)
+        for p in modified:
+            latest[p] = (checked[p], p in fixed_paths)
+    if any(not owned or _hash(root, p) != h for p, (h, owned) in latest.items()):
+        raise DcError("STALE: fixed files changed after scope or belong only to waived tickets",
+                      _dcio.EXIT_TIMEOUT)
+    return {p: h for p, (h, _owned) in latest.items()}
+
+
 def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]]:
     """(name, exit code, detail lines) for one milestone."""
     rv = review_of(data)
@@ -442,6 +509,20 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
     if not done:
         return "NOT-RUN", _dcio.EXIT_NO_CHECKS, [f"no finished review round for {milestone}"]
     last = done[-1]
+    if not isinstance(last.get("inventory"), list):
+        return "STALE", _dcio.EXIT_TIMEOUT, ["latest review lacks filename inventory; review again"]
+    try:
+        inventory = _inventory(root)
+    except DcError as exc:
+        return "STALE", _dcio.EXIT_TIMEOUT, [str(exc)]
+    if inventory != last["inventory"]:
+        changed_names = sorted(set(inventory) ^ set(last["inventory"]))
+        return "STALE", _dcio.EXIT_TIMEOUT, ["filenames changed since review: "
+                                             + ", ".join(changed_names[:5])]
+    missing = _introduced_unreviewed(rv, milestone, inventory)
+    if missing:
+        return "NOT-RUN", _dcio.EXIT_NO_CHECKS, ["not reviewed, introduced since first review: "
+                                                 + ", ".join(missing[:5])]
     # Every finished round's stamp counts, later rounds overriding earlier ones: a small
     # fix-diff round (--only) must not hide edits to files an earlier round reviewed.
     stamp: dict = {}
@@ -885,6 +966,19 @@ def snapshot(root: Path, rnd: dict, fid: str, allow: list[str]) -> dict:
     fix = rnd.get("fix")
     # Start a new baseline only after a passing scope check. After a breach the old
     # baseline must stand, or the stray edit would be hashed as clean.
+    if fix and fix.get("scope") == "ok":
+        checked = fix.get("checked_hashes")
+        modified = set(fix.get("modified") or [])
+        allowed = {p for paths in (fix.get("allow") or {}).values() for p in paths}
+        if (not isinstance(checked, dict) or not modified.issubset(checked)
+                or not modified.issubset(allowed)
+                or any(_hash(root, p) != checked[p] for p in modified)
+                or (rnd.get("accepted_fix_batches")
+                    and fix.get("accepted_batches_digest") != _accepted_fix_digest(rnd))):
+            raise DcError("STALE: cannot archive a fix changed after scope", _dcio.EXIT_TIMEOUT)
+        evidence = {key: copy.deepcopy(fix.get(key))
+                    for key in ("allow", "modified", "checked_hashes", "scope", "checked_at")}
+        rnd.setdefault("accepted_fix_batches", []).append(evidence)
     if not fix or fix.get("scope") == "ok":
         files = sorted(set(_changed(root)) | set(allow))
         fix = {"at": _now(), "allow": {}, "files": {p: _hash(root, p) for p in files},
@@ -993,7 +1087,8 @@ def guard_digest(root: Path, rv: dict, records: bool = True) -> str:
     """
     keep = [[f.get("id"), f.get("status"), f.get("severity"), f.get("reason"), f.get("resolved_at")]
             for f in rv["findings"]]
-    h = hashlib.sha256(json.dumps([keep, rv["config"]], sort_keys=True).encode("utf-8"))
+    archived = [[r.get("id"), r.get("accepted_fix_batches") or []] for r in rv["rounds"]]
+    h = hashlib.sha256(json.dumps([keep, rv["config"], archived], sort_keys=True).encode("utf-8"))
     for name in (_dcio.STATE_NAME, "charter.json") + ((dc_verify.RECORDS_NAME,) if records else ()):
         h.update(_hash(root, f"{_dcio.AGENT_DIR_NAME}/{name}").encode("utf-8"))
     return h.hexdigest()[:16]
@@ -1408,6 +1503,8 @@ def main() -> int:
         suppressed = [f for f in rv["findings"] if f.get("milestone") == ms["id"]
                       and f.get("status") in SUPPRESSING]
         rid = dc_project._next_id(rv["rounds"], "R")
+        inventory = _inventory(root)
+        packet_stamp = {p: _hash(root, p) for p in files}
         text, meta = build_packet(root, rid, ms, depth, args.base, files, _decision_lines(root),
                                   suppressed, gate3)
         folder = agent / REVIEW_DIR / rid
@@ -1419,7 +1516,7 @@ def main() -> int:
                 "id": rid, "milestone": ms["id"], "depth": depth, "base": args.base,
                 "at": _now(), "gate3": gate3, "files": files, "runs": [],
                 "coverage": meta["coverage"], "packet_lines": meta["lines"],
-                "left_out": meta["left_out"],
+                "left_out": meta["left_out"], "inventory": inventory, "packet_stamp": packet_stamp,
                 "removed": meta["removed"], "fix": None, "finished": None, "stamp": None,
                 "verdict": "RUNNING"})
         change(apply_round)
@@ -1598,6 +1695,8 @@ def main() -> int:
             fix["modified"] = modified
             fix["scope"] = "breach" if breach else "ok"
             fix["checked_at"] = _now()
+            fix["checked_hashes"] = {p: _hash(root, p) for p in modified} if not breach else {}
+            fix["accepted_batches_digest"] = _accepted_fix_digest(rnd) if not breach else ""
             if breach:
                 code[0] = _dcio.EXIT_UNSAFE_COMMAND
                 out.append(f"REVIEW SCOPE-BREACH: changed outside the tickets: {', '.join(breach[:8])}")
@@ -1672,13 +1771,33 @@ def main() -> int:
             fix = rnd.get("fix")
             if fix and fix.get("scope") != "ok":
                 raise DcError("the fix tickets have no passing scope check")
+            packet_stamp = rnd.get("packet_stamp")
+            if (not isinstance(packet_stamp, dict)
+                    or not set(rnd["files"]).issubset(packet_stamp)
+                    or not isinstance(rnd.get("inventory"), list)):
+                raise DcError("STALE: round lacks packet-time hashes or inventory; review again",
+                              _dcio.EXIT_TIMEOUT)
+            permitted = _checked_fixes(root, rv, rnd)
+            inventory = _inventory(root)
+            changed_names = set(inventory) ^ set(rnd["inventory"])
+            if changed_names - set(permitted):
+                raise DcError("STALE: filenames added or deleted outside checked fixes since packet",
+                              _dcio.EXIT_TIMEOUT)
+            changed = [p for p, h in packet_stamp.items()
+                       if _hash(root, p) != h and p not in permitted]
+            if changed:
+                raise DcError("STALE: changed since packet outside checked fixes: "
+                              + ", ".join(changed[:5]), _dcio.EXIT_TIMEOUT)
             # Files left out at the packet cap were never read: never stamp them as reviewed.
             files = sorted((set(rnd["files"]) - set(rnd.get("left_out") or []))
-                           | set((fix or {}).get("modified", [])))
+                           | set(permitted))
+            missing = _introduced_unreviewed(rv, rnd["milestone"], inventory, set(files), rnd)
+            rnd["inventory"] = inventory
             rnd["stamp"] = {p: _hash(root, p) for p in files}
             rnd["finished"] = _now()
             still = blocking(mine)
-            rnd["verdict"] = f"FINDINGS {len(still)}" if still else "REVIEW-PASS"
+            rnd["verdict"] = (f"FINDINGS {len(still)}" if still else
+                              "NOT-RUN" if missing else "REVIEW-PASS")
             result["rnd"] = rnd
         data = change(apply_finish)
         name, rc, detail = verdict(root, data, result["rnd"]["milestone"])
@@ -1811,6 +1930,7 @@ def main() -> int:
             print(f"REVIEW NOT-RUN: no changed files to skip for {ms['id']}; pass --base <commit> to name the release.")
             return _dcio.EXIT_NO_CHECKS
         gate3 = gate3_status(root) or "not checked"
+        inventory = _inventory(root)
 
         def apply_skip(rv: dict) -> None:
             block = blocking(rv["findings"], ms["id"])
@@ -1826,6 +1946,7 @@ def main() -> int:
                 "id": rid, "milestone": ms["id"], "depth": "skipped", "base": args.base, "at": now,
                 "gate3": gate3, "files": files, "runs": [], "coverage": "skipped", "packet_lines": 0,
                 "removed": {}, "fix": None, "finished": now, "stamp": {p: _hash(root, p) for p in files},
+                "inventory": inventory,
                 "verdict": "SKIPPED", "skipped": _clip(args.reason, TEXT_CAP["reason"]),
                 "decided_by": "user"})
             out.append(f"REVIEW {rid} {ms['id']} SKIPPED by the user ({len(files)} changed file(s) "

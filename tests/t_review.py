@@ -848,5 +848,213 @@ code, out = rv(sr, "check", "--milestone", "m1")
 check("an edit to a file only an earlier round reviewed is STALE (exit 5)", code == 5 and "c.py" in out, out)
 
 print()
+# Packet-time evidence and complete filename inventory define review freshness.
+from unittest.mock import patch
+
+def clean_round(name):
+    fresh = make_repo(name)
+    rv(fresh, 'config', '--mode', 'milestone')
+    green(fresh)
+    rc, out = rv(fresh, 'packet', '--milestone', 'm1')
+    check(name + ' packet created', rc == 0, out)
+    rv(fresh, 'run', '--round', 'R1', '--role', 'critic-a', '--model', 'test')
+    rv(fresh, 'ingest', '--round', 'R1', '--role', 'critic-a', '--file', '-', stdin='NO FINDINGS\n')
+    return fresh
+
+inventory_root = clean_round('inventory-new')
+rc, out = rv(inventory_root, 'finish', '--round', 'R1')
+check('fresh round finishes', rc == 0, out)
+(inventory_root / '.agent' / 'cache').mkdir()
+(inventory_root / '.agent' / 'cache' / 'noise').write_bytes(b'noise')
+rc, out = rv(inventory_root, 'check', '--milestone', 'm1')
+check('agent cache noise does not stale review', rc == 0, out)
+new_source = inventory_root / 'nueva_漢.py'
+new_source.write_text('X = 1\n', encoding='utf-8')
+rc, out = rv(inventory_root, 'check', '--milestone', 'm1')
+check('new Unicode filename after review is STALE', rc == 5 and 'STALE' in out, out)
+rc, out = set_roadmap(inventory_root, 'done')
+check('new filename holds roadmap close', rc == 5 and 'STALE' in out, out)
+new_source.unlink()
+(inventory_root / 'b.py').unlink()
+rc, out = rv(inventory_root, 'check', '--milestone', 'm1')
+check('deleted tracked filename outside packet is STALE', rc == 5 and 'STALE' in out, out)
+
+for mutation in ('existing', 'addition', 'deletion'):
+    during = clean_round('during-' + mutation)
+    if mutation == 'existing':
+        (during / 'a.py').write_text(A_PY + '# changed after packet\n', encoding='utf-8')
+    elif mutation == 'addition':
+        (during / 'nueva_漢.py').write_text('X = 2\n', encoding='utf-8')
+    else:
+        (during / 'b.py').unlink()
+    rc, out = rv(during, 'finish', '--round', 'R1')
+    check('finish rejects unticketed ' + mutation + ' after packet',
+          rc == 5 and 'STALE' in out and not side(during)['rounds'][0]['finished'], out)
+
+for after_scope in (False, True):
+    scoped = fixing_repo('fresh-scoped-' + str(after_scope),
+                         finding('loop stops one item early', 'for i in range(len(items) - 1):'))
+    rv(scoped, 'ticket', '--round', 'R1', '--id', 'r1', '--allow', 'a.py', '--file', '-',
+       stdin='TICKET r1\n')
+    (scoped / 'a.py').write_text(FIX, encoding='utf-8')
+    rc, out = rv(scoped, 'scope', '--round', 'R1')
+    check('genuine fix scope succeeds ' + str(after_scope), rc == 0, out)
+    check('scope pins the accepted bytes ' + str(after_scope),
+          (side(scoped)['rounds'][0]['fix'].get('checked_hashes') or {}).get('a.py')
+          == dc_review._hash(scoped, 'a.py'))
+    rv(scoped, 'resolve', '--id', 'r1', '--fixed')
+    if after_scope:
+        (scoped / 'a.py').write_text(FIX + '# edit after scope\n', encoding='utf-8')
+    rc, out = rv(scoped, 'finish', '--round', 'R1')
+    check('finish validates scoped bytes ' + str(after_scope),
+          (rc == 5 and 'STALE' in out) if after_scope else (rc == 0 and 'REVIEW-PASS' in out), out)
+
+legacy = clean_round('legacy-unfinished')
+legacy_path = legacy / '.agent' / 'drainclamp-project.json'
+legacy_data = json.loads(legacy_path.read_text(encoding='utf-8'))
+legacy_data['review']['rounds'][0].pop('packet_stamp', None)
+legacy_path.write_text(json.dumps(legacy_data), encoding='utf-8')
+rc, out = rv(legacy, 'finish', '--round', 'R1')
+check('legacy round without packet hashes refuses finish', rc == 5 and 'STALE' in out, out)
+finished_legacy = clean_round('legacy-finished')
+rv(finished_legacy, 'finish', '--round', 'R1')
+legacy_path = finished_legacy / '.agent' / 'drainclamp-project.json'
+legacy_data = json.loads(legacy_path.read_text(encoding='utf-8'))
+legacy_data['review']['rounds'][0].pop('inventory', None)
+legacy_path.write_text(json.dumps(legacy_data), encoding='utf-8')
+rc, out = rv(finished_legacy, 'check', '--milestone', 'm1')
+check('legacy finished inventory cannot falsely pass', rc in (5, 6) and 'REVIEW-PASS' not in out, out)
+with patch.object(dc_review.subprocess, 'run', side_effect=OSError('git unavailable')):
+    try:
+        dc_review._inventory(finished_legacy)
+        inventory_closed = False
+    except dc_review.DcError:
+        inventory_closed = True
+check('inventory fails closed when Git unavailable', inventory_closed)
+
+# A scoped round cannot absorb a newly introduced, unread source filename.
+coverage_root = clean_round('filename-anchor')
+rv(coverage_root, 'finish', '--round', 'R1')
+(coverage_root / 'new.py').write_text('N = 1\n', encoding='utf-8')
+green(coverage_root)
+rv(coverage_root, 'packet', '--milestone', 'm1', '--only', 'a.py')
+rv(coverage_root, 'run', '--round', 'R2', '--role', 'critic-a', '--model', 'test')
+rv(coverage_root, 'ingest', '--round', 'R2', '--role', 'critic-a', '--file', '-', stdin='NO FINDINGS\n')
+rc, out = rv(coverage_root, 'finish', '--round', 'R2')
+check('scoped round does not absorb unread new filename', rc in (5, 6) and 'REVIEW-PASS' not in out, out)
+rc, out = rv(coverage_root, 'check', '--milestone', 'm1')
+check('unread new filename still holds check', rc in (5, 6) and 'REVIEW-PASS' not in out, out)
+if not side(coverage_root)['rounds'][-1].get('finished'):
+    rv(coverage_root, 'abort', '--round', 'R2', '--reason', 'review omitted new file')
+green(coverage_root)
+rv(coverage_root, 'packet', '--milestone', 'm1', '--only', 'new.py')
+rv(coverage_root, 'run', '--round', 'R3', '--role', 'critic-a', '--model', 'test')
+rv(coverage_root, 'ingest', '--round', 'R3', '--role', 'critic-a', '--file', '-', stdin='NO FINDINGS\n')
+rc, out = rv(coverage_root, 'finish', '--round', 'R3')
+check('round actually reviewing new file clears coverage', rc == 0 and 'REVIEW-PASS' in out, out)
+(coverage_root / 'new.py').write_text('N = 2\n', encoding='utf-8')
+rc, out = rv(coverage_root, 'check', '--milestone', 'm1')
+check('reviewed new filename remains content-stamped', rc == 5 and 'STALE' in out, out)
+
+# Each successful fixer batch remains evidence when a later ticket starts.
+for edit_earlier in (False, True):
+    batches = fixing_repo('accepted-batches-' + str(edit_earlier),
+                          finding('loop stops early', 'for i in range(len(items) - 1):'),
+                          finding('constant value is wrong', 'X = 1', file='b.py', line=1))
+    rv(batches, 'ticket', '--round', 'R1', '--id', 'r1', '--allow', 'a.py', '--file', '-',
+       stdin='TICKET r1\n')
+    (batches / 'a.py').write_text(FIX, encoding='utf-8')
+    rv(batches, 'scope', '--round', 'R1')
+    rv(batches, 'resolve', '--id', 'r1', '--fixed')
+    rv(batches, 'ticket', '--round', 'R1', '--id', 'r2', '--allow', 'b.py', '--file', '-',
+       stdin='TICKET r2\n')
+    (batches / 'b.py').write_text('X = 2\n', encoding='utf-8')
+    rc, out = rv(batches, 'scope', '--round', 'R1')
+    check('second independent fix scope succeeds ' + str(edit_earlier), rc == 0, out)
+    rv(batches, 'resolve', '--id', 'r2', '--fixed')
+    if edit_earlier:
+        (batches / 'a.py').write_text(FIX + '# unchecked later edit\n', encoding='utf-8')
+    rc, out = rv(batches, 'finish', '--round', 'R1')
+    check('finish honors cumulative checked batches ' + str(edit_earlier),
+          (rc == 5 and 'STALE' in out) if edit_earlier else (rc == 0 and 'REVIEW-PASS' in out), out)
+
+# BLOCKED fixes may close by a user disposition when their bytes never changed.
+for disposition in ('waive', 'dismiss'):
+    blocked_ticket = fixing_repo('closed-ticket-' + disposition,
+                                finding('loop stops early', 'for i in range(len(items) - 1):'))
+    rv(blocked_ticket, 'ticket', '--round', 'R1', '--id', 'r1', '--allow', 'a.py', '--file', '-',
+       stdin='TICKET r1\n')
+    rv(blocked_ticket, 'scope', '--round', 'R1')
+    rv(blocked_ticket, 'decide', '--set', 'r1=' + disposition + ':user accepts unchanged code')
+    rc, out = rv(blocked_ticket, 'finish', '--round', 'R1')
+    check('unchanged ticket can finish after user ' + disposition,
+          rc == 0 and 'REVIEW-PASS' in out, out)
+waived_change = fixing_repo('changed-waived-ticket',
+                           finding('loop stops early', 'for i in range(len(items) - 1):'))
+rv(waived_change, 'ticket', '--round', 'R1', '--id', 'r1', '--allow', 'a.py', '--file', '-',
+   stdin='TICKET r1\n')
+(waived_change / 'a.py').write_text(FIX, encoding='utf-8')
+rv(waived_change, 'scope', '--round', 'R1')
+rv(waived_change, 'decide', '--set', 'r1=waive:user accepts original behavior')
+rc, out = rv(waived_change, 'finish', '--round', 'R1')
+check('changed waived-only path is never blessed', rc == 5 and 'STALE' in out, out)
+
+for unrelated in (False, True):
+    addition = fixing_repo('fixed-addition-' + str(unrelated),
+                          finding('loop stops early', 'for i in range(len(items) - 1):'))
+    rv(addition, 'ticket', '--round', 'R1', '--id', 'r1', '--allow', 'a.py;new_test.py',
+       '--file', '-', stdin='TICKET r1\n')
+    (addition / 'a.py').write_text(FIX, encoding='utf-8')
+    (addition / 'new_test.py').write_text('def test_sum():\n    assert 1 + 2 == 3\n', encoding='utf-8')
+    rc, out = rv(addition, 'scope', '--round', 'R1')
+    check('fixed-file addition passes scope ' + str(unrelated), rc == 0, out)
+    rv(addition, 'resolve', '--id', 'r1', '--fixed')
+    if unrelated:
+        (addition / 'unrelated.py').write_text('U = 1\n', encoding='utf-8')
+    rc, out = rv(addition, 'finish', '--round', 'R1')
+    check('finish accepts only checked fixed additions ' + str(unrelated),
+          (rc == 5 and 'STALE' in out) if unrelated else (rc == 0 and 'REVIEW-PASS' in out), out)
+
+# A later checked batch for the same path supersedes its earlier checked hash.
+shared_batch = fixing_repo('same-path-batches',
+                          finding('loop stops early', 'for i in range(len(items) - 1):'),
+                          finding('caller uses incomplete example', 'return parse([1, 2, 3])', line=9))
+for fid, body in (('r1', FIX), ('r2', FIX.replace('parse([1, 2, 3])', 'parse([1, 2, 3, 4])'))):
+    rv(shared_batch, 'ticket', '--round', 'R1', '--id', fid, '--allow', 'a.py', '--file', '-',
+       stdin='TICKET ' + fid + '\n')
+    (shared_batch / 'a.py').write_text(body, encoding='utf-8')
+    rv(shared_batch, 'scope', '--round', 'R1')
+    rv(shared_batch, 'resolve', '--id', fid, '--fixed')
+archived = side(shared_batch)['rounds'][0].get('accepted_fix_batches') or []
+check('earlier scope evidence is archived independently of current batch',
+      len(archived) == 1 and archived[0].get('allow') == {'r1': ['a.py']}
+      and archived[0].get('modified') == ['a.py']
+      and archived[0].get('checked_hashes', {}).get('a.py') != dc_review._hash(shared_batch, 'a.py'))
+rc, out = rv(shared_batch, 'finish', '--round', 'R1')
+check('latest validated hash wins for a shared fixed path', rc == 0 and 'REVIEW-PASS' in out, out)
+
+# Archived evidence cannot be rewritten after it is accepted by the latest scope.
+archive_guard = fixing_repo('archive-guard',
+                           finding('loop stops early', 'for i in range(len(items) - 1):'),
+                           finding('constant value is wrong', 'X = 1', file='b.py', line=1))
+for fid, filename, body in (('r1', 'a.py', FIX), ('r2', 'b.py', 'X = 2\n')):
+    rv(archive_guard, 'ticket', '--round', 'R1', '--id', fid, '--allow', filename, '--file', '-',
+       stdin='TICKET ' + fid + '\n')
+    (archive_guard / filename).write_text(body, encoding='utf-8')
+    rv(archive_guard, 'scope', '--round', 'R1')
+    rv(archive_guard, 'resolve', '--id', fid, '--fixed')
+archive_path = archive_guard / '.agent' / 'drainclamp-project.json'
+archive_data = json.loads(archive_path.read_text(encoding='utf-8'))
+archive_batches = archive_data['review']['rounds'][0].get('accepted_fix_batches') or []
+if archive_batches:
+    archive_batches[0]['checked_hashes']['a.py'] = 'forged archived hash'
+    archive_path.write_text(json.dumps(archive_data), encoding='utf-8')
+    rc, out = rv(archive_guard, 'finish', '--round', 'R1')
+    archive_refused = rc == 5 and 'STALE' in out
+else:
+    archive_refused = False
+    out = 'no archived evidence'
+check('finish refuses archived evidence changed after scope', archive_refused, out)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

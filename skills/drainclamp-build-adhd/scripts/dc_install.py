@@ -187,13 +187,17 @@ def make_link(link: Path, target: Path) -> str:
     attempts: list[str] = []
 
     if os.name == "nt":
-        done = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            capture_output=True, text=True,
-        )
-        if done.returncode == 0 and link.exists():
-            return "junction"
-        attempts.append(f"junction: {_dcio.collapse(done.stderr or done.stdout, 100)}")
+        unsafe = set('&|<>^%!"()\r\n')
+        if any(ch in unsafe for path in (str(link), str(target)) for ch in path):
+            attempts.append("junction: unsafe shell characters in path")
+        else:
+            done = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True, text=True,
+            )
+            if done.returncode == 0 and link.exists():
+                return "junction"
+            attempts.append(f"junction: {_dcio.collapse(done.stderr or done.stdout, 100)}")
 
     try:
         os.symlink(str(target), str(link), target_is_directory=True)

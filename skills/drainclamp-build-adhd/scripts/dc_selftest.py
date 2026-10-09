@@ -22,12 +22,14 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import _dcio
+import dc_map
 from _dcio import DcError
 
 FIXTURE_SCHEMA = 1
@@ -214,9 +216,39 @@ def link_dir(link: Path, target: Path) -> str:
 
 def materialise(dest: Path, *, clean: bool = True) -> dict:
     """Write every fixture family under `dest`. Returns the manifest."""
-    dest = Path(dest)
-    if clean and dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
+    dest = Path(os.path.abspath(str(dest)))
+    if dest == Path(dest.anchor) or dc_map.is_link(dest):
+        raise DcError(f"refusing root or linked fixture destination: {dest}")
+    if dest.resolve() != dest:
+        raise DcError(f"fixture destination resolves away from its literal path: {dest}")
+    if dest.exists():
+        if not dest.is_dir():
+            raise DcError(f"fixture destination is not a directory: {dest}")
+        if any(dest.iterdir()):
+            marker = dest / MANIFEST_NAME
+            if dc_map.is_link(marker) or not marker.is_file():
+                raise DcError(f"fixture destination is not owned: {dest}")
+            try:
+                header = marker.read_text(encoding="utf-8").splitlines()[0]
+            except (OSError, UnicodeError, IndexError) as exc:
+                raise DcError(f"cannot read fixture ownership marker: {dest}") from exc
+            if header != "# drainclamp-build fixtures; schema=1":
+                raise DcError(f"fixture destination is not owned: {dest}")
+        if clean:
+            def retry_owned_unlink(operation, path, exc_info):
+                error = exc_info[1]
+                candidate = Path(path)
+                if (not isinstance(error, PermissionError)
+                        or operation not in (os.unlink, os.remove)
+                        or dc_map.is_link(candidate)
+                        or not _dcio.is_within(candidate.resolve(), dest)):
+                    raise error.with_traceback(exc_info[2])
+                mode = candidate.lstat().st_mode
+                if not stat.S_ISREG(mode):
+                    raise error.with_traceback(exc_info[2])
+                os.chmod(candidate, mode | stat.S_IWUSR)
+                operation(path)
+            shutil.rmtree(dest, onerror=retry_owned_unlink)
     dest.mkdir(parents=True, exist_ok=True)
 
     notes: list[str] = []

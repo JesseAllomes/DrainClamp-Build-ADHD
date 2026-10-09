@@ -71,8 +71,11 @@ DRAINCLAMP: Resumed from .agent/drainclamp-state.md. Context reset confirmed.
 This requires host evidence or an explicit fresh-session signal — never self-assertion in the same
 session that recommended the purge.
 
-Resume reads **only** `.agent/drainclamp-state.md`, then `dc_project.py next` for the current
-chunk. Never auto-load `.agent/drainclamp-log-archive.md` or earlier chunk notes; they exist for
+Resume runs `dc_state.py --resume-view`, then `dc_project.py next` for the current chunk.
+The view keeps ARCH, DECISIONS and VERIFY, all open roadmap rows and the last done row (with
+files and dependencies), done ids, and the last five log lines; `SHOWING n/N` declares omissions.
+Read the full `.agent/drainclamp-state.md` when preparing Gate 2 edits; the view is not a state
+replacement. Never auto-load `.agent/drainclamp-log-archive.md` or earlier chunk notes; they exist for
 human forensics, not for context.
 
 ## Chunk boundaries
@@ -90,8 +93,10 @@ chunk in the milestone. It compares their **targets** by path, so two symbols of
   view from it. No state-file write is needed mid-milestone.
 - The same rules hold: unknown is never `PURGE`, and `--context-high` is your judgement, not a
   measurement.
-- A chunk `PURGE` is a recommendation. Several small chunks in a row over different files will
-  each say `PURGE`; judge whether reloading context costs more than it saves.
+- Disjoint chunks retain context when their finished target files total fewer than
+  `2 * SMALL_FILE_LINES` (currently 240 lines), counting each path once. Unknown read sizes
+  keep the overlap verdict; `--context-high` overrides the small-chunk hold.
+- A chunk `PURGE` is a recommendation.
 
 ## Failure interaction
 

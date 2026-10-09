@@ -262,6 +262,26 @@ def resume_text(state: "State", generation: int) -> str:
     )
 
 
+def resume_view(state: "State") -> str:
+    """Project saved state without loading completed-row history or old logs."""
+    rows = parse_roadmap(state.sections["ROADMAP"])
+    done = [row for row in rows if row["status"] == "done"]
+    last_done = done[-1:]  # Roadmap order, as in the existing purge calculus.
+    selected = [row for row in rows if row["status"] != "done" or row in last_done]
+    logs = log_lines(state.sections["LOG"])
+    lines = [f"# DrainClamp resume view (schema={state.schema} generation={state.generation})",
+             f"ROADMAP: SHOWING {len(selected)}/{len(rows)} rows; LOG: SHOWING {min(5, len(logs))}/{len(logs)} lines",
+             "Done: " + (", ".join(row["id"] for row in done) or "none")]
+    for section in ("ARCH", "DECISIONS", "VERIFY"):
+        lines.extend([f"<!-- DC:{section} -->", state.sections[section], f"<!-- /DC:{section} -->"])
+    lines.extend(["<!-- DC:ROADMAP -->", "| id | goal | files | status | deps |",
+                  "|---|---|---|---|---|"])
+    for row in selected:
+        lines.append(f"| {row['id']} | {row['goal']} | {';'.join(row['files'])} | {row['status']} | {';'.join(row['deps'])} |")
+    lines.extend(["<!-- /DC:ROADMAP -->", "<!-- DC:LOG -->", *logs[-5:], "<!-- /DC:LOG -->"])
+    return "\n".join(lines) + "\n"
+
+
 def write_resume_capsule(agent: Path, state: "State", generation: int) -> None:
     """Write the small re-entry projection after the authoritative state write."""
     _dcio.atomic_write(agent / RESUME_NAME, resume_text(state, generation))
@@ -667,6 +687,15 @@ def chunk_purge_check(done_targets: list[str], next_targets: list[str], root: Pa
 
     shown = f"overlap {overlap * 100:.0f}%" if overlap is not None else f"overlap unknown: {reason}"
     if context_high or (overlap is not None and overlap < PURGE_THRESHOLD):
+        if not context_high:
+            import dc_chunk
+            try:
+                loaded = sum(dc_chunk.line_count(root / path) for path in done_set)
+            except DcError:
+                loaded = None  # Unknown read cost cannot justify the small-chunk exception.
+            if loaded is not None and loaded < 2 * dc_chunk.SMALL_FILE_LINES:
+                tag = f"small: {loaded} lines; {shown}"
+                return f"HOLD (chunk {tag})", saved + f"Context retained ({tag})."
         tag = f"context-high; {shown}" if context_high else shown
         return f"PURGE (chunk {tag})", saved + "Context purge recommended."
     return f"HOLD (chunk {shown})", saved + f"Context retained ({shown})."
@@ -824,6 +853,8 @@ def main() -> int:
     parser.add_argument("--purge-check", action="store_true")
     parser.add_argument("--context-high", action="store_true")
     parser.add_argument("--show", action="store_true")
+    parser.add_argument("--resume-view", action="store_true",
+                        help="read saved state with completed rows and older logs omitted")
     parser.add_argument("--promote-to-agents", action="store_true",
                         help="copy selected DC:DECISIONS constraints into AGENTS.md")
     parser.add_argument("--select", help="comma-separated constraint indexes")
@@ -833,6 +864,16 @@ def main() -> int:
     args = parser.parse_args()
 
     root = _dcio.repo_root(args.root)
+    if args.resume_view:
+        if args.section or args.source or args.log_entry or args.promote_to_agents or args.purge_check or args.show or args.confirm:
+            parser.error("--resume-view cannot be combined with another action")
+        path = root / ".agent" / _dcio.STATE_NAME
+        raw = _dcio.read_text(path)
+        if raw is None:
+            print(f"state: ABSENT ({path.name} does not exist)")
+        else:
+            print(resume_view(State.parse(raw)), end="")
+        return _dcio.EXIT_OK
     agent = _dcio.agent_dir(root)
     state_path = agent / _dcio.STATE_NAME
     warn_unignored(root, agent)

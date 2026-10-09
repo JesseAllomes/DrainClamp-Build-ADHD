@@ -249,6 +249,16 @@ def close_line(root: Path, data: dict, rows: list[dict], mid: str) -> str:
     return f"Gate 3 milestone tier, then Gate 6 (dc_review.py check: {name}), then {CLOSE}"
 
 
+def target_lines(chunk: dict, root: Path) -> list[str]:
+    """The chunk's Targets line plus a read hint for each of the first three."""
+    targets = chunk.get("targets") or []
+    if not targets:
+        return []
+    more = f" (+{len(targets) - 4})" if len(targets) > 4 else ""
+    return (["Targets: " + ", ".join(targets[:4]) + more]
+            + ["  " + read_hint(t, root) for t in targets[:3]])
+
+
 def capsule(root: Path, data: dict) -> list[str]:
     """The resume view: what to do next and what to read, nothing else."""
     rows = roadmap(root)
@@ -282,11 +292,7 @@ def capsule(root: Path, data: dict) -> list[str]:
     else:
         est = f" (~{nxt['est_min']} min)" if nxt.get("est_min") else ""
         lines.append(f"Next chunk: {nxt['id']} - {_clip(nxt['goal'])}{est}")
-        if nxt.get("targets"):
-            lines.append("Targets: " + ", ".join(nxt["targets"][:4])
-                         + (f" (+{len(nxt['targets']) - 4})" if len(nxt["targets"]) > 4 else ""))
-            for t in nxt["targets"][:3]:
-                lines.append("  " + read_hint(t, root))
+        lines += target_lines(nxt, root)
     last = [c for c in chunks if c.get("done")]
     if last:
         lines.append(f"Last done: {last[-1]['id']} - {_clip(last[-1].get('note') or last[-1]['goal'])}")
@@ -308,7 +314,9 @@ def boundary(data: dict, root: Path, mid: str, cid: str,
         return [f"Milestone {mid}: all chunks done: " + close_line(root, data, roadmap(root), mid)]
     verdict, human = dc_state.chunk_purge_check(done.get("targets", []),
                                                 nxt.get("targets", []), root, context_high)
-    return [f"Next chunk: {nxt['id']} - {_clip(nxt['goal'])}", verdict, human]
+    lines = [f"Next chunk: {nxt['id']} - {_clip(nxt['goal'])}", verdict, human]
+    # HOLD keeps the context, so hand over what to read next; a PURGE resume runs `next` anyway
+    return lines + target_lines(nxt, root) if verdict.startswith("HOLD") else lines
 
 
 # -- operations ----------------------------------------------------------------

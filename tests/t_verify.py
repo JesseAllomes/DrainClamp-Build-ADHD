@@ -282,5 +282,158 @@ check("a hand-edited trust field is rejected, not believed",
 state_file.write_text(raw, encoding="utf-8")
 
 print()
+# Git filenames are data, including Unicode, whitespace and literal arrows.
+from unittest.mock import patch
+unicode_repo = Path(tempfile.mkdtemp(prefix='dc-utf8-'))
+def git_utf8(*args):
+    return subprocess.run(['git', *args], cwd=unicode_repo, check=True, capture_output=True)
+git_utf8('init', '-q')
+git_utf8('config', 'user.email', 't@example.invalid')
+git_utf8('config', 'user.name', 'test')
+for name in ('módulo.py', 'staged_é.py', 'old_é.py', ' spaces .py'):
+    (unicode_repo / name).write_text('x = 1\n', encoding='utf-8')
+git_utf8('add', '.')
+git_utf8('commit', '-qm', 'base')
+(unicode_repo / 'módulo.py').write_text('x = 2\n', encoding='utf-8')
+(unicode_repo / 'staged_é.py').write_text('x = 3\n', encoding='utf-8')
+git_utf8('add', 'staged_é.py')
+git_utf8('mv', 'old_é.py', 'new_é.py')
+(unicode_repo / 'untracked_漢.py').write_text('x = 4\n', encoding='utf-8')
+(unicode_repo / ' spaces .py').write_text('x = 6\n', encoding='utf-8')
+changed_utf8, _ = dc_verify.changed_files(unicode_repo, None)
+check('Git status preserves all filenames and both rename fields', set(changed_utf8) == {
+    'módulo.py', 'staged_é.py', 'old_é.py', 'new_é.py', 'untracked_漢.py',
+    ' spaces .py'}, repr(changed_utf8))
+base_paths, _ = dc_verify.changed_files(unicode_repo, 'HEAD^{tree}')
+check('Git base fallback preserves Unicode and spaces',
+      'módulo.py' in base_paths and ' spaces .py' in base_paths)
+# Windows forbids > in a real filename; exercise literal arrows through Git's
+# exact NUL protocol on every host without creating an invalid local path.
+arrow_status = subprocess.CompletedProcess([], 0,
+    ' M literal -> arrow.py\0R  renamed -> destination.py\0old -> source.py\0', '')
+with patch.object(dc_verify.subprocess, 'run', return_value=arrow_status):
+    arrow_paths, _ = dc_verify.changed_files(unicode_repo, None)
+check('NUL status preserves literal arrows and both rename fields', set(arrow_paths) == {
+    'literal -> arrow.py', 'renamed -> destination.py', 'old -> source.py'}, repr(arrow_paths))
+arrow_names = subprocess.CompletedProcess([], 0, 'literal -> arrow.py\0 spaces .py\0', '')
+with patch.object(dc_verify.subprocess, 'run', return_value=arrow_names):
+    arrow_base_paths, _ = dc_verify.changed_files(unicode_repo, 'HEAD')
+check('NUL base names preserve literal arrows and spaces',
+      arrow_base_paths == [' spaces .py', 'literal -> arrow.py'], repr(arrow_base_paths))
+agent_utf8 = unicode_repo / '.agent'
+agent_utf8.mkdir()
+approved_entry = {'id': 'host', 'argv': ['custom-check'], 'cwd': '.', 'tier': 'fast'}
+first_tree = dc_verify.tree_fingerprint(unicode_repo)
+dc_verify.save_record(agent_utf8, 'host', dc_verify.digest_for(['custom-check'], '.'),
+                      'pass', '', first_tree)
+(unicode_repo / 'módulo.py').write_text('x = 7\n', encoding='utf-8')
+second_tree = dc_verify.tree_fingerprint(unicode_repo)
+check('Unicode edit changes fingerprint and invalidates host record', first_tree != second_tree
+      and dc_verify.run_entry(approved_entry, unicode_repo, agent_utf8)['status'] == dc_verify.APPROVAL)
+(unicode_repo / 'módulo.py').write_text('x = 8\n', encoding='utf-8')
+check('second Unicode edit changes fingerprint again',
+      second_tree != dc_verify.tree_fingerprint(unicode_repo))
+(unicode_repo / 'ruff.toml').write_text('', encoding='utf-8')
+(unicode_repo / 'eslint.config.js').write_text('', encoding='utf-8')
+(unicode_repo / 'unchanged.py').write_text('bad style', encoding='utf-8')
+(unicode_repo / 'unchanged.js').write_text('bad style', encoding='utf-8')
+lint_discovery = dc_verify.discover(unicode_repo, ['módulo.py', 'changed.js'])
+fast_lint, _ = dc_verify.select_entries([], lint_discovery, 'fast')
+check('fast lint remains diff scoped',
+      next(e for e in fast_lint if e['id'] == 'ruff')['argv'] == ['ruff', 'check', 'módulo.py']
+      and next(e for e in fast_lint if e['id'] == 'eslint')['argv'] == ['eslint', 'changed.js'])
+final_lint, _ = dc_verify.select_entries([
+    {'id': 'ruff', 'argv': ['ruff', 'check', 'módulo.py'], 'tier': 'fast'},
+    {'id': 'eslint', 'argv': ['eslint', 'changed.js'], 'tier': 'fast'}], lint_discovery, 'final')
+check('final lint includes full targets beside stored scoped ids',
+      any(e['id'] == 'ruff-final' and e['argv'] == ['ruff', 'check', '.'] for e in final_lint)
+      and any(e['id'] == 'eslint-final' and e['argv'] == ['eslint', '.'] for e in final_lint))
+# Mock execution: local payload bytes are never executable in these tests.
+local_runner = unicode_repo / ('pytest.exe' if os.name == 'nt' else 'pytest')
+local_runner.write_text('inert test data', encoding='utf-8')
+local_runner.chmod(0o755)
+for runner in (str(local_runner), './' + local_runner.name):
+    with patch.object(dc_verify._dcio, 'run_sandboxed') as execution:
+        local_row = dc_verify.run_entry({'id': 'local', 'argv': [runner],
+                                        'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('repository executable requires approval ' + runner,
+          local_row['status'] == dc_verify.APPROVAL and not execution.called)
+with patch.dict(os.environ, {'PATH': '.'}):
+    with patch.object(dc_verify._dcio, 'run_sandboxed') as execution:
+        local_row = dc_verify.run_entry({'id': 'path-local', 'argv': ['pytest'],
+                                        'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('relative PATH resolves in execution cwd and refuses local runner',
+          local_row['status'] == dc_verify.APPROVAL and not execution.called)
+external_link = Path(tempfile.mkdtemp(prefix='dc-exe-link-')) / local_runner.name
+try:
+    os.symlink(local_runner, external_link)
+except (OSError, NotImplementedError):
+    check('external executable symlink into repository refuses', True, 'SKIPPED: cannot create link')
+else:
+    with patch.object(dc_verify._dcio, 'run_sandboxed') as execution:
+        link_row = dc_verify.run_entry({'id': 'linked', 'argv': [str(external_link)],
+                                       'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('external executable symlink into repository refuses',
+          link_row['status'] == dc_verify.APPROVAL and not execution.called)
+external_argv = [sys.executable, '-m', 'pytest']
+with patch.object(dc_verify._dcio, 'run_sandboxed',
+                  return_value=_dcio.RunResult(external_argv, '.', 0, '', '', 0.1)) as execution:
+    external_row = dc_verify.run_entry({'id': 'external', 'argv': external_argv,
+                                       'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+check('external interpreter executes pinned path but preserves original argv',
+      external_row['status'] == dc_verify.PASS and external_row['argv'] == external_argv
+      and execution.call_args.args[0][0] == str(Path(sys.executable).resolve()))
+for flag in ('-w', '-w=true', '-unknown', '-l=true'):
+    check('gofmt unsafe flag refuses ' + flag,
+          dc_verify.classify(['gofmt', '-l', flag, '.']) is None)
+formatter = Path(tempfile.mkdtemp(prefix='dc-format-')) / ('gofmt.exe' if os.name == 'nt' else 'gofmt')
+formatter.write_text('inert', encoding='utf-8')
+formatter.chmod(0o755)
+outside_go = formatter.parent / 'outside.go'
+outside_go.write_text('package main', encoding='utf-8')
+for target in (str(outside_go), '../outside.go'):
+    with patch.object(dc_verify._dcio, 'run_sandboxed') as execution:
+        format_row = dc_verify.run_entry({'id': 'format', 'argv': [str(formatter), '-l', target],
+                                         'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('gofmt escaping path refuses ' + target,
+          format_row['status'] in (dc_verify.APPROVAL, dc_verify.UNSAFE) and not execution.called)
+escape_go = unicode_repo / 'escape.go'
+try:
+    os.symlink(outside_go, escape_go)
+except (OSError, NotImplementedError):
+    check('gofmt symlink escape refuses', True, 'SKIPPED: cannot create link')
+else:
+    with patch.object(dc_verify._dcio, 'run_sandboxed') as execution:
+        format_row = dc_verify.run_entry({'id': 'format', 'argv': [str(formatter), '-l', 'escape.go'],
+                                         'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('gofmt symlink escape refuses', format_row['status'] in (dc_verify.APPROVAL, dc_verify.UNSAFE)
+          and not execution.called)
+with patch.object(dc_verify._dcio, 'run_sandboxed',
+                  return_value=_dcio.RunResult([str(formatter), '-l', '.'], '.', 0, 'bad.go\n', '', 0.1)):
+    valid_format = dc_verify.run_entry({'id': 'format', 'argv': [str(formatter), '-l', '.'],
+                                       'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+check('valid gofmt remains output sensitive', valid_format['status'] == dc_verify.FAIL)
+
+with patch.dict(os.environ, {'PATH': str(formatter.parent)}):
+    with patch.object(dc_verify._dcio, 'run_sandboxed',
+                      return_value=_dcio.RunResult(['gofmt', '-l', '.'], '.', 0, '', '', 0.1)) as execution:
+        pinned_row = dc_verify.run_entry({'id': 'pinned', 'argv': ['gofmt', '-l', '.'],
+                                         'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('PATH runner is pinned externally in executed argv', pinned_row['status'] == dc_verify.PASS
+          and execution.call_args.args[0][0] == str(formatter.resolve())
+          and pinned_row['argv'] == ['gofmt', '-l', '.'])
+with patch.dict(os.environ, {'PATH': ''}):
+    with patch.object(dc_verify._dcio, 'run_sandboxed') as execution:
+        missing_row = dc_verify.run_entry({'id': 'missing', 'argv': ['cargo', 'test'],
+                                          'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('missing configured runner retains missing verdict',
+          missing_row['status'] == dc_verify.MISSING_REQUIRED and not execution.called)
+for write_flag in ('-w', '-w=true'):
+    with patch.object(dc_verify._dcio, 'run_sandboxed') as execution:
+        write_row = dc_verify.run_entry({'id': 'write', 'argv': [str(formatter), '-l', write_flag, '.'],
+                                        'cwd': '.', 'tier': 'fast'}, unicode_repo, agent_utf8)
+    check('gofmt write never executes ' + write_flag,
+          write_row['status'] == dc_verify.APPROVAL and not execution.called)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

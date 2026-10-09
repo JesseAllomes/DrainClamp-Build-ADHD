@@ -97,5 +97,133 @@ check("anything skipped is printed, not swallowed",
       "; ".join(manifest["notes"]) or "nothing skipped on this host")
 
 print()
+# Destination ownership is checked before either cleanup or overwriting.
+from _dcio import DcError
+from unittest.mock import patch
+unowned = Path(tempfile.mkdtemp(prefix='dc-unowned-'))
+(unowned / '.git').mkdir()
+(unowned / 'sentinel').write_bytes(b'preserve exactly')
+for clean in (True, False):
+    (unowned / '.git').mkdir(exist_ok=True)
+    (unowned / 'sentinel').write_bytes(b'preserve exactly')
+    try:
+        dc_selftest.materialise(unowned, clean=clean)
+        refused_owned = False
+    except DcError:
+        refused_owned = True
+    check('unowned destination refuses clean=' + str(clean), refused_owned
+          and (unowned / 'sentinel').exists()
+          and (unowned / 'sentinel').read_bytes() == b'preserve exactly'
+          and (unowned / '.git').is_dir() and not (unowned / 'py_pkg').exists())
+(unowned / '.git').mkdir(exist_ok=True)
+(unowned / 'sentinel').write_bytes(b'preserve exactly')
+cli_refused = subprocess.run([sys.executable, '-B', str(SCRIPTS / 'dc_selftest.py'),
+                             '--materialise', '--dest', str(unowned)],
+                            capture_output=True, text=True)
+check('CLI refuses unowned destination', cli_refused.returncode != 0
+      and (unowned / 'sentinel').exists()
+      and (unowned / 'sentinel').read_bytes() == b'preserve exactly')
+(unowned / 'sentinel').write_bytes(b'preserve exactly')
+(unowned / 'MANIFEST.txt').write_text('# wrong owner\n', encoding='utf-8')
+try:
+    dc_selftest.materialise(unowned)
+    wrong_owner = False
+except DcError:
+    wrong_owner = True
+check('mismatched fixture marker refuses', wrong_owner and (unowned / 'sentinel').exists())
+empty_dest = Path(tempfile.mkdtemp(prefix='dc-empty-'))
+check('empty fixture destination works', bool(dc_selftest.materialise(empty_dest)))
+owned_manifest_before = (empty_dest / 'MANIFEST.txt').read_bytes()
+dc_selftest.materialise(empty_dest)
+check('owned manifest rematerialises deterministically',
+      (empty_dest / 'MANIFEST.txt').read_bytes() == owned_manifest_before)
+with patch.object(dc_selftest.shutil, 'rmtree', side_effect=AssertionError('root cleanup attempted')):
+    try:
+        dc_selftest.materialise(Path(empty_dest.anchor))
+        root_refused = False
+    except DcError:
+        root_refused = True
+    except AssertionError:
+        root_refused = False
+check('root fixture destination refuses', root_refused)
+link_parent = Path(tempfile.mkdtemp(prefix='dc-linkguard-'))
+marker_source = link_parent / 'marker-source'
+marker_source.write_text('# drainclamp-build fixtures; schema=1\n', encoding='utf-8')
+for kind in ('destination', 'marker'):
+    target = link_parent / ('target-' + kind)
+    target.mkdir()
+    (target / 'sentinel').write_bytes(b'keep')
+    linked = link_parent / ('linked-' + kind)
+    try:
+        if kind == 'destination':
+            os.symlink(target, linked, target_is_directory=True)
+            candidate = linked
+        else:
+            os.symlink(marker_source, target / 'MANIFEST.txt')
+            candidate = target
+    except (OSError, NotImplementedError):
+        check('linked fixture ' + kind + ' refuses', True, 'SKIPPED: host cannot create link')
+        continue
+    try:
+        dc_selftest.materialise(candidate)
+        link_refused = False
+    except DcError:
+        link_refused = True
+    except OSError:
+        link_refused = False
+    check('linked fixture ' + kind + ' refuses', link_refused
+          and (target / 'sentinel').exists()
+          and (target / 'sentinel').read_bytes() == b'keep')
+
+# Owned Windows Git objects may be read-only; cleanup retries only unlink.
+import stat
+readonly_dest = Path(tempfile.mkdtemp(prefix='dc-readonly-'))
+(readonly_dest / 'MANIFEST.txt').write_text('# drainclamp-build fixtures; schema=1\n', encoding='utf-8')
+readonly_file = readonly_dest / 'owned-object'
+readonly_file.write_bytes(b'owned object')
+readonly_file.chmod(stat.S_IREAD)
+readonly_manifest = dc_selftest.materialise(readonly_dest)
+check('owned read-only file can be rematerialised', bool(readonly_manifest)
+      and not readonly_file.exists())
+
+retry_dest = Path(tempfile.mkdtemp(prefix='dc-retry-'))
+(retry_dest / 'MANIFEST.txt').write_text('# drainclamp-build fixtures; schema=1\n', encoding='utf-8')
+retry_file = retry_dest / 'object'
+retry_file.write_bytes(b'owned')
+retry_file.chmod(stat.S_IREAD)
+permission_failure = PermissionError('owned file is read-only')
+def simulate_readonly_cleanup(path, **kwargs):
+    callback = kwargs.get('onerror')
+    if callback is None:
+        raise permission_failure
+    callback(os.unlink, str(retry_file), (PermissionError, permission_failure, None))
+with patch.object(dc_selftest.shutil, 'rmtree', side_effect=simulate_readonly_cleanup):
+    try:
+        dc_selftest.materialise(retry_dest)
+        retry_ok = not retry_file.exists()
+    except PermissionError:
+        retry_ok = False
+check('owned regular file PermissionError is chmodded and retried', retry_ok)
+
+cleanup_dest = Path(tempfile.mkdtemp(prefix='dc-cleanup-error-'))
+(cleanup_dest / 'MANIFEST.txt').write_text('# drainclamp-build fixtures; schema=1\n', encoding='utf-8')
+cleanup_file = cleanup_dest / 'keep'
+cleanup_file.write_bytes(b'keep')
+cleanup_failure = OSError('unrelated cleanup failure')
+def simulate_cleanup_failure(path, **kwargs):
+    callback = kwargs.get('onerror')
+    if callback is None:
+        raise cleanup_failure
+    callback(os.unlink, str(cleanup_file), (OSError, cleanup_failure, None))
+with patch.object(dc_selftest.shutil, 'rmtree', side_effect=simulate_cleanup_failure), \
+        patch.object(dc_selftest.os, 'chmod') as chmod:
+    try:
+        dc_selftest.materialise(cleanup_dest)
+        propagated = False
+    except OSError as exc:
+        propagated = exc is cleanup_failure
+check('non-permission cleanup errors propagate without chmod',
+      propagated and not chmod.called and cleanup_file.read_bytes() == b'keep')
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

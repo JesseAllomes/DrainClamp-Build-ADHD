@@ -57,6 +57,12 @@ its full path, so two checkouts of the same name stay distinct, and flags one wh
 still block it. `--forget` drops an index entry without touching the repository it points at.
 Action numbers continue past the last project, so they never collide with one.
 
+After a gap, run `dc_audit.py`, `dc_state.py --resume-view`, then `dc_project.py next`.
+The read-only view preserves architecture, decisions and checks, but shows only open roadmap
+rows plus the last done row, all done ids, and the last five log lines. `SHOWING n/N` reports
+what was omitted. Use the full state file for Gate 2 edits. Disjoint chunk boundaries retain
+context when finished target files total fewer than 240 lines; `--context-high` overrides this.
+
 ## Design commitments
 
 These are the parts worth stealing even if you never install it.
@@ -103,7 +109,7 @@ is unignored you get one warning and nothing else.
 | `_dcio.py` | Atomic writes, PID-aware locking, generation checks, subprocess sandbox, output normalisation |
 | `dc_map.py` | Symbol index: Python via stdlib `ast`, JavaScript via a bounded regex scanner; cached on `path + mtime_ns + size` |
 | `dc_chunk.py` | Range reader; refuses ambiguous symbols; advises on read sizing |
-| `dc_state.py` | Schema v1 state, crash-recoverable log rollover, purge calculus, narrow promotion |
+| `dc_state.py` | Schema v1 state, read-only `--resume-view`, crash-recoverable log rollover, purge calculus, narrow promotion |
 | `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never indexes a temp-directory repo, never trusts a corrupt file |
 | `dc_session.py` | Gate S: the project menu, plus `--complete` and `--reopen` |
 | `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
@@ -379,7 +385,7 @@ py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 pl
 py -3 -B tests/t_skeleton.py   # one change through the core gates
 ```
 
-908 checks across 23 suites, no third-party runner. Fixtures are generated, never hand-edited:
+23 test suites, no third-party runner. Fixtures are generated, never hand-edited:
 `dc_selftest.py --materialise` writes Python, JavaScript, an unsupported extension, malformed
 source, paths with spaces, a Unicode filename, CRLF, a directory link, and a git repository with an
 untracked file. The git fixture commits with a pinned identity and timestamp, so the same tree hashes

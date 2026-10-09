@@ -26,6 +26,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -122,7 +124,9 @@ def _is_tsc(argv: list[str]) -> bool:
 
 
 def _is_gofmt(argv: list[str]) -> bool:
-    return exe_name(argv) == "gofmt" and "-l" in argv
+    return (exe_name(argv) == "gofmt" and "-l" in argv
+            and all(not arg.startswith("-") or arg in {"-l", "-d", "-e", "-s"}
+                    for arg in argv[1:]))
 
 
 ALLOWLIST = (
@@ -164,12 +168,12 @@ def digest_for(argv: list[str], cwd: str) -> str:
 def git_lines(root: Path, *args: str) -> list[str] | None:
     try:
         done = subprocess.run(["git", *args], cwd=str(root), capture_output=True,
-                              text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
+                              text=True, encoding="utf-8", errors="strict", timeout=60)
+    except (OSError, UnicodeError, subprocess.SubprocessError):
         return None
     if done.returncode != 0:
         return None
-    return done.stdout.splitlines()
+    return done.stdout.split("\0") if "-z" in args else done.stdout.splitlines()
 
 
 def git_ref(base: str) -> str:
@@ -194,25 +198,26 @@ def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     """
     if base:
         git_ref(base)
-        lines = git_lines(root, "diff", "--name-only", f"{base}...HEAD")
+        lines = git_lines(root, "diff", "--name-only", "-z", f"{base}...HEAD")
         if lines is None:
-            lines = git_lines(root, "diff", "--name-only", base)
+            lines = git_lines(root, "diff", "--name-only", "-z", base)
         if lines is None:
             return [], "unavailable"
-        return sorted({ln.strip() for ln in lines if ln.strip()}), f"base {base}"
+        return sorted({ln for ln in lines if ln}), f"base {base}"
 
-    lines = git_lines(root, "status", "--porcelain", "-uall")
+    lines = git_lines(root, "status", "--porcelain", "-z", "-uall")
     if lines is None:
         return [], "unavailable"
     found: set[str] = set()
-    for line in lines:
+    fields = iter(lines)
+    for line in fields:
         if len(line) < 4:
             continue
-        rest = line[3:]
-        for part in rest.split(" -> "):  # renames contribute both paths
-            cleaned = part.strip().strip('"')
-            if cleaned:
-                found.add(cleaned)
+        found.add(line[3:])
+        if "R" in line[:2] or "C" in line[:2]:
+            source = next(fields, "")
+            if source:
+                found.add(source)
     return sorted(found), "working tree"
 
 
@@ -310,9 +315,13 @@ def discover(root: Path, changed: list[str]) -> list[dict]:
     if ruff_configured:
         entries.append({"id": "ruff", "argv": ["ruff", "check", *(changed_py or ["."])],
                         "cwd": ".", "tier": "fast"})
+        entries.append({"id": "ruff-final", "argv": ["ruff", "check", "."],
+                        "cwd": ".", "tier": "final"})
     if any(root.glob(".eslintrc*")) or any(root.glob("eslint.config.*")):
         entries.append({"id": "eslint", "argv": ["eslint", *(changed_js or ["."])],
                         "cwd": ".", "tier": "fast"})
+        entries.append({"id": "eslint-final", "argv": ["eslint", "."],
+                        "cwd": ".", "tier": "final"})
     if any(root.glob("tsconfig*.json")):
         entries.append({"id": "tsc", "argv": ["tsc", "--noEmit"], "cwd": ".",
                         "tier": "milestone"})
@@ -367,6 +376,20 @@ def verdict_for(result: _dcio.RunResult, rule: str) -> str:
     return PASS if result.returncode == 0 else FAIL
 
 
+def _resolved_executable(executable: str, workdir: Path) -> Path | None:
+    candidate = Path(executable)
+    if candidate.is_absolute() or "/" in executable or "\\" in executable:
+        if not candidate.is_absolute():
+            candidate = workdir / candidate
+        return candidate.resolve() if candidate.is_file() else None
+    search = [str((workdir / p).resolve()) if not Path(p).is_absolute() else p
+              for p in os.environ.get("PATH", "").split(os.pathsep)]
+    if os.name == "nt":
+        search.insert(0, str(workdir))
+    found = shutil.which(executable, path=os.pathsep.join(search))
+    return Path(found).resolve() if found else None
+
+
 def run_entry(entry: dict, root: Path, agent: Path) -> dict:
     """Execute or refuse one entry. Never raises for an entry's own failure."""
     argv, cwd = entry["argv"], entry.get("cwd", ".")
@@ -380,6 +403,26 @@ def run_entry(entry: dict, root: Path, agent: Path) -> dict:
         return row
 
     known = classify(argv)
+    executed_argv = list(argv)
+    if known is not None:
+        try:
+            workdir = _dcio.resolve_cwd(cwd, root)
+            executable = _resolved_executable(argv[0], workdir)
+            if executable is not None:
+                if _dcio.is_within(executable, root.resolve()):
+                    known = None
+                else:
+                    executed_argv[0] = str(executable)
+            if known is not None and exe_name(argv) == "gofmt":
+                for arg in argv[1:]:
+                    if not arg.startswith("-"):
+                        target = (workdir / arg).resolve()
+                        if not _dcio.is_within(target, root.resolve()):
+                            raise DcError(f"gofmt path escapes repository: {arg!r}",
+                                          _dcio.EXIT_UNSAFE_COMMAND)
+        except (OSError, DcError) as exc:
+            row.update(status=UNSAFE, detail=_dcio.collapse(str(exc), 160))
+            return row
     if known is None:
         record = load_records(agent).get(entry["id"])
         digest = digest_for(argv, cwd)
@@ -394,9 +437,13 @@ def run_entry(entry: dict, root: Path, agent: Path) -> dict:
         return row
 
     name, rule = known
+    if executable is None:
+        row.update(status=MISSING_REQUIRED, runner=name,
+                   detail=f"{argv[0]} is configured but not installed", output="")
+        return row
     try:
         result = _dcio.run_sandboxed(
-            argv, root, cwd, timeout=int(entry.get("timeout_s") or
+            executed_argv, root, cwd, timeout=int(entry.get("timeout_s") or
                                          _dcio.DEFAULT_TIMEOUT_SECONDS),
         )
     except DcError as exc:

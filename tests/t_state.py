@@ -227,6 +227,55 @@ v = verdict([("m1", "a", "s/1.py", "done"), ("m2", "b", "nope/*.rs", "active")],
 check("context-high with unknown overlap says unknown",
       v == "PURGE (context-high; overlap unknown)", v)
 
+# --- chunk read-size calculus ---------------------------------------------
+small = newrepo()
+(small / "a.py").write_text("x\n" * 119, encoding="utf-8")
+(small / "b.py").write_text("x\n" * 120, encoding="utf-8")
+(small / "next.py").write_text("x\n", encoding="utf-8")
+v, human = dc_state.chunk_purge_check(["a.py::f", "a.py::g", "b.py"], ["next.py"], small, False)
+check("small disjoint chunk holds and deduplicates paths",
+      v.startswith("HOLD (chunk small") and "239" in v and "Context retained" in human, v)
+v, _ = dc_state.chunk_purge_check(["a.py", "b.py"], ["next.py"], small, True)
+check("context-high overrides small chunk hold", v.startswith("PURGE (chunk context-high"), v)
+(small / "a.py").write_text("x\n" * 120, encoding="utf-8")
+v, _ = dc_state.chunk_purge_check(["a.py", "b.py"], ["next.py"], small, False)
+check("exactly 240 lines still purges", v.startswith("PURGE (chunk overlap 0%)"), v)
+v, _ = dc_state.chunk_purge_check(["missing.py"], ["next.py"], small, False)
+check("unreadable size never implies small chunk", v.startswith("PURGE"), v)
+v, _ = dc_state.chunk_purge_check(["next.py"], ["next.py"], small, False)
+check("small rule preserves existing overlap hold", v == "HOLD (chunk overlap 100%)", v)
+v, _ = dc_state.chunk_purge_check(["next.py"], ["missing/*.py"], small, False)
+check("small rule preserves unknown hold", "overlap unknown" in v, v)
+
+# --- bounded authoritative-state view ------------------------------------
+view_repo = newrepo()
+view_state = dc_state.State.parse(dc_state.template_text())
+view_state.sections["ARCH"] = "core -> responsibility -> entrypoint"
+view_state.sections["DECISIONS"] = "- preserve this decision"
+view_state.sections["VERIFY"] = ok
+view_state.sections["ROADMAP"] = "| id | goal | files | status | deps |\n|---|---|---|---|---|\n" + "\n".join(
+    [f"| m{i} | old goal {i} | old{i}.py | done | |" for i in range(1, 5)] +
+    ["| m5 | current | current.py | active | m4 |", "| m6 | later | later.py | pending | m5 |"])
+view_state.sections["LOG"] = "\n".join(f"- log entry {i}" for i in range(8))
+view_path = view_repo / ".agent/drainclamp-state.md"
+view_path.parent.mkdir()
+view_path.write_text(view_state.render(7), encoding="utf-8")
+before = view_path.read_bytes()
+rv = run(view_repo, "--resume-view")
+check("resume-view CLI succeeds", rv.returncode == 0, rv.stderr.strip())
+check("resume-view declares roadmap and log coverage", "SHOWING 3/6" in rv.stdout and "SHOWING 5/8" in rv.stdout, rv.stdout[:150])
+check("resume-view preserves ARCH DECISIONS VERIFY", all(x in rv.stdout for x in ("core -> responsibility", "preserve this decision", ok)))
+check("resume-view keeps last done and every open row with files and deps",
+      all(x in rv.stdout for x in ("old4.py", "current.py", "later.py", "| m5 |")) and "old1.py" not in rv.stdout)
+check("resume-view summarizes all done ids", "Done: m1, m2, m3, m4" in rv.stdout)
+check("resume-view trims logs to last five", "- log entry 3" in rv.stdout and "- log entry 7" in rv.stdout and "- log entry 2" not in rv.stdout)
+check("resume-view leaves state bytes and directory untouched", view_path.read_bytes() == before and set(view_path.parent.iterdir()) == {view_path})
+absent = newrepo()
+rv = run(absent, "--resume-view")
+check("resume-view absent state is explicit and read-only", rv.returncode == 0 and "ABSENT" in rv.stdout and not (absent / ".agent").exists())
+rv = run(view_repo, "--resume-view", "--append-log", "must not write")
+check("resume-view cannot be combined with a mutation", rv.returncode != 0 and view_path.read_bytes() == before)
+
 # --- concurrent appends ---------------------------------------------------
 # Separate processes, not threads: the lock guards against other interpreters,
 # so a purely threaded test would share one process and never exercise it.

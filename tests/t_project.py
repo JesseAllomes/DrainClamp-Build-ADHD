@@ -155,9 +155,12 @@ rc, out = proj(bnd, "chunk", "done", "--milestone", "m1", "--id", "c1", "--note"
 check("boundary names the next chunk", "Next chunk: c2" in out, out)
 check("symbols of one file overlap by path (1 of 2 = 50%)",
       "HOLD (chunk overlap 50%)" in out and "Context retained" in out, out)
+check("HOLD boundary hands over the next targets",
+      "Targets: a.py::g, b.py" in out and "  dc_chunk.py --symbol g --path a.py" in out, out)
 rc, out = proj(bnd, "chunk", "done", "--milestone", "m1", "--id", "c2")
 check("disjoint next chunk recommends a purge",
       "PURGE (chunk overlap 0%)" in out and "Context purge recommended." in out, out)
+check("PURGE boundary leaves targets to the resume", "Targets:" not in out, out)
 rc, out = proj(bnd, "chunk", "done", "--milestone", "m1", "--id", "c3")
 check("next chunk without targets is unknown, never PURGE",
       "HOLD (chunk overlap unknown: next chunk has no targets)" in out, out)
@@ -251,8 +254,10 @@ check("final mode on the last open milestone names Gate 6 and its verdict",
 rc, out = proj(gate, "chunk", "done", "--milestone", "m2", "--id", "c1")
 check("chunk boundary gives the same Gate 6 close line",
       "all chunks done: Gate 3 milestone tier, then Gate 6" in out and "--purge-check" in out, out)
+import dc_review
 out = gate_capsule({"config": {"mode": "final"}, "rounds": [
-    {"id": "R1", "milestone": "m2", "finished": True, "stamp": {}, "coverage": "full"}]})
+    {"id": "R1", "milestone": "m2", "finished": True, "stamp": {}, "coverage": "full",
+     "inventory": dc_review._inventory(gate)}]})
 check("a passed review says so instead of asking for Gate 6 again",
       "Gate 6 REVIEW-PASS; close the milestone" in out and "Gate 3 milestone tier" not in out, out)
 early = make_repo("gate6-early", "| m1 | first | a.py | active |\n| m2 | last | b.py | pending |")
