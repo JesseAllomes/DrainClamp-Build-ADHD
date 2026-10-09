@@ -775,6 +775,18 @@ rv(br, "ticket", "--round", "R1", "--id", "r2", "--allow", "a.py", "--file", "-"
 rc, out = rv(br, "scope", "--round", "R1")
 check("a ticket stored after a breach keeps the breach", rc == 4 and "b.py" in out, out)
 
+# -- an untracked cache the snapshot pinned is rewritten by the tests: no breach -------------------
+pc = fixing_repo("pyc-pinned", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+(pc / "__pycache__").mkdir()
+(pc / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"before")
+rv(pc, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+check("the snapshot holds the untracked cache (not gitignored)",
+      "__pycache__/a.cpython-312.pyc" in side(pc)["rounds"][0]["fix"]["files"], side(pc)["rounds"][0]["fix"]["files"])
+(pc / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+(pc / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"rebuilt by the tests")
+rc, out = rv(pc, "scope", "--round", "R1")
+check("a pinned untracked cache rewritten after the fix is no breach", rc == 0 and "scope ok: 1 file(s)" in out, out)
+
 # -- files left out at the packet cap are not reviewed -------------------------------------------
 lo = make_repo("left-out")
 for n in range(4):

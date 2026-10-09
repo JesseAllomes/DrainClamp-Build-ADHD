@@ -999,6 +999,14 @@ OUTPUT_FILES = {".coverage", "coverage.xml"}  # test-run output, rewritten by ev
 IGNORED_CAP = 20000
 
 
+def _is_cache(rel: str) -> bool:
+    """A build or test cache, or test-run output: rewritten by every run, never a fixer's work."""
+    parts = rel.split("/")
+    name = parts[-1]
+    return rel.endswith(".pyc") or bool(CACHE_PARTS & set(parts[:-1])) or name in OUTPUT_FILES \
+        or name.startswith(".coverage.") or any(p.endswith(".egg-info") for p in parts[:-1])
+
+
 def _ignored(root: Path) -> dict | None:
     """Gitignored files outside .agent/, caches and build/test output -> size:mtime, or None past the cap.
 
@@ -1011,11 +1019,7 @@ def _ignored(root: Path) -> dict | None:
         return None
     sig: dict = {}
     for rel in out.split("\0"):
-        if not rel or rel == ".agent" or rel.startswith(".agent/") or rel.endswith(".pyc") \
-                or CACHE_PARTS & set(rel.split("/")[:-1]) \
-                or rel.rsplit("/", 1)[-1] in OUTPUT_FILES \
-                or rel.rsplit("/", 1)[-1].startswith(".coverage.") \
-                or any(p.endswith(".egg-info") for p in rel.split("/")[:-1]):
+        if not rel or rel == ".agent" or rel.startswith(".agent/") or _is_cache(rel):
             continue
         if len(sig) >= IGNORED_CAP:
             return None
@@ -1030,7 +1034,10 @@ def _ignored(root: Path) -> dict | None:
 def scope_check(root: Path, fix: dict) -> tuple[list[str], list[str]]:
     """(modified files, files modified outside every ticket's allow list)."""
     candidates = set(fix["files"]) | set(_changed(root))
-    modified = sorted(p for p in candidates if _hash(root, p) != fix["files"].get(p, "clean"))
+    # Caches are skipped whether or not git ignores them: a test run after the fixer rewrites
+    # untracked .pyc files the snapshot pinned, and that is never the fixer's work.
+    modified = sorted(p for p in candidates
+                      if not _is_cache(p) and _hash(root, p) != fix["files"].get(p, "clean"))
     # A file absent from the snapshot was clean then: any change to it now shows up in
     # the change set, and "clean" never equals a content hash.
     now = _ignored(root) if isinstance(fix.get("ignored"), dict) else None
