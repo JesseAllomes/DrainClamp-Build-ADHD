@@ -442,8 +442,9 @@ def _inventory(root: Path) -> list[str]:
         raise DcError("STALE: Git cannot report the review inventory", _dcio.EXIT_TIMEOUT) from exc
     if done.returncode != 0:
         raise DcError("STALE: Git cannot report the review inventory", _dcio.EXIT_TIMEOUT)
+    tracked = _tracked(root)
     return sorted({p for p in done.stdout.split("\0") if p and p != ".agent"
-                   and not p.startswith(".agent/") and not _is_cache(p)
+                   and not p.startswith(".agent/") and not (_is_cache(p) and p not in tracked)
                    and os.path.lexists(root / p)})
 
 
@@ -516,7 +517,8 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
         inventory = _inventory(root)
     except DcError as exc:
         return "STALE", _dcio.EXIT_TIMEOUT, [str(exc)]
-    before = [p for p in last["inventory"] if not _is_cache(p)]  # rounds before 1.11.1 pinned caches
+    tracked = _tracked(root)
+    before = [p for p in last["inventory"] if not (_is_cache(p) and p not in tracked)]  # rounds before 1.11.1 pinned caches
     if inventory != before:
         changed_names = sorted(set(inventory) ^ set(before))
         return "STALE", _dcio.EXIT_TIMEOUT, ["filenames changed since review: "
@@ -530,7 +532,7 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
     stamp: dict = {}
     for r in done:
         stamp.update(r.get("stamp") or {})
-    moved = [p for p, h in stamp.items() if not _is_cache(p) and _hash(root, p) != h]
+    moved = [p for p, h in stamp.items() if not (_is_cache(p) and p not in tracked) and _hash(root, p) != h]
     if moved:
         return "STALE", _dcio.EXIT_TIMEOUT, ["changed since review: " + ", ".join(moved[:5])
                                              + (f" (+{len(moved) - 5})" if len(moved) > 5 else "")]
@@ -1009,6 +1011,12 @@ def _is_cache(rel: str) -> bool:
         or name.startswith(".coverage.") or any(p.endswith(".egg-info") for p in parts[:-1])
 
 
+def _tracked(root: Path) -> set[str]:
+    """Paths git tracks; a cache-looking path that is tracked is source and is always watched."""
+    out = _git(root, "ls-files", "-z", "--cached")
+    return {p for p in (out or "").split("\0") if p}
+
+
 def _ignored(root: Path) -> dict | None:
     """Gitignored files outside .agent/, caches and build/test output -> size:mtime, or None past the cap.
 
@@ -1035,11 +1043,12 @@ def _ignored(root: Path) -> dict | None:
 
 def scope_check(root: Path, fix: dict) -> tuple[list[str], list[str]]:
     """(modified files, files modified outside every ticket's allow list)."""
+    tracked = _tracked(root)
     candidates = set(fix["files"]) | set(_changed(root))
-    # Caches are skipped whether or not git ignores them: a test run after the fixer rewrites
-    # untracked .pyc files the snapshot pinned, and that is never the fixer's work.
+    # Untracked caches are skipped: a test run after the fixer rewrites untracked .pyc files
+    # the snapshot pinned, and that is never the fixer's work. A tracked file under build/ or dist/ is source.
     modified = sorted(p for p in candidates
-                      if not _is_cache(p) and _hash(root, p) != fix["files"].get(p, "clean"))
+                      if not (_is_cache(p) and p not in tracked) and _hash(root, p) != fix["files"].get(p, "clean"))
     # A file absent from the snapshot was clean then: any change to it now shows up in
     # the change set, and "clean" never equals a content hash.
     now = _ignored(root) if isinstance(fix.get("ignored"), dict) else None
