@@ -443,7 +443,8 @@ def _inventory(root: Path) -> list[str]:
     if done.returncode != 0:
         raise DcError("STALE: Git cannot report the review inventory", _dcio.EXIT_TIMEOUT)
     return sorted({p for p in done.stdout.split("\0") if p and p != ".agent"
-                   and not p.startswith(".agent/") and os.path.lexists(root / p)})
+                   and not p.startswith(".agent/") and not _is_cache(p)
+                   and os.path.lexists(root / p)})
 
 
 def _introduced_unreviewed(rv: dict, milestone: str, inventory: list[str],
@@ -515,8 +516,9 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
         inventory = _inventory(root)
     except DcError as exc:
         return "STALE", _dcio.EXIT_TIMEOUT, [str(exc)]
-    if inventory != last["inventory"]:
-        changed_names = sorted(set(inventory) ^ set(last["inventory"]))
+    before = [p for p in last["inventory"] if not _is_cache(p)]  # rounds before 1.11.1 pinned caches
+    if inventory != before:
+        changed_names = sorted(set(inventory) ^ set(before))
         return "STALE", _dcio.EXIT_TIMEOUT, ["filenames changed since review: "
                                              + ", ".join(changed_names[:5])]
     missing = _introduced_unreviewed(rv, milestone, inventory)
@@ -528,7 +530,7 @@ def verdict(root: Path, data: dict, milestone: str) -> tuple[str, int, list[str]
     stamp: dict = {}
     for r in done:
         stamp.update(r.get("stamp") or {})
-    moved = [p for p, h in stamp.items() if _hash(root, p) != h]
+    moved = [p for p, h in stamp.items() if not _is_cache(p) and _hash(root, p) != h]
     if moved:
         return "STALE", _dcio.EXIT_TIMEOUT, ["changed since review: " + ", ".join(moved[:5])
                                              + (f" (+{len(moved) - 5})" if len(moved) > 5 else "")]
