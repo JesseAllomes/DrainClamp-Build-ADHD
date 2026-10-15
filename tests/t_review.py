@@ -796,6 +796,34 @@ rv(tb, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-"
 rc, out = rv(tb, "scope", "--round", "R1")
 check("a stray edit to a TRACKED file under build/ is a SCOPE-BREACH", rc == 4 and "build/gen.py" in out, out)
 
+# -- .NET build output (bin/, obj/) rewritten by a build after the fix: no breach -----------------
+nb = fixing_repo("dotnet-bin", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+(nb / ".gitignore").write_text("bin/\nobj/\n", encoding="utf-8")
+for d in ("src/App/bin/Debug", "src/App/obj/Debug"):
+    (nb / d).mkdir(parents=True)
+    (nb / d / "App.dll").write_bytes(b"built before the fix")
+rv(nb, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+check("the snapshot does not pin .NET bin/ and obj/ output",
+      not any(k.startswith("src/App/") for k in (side(nb)["rounds"][0]["fix"].get("ignored") or {})),
+      side(nb)["rounds"][0]["fix"].get("ignored"))
+(nb / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+for d in ("src/App/bin/Debug", "src/App/obj/Debug"):
+    (nb / d / "App.dll").write_bytes(b"rebuilt after the fix")
+rc, out = rv(nb, "scope", "--round", "R1")
+check(".NET bin/ and obj/ rewritten by a build after the fix are no breach", rc == 0 and "scope ok: 1 file(s)" in out, out)
+
+# -- a snapshot pinned before a cache rule existed: those entries are not a breach -----------------
+ob = fixing_repo("old-snapshot", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rv(ob, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+def _pin_old(data):
+    data["review"]["rounds"][0]["fix"].setdefault("ignored", {})["src/App/bin/Debug/App.dll"] = "1:1"
+    return data
+dc_project.mutate(ob / ".agent", _pin_old)
+(ob / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+rc, out = rv(ob, "scope", "--round", "R1")
+check("a cache path pinned by an older snapshot is no breach once it counts as a cache",
+      rc == 0 and "scope ok: 1 file(s)" in out, out)
+
 # -- files left out at the packet cap are not reviewed -------------------------------------------
 lo = make_repo("left-out")
 for n in range(4):

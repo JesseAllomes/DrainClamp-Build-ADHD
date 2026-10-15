@@ -998,7 +998,7 @@ def snapshot(root: Path, rnd: dict, fid: str, allow: list[str]) -> dict:
 # a fixer has no reason to. Everything else gitignored is watched.
 CACHE_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
                ".hypothesis", ".cache", ".gradle", ".next", ".turbo", ".parcel-cache",
-               "htmlcov", "build", "dist", "target"}
+               "htmlcov", "build", "dist", "target", "bin", "obj"}  # bin/obj: .NET build output
 OUTPUT_FILES = {".coverage", "coverage.xml"}  # test-run output, rewritten by every run
 IGNORED_CAP = 20000
 
@@ -1055,7 +1055,7 @@ def scope_check(root: Path, fix: dict) -> tuple[list[str], list[str]]:
     if now is None:
         fix["ignored_partial"] = "ignored" in fix   # a pre-1.9.0 fix never pinned them
     else:
-        before = fix["ignored"]
+        before = {p: v for p, v in fix["ignored"].items() if not _is_cache(p)}  # snapshots may predate a cache rule
         modified = sorted(set(modified) | {p for p in set(now) | set(before)
                                            if now.get(p) != before.get(p) and p not in candidates})
     allowed = {p for paths in fix["allow"].values() for p in paths}
