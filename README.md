@@ -113,6 +113,7 @@ is unignored you get one warning and nothing else.
 | `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never indexes a temp-directory repo, never trusts a corrupt file |
 | `dc_session.py` | Gate S: the project menu, plus `--complete` and `--reopen` |
 | `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
+| `dc_skills.py` | Domain skills: lists skills from the repos in `skill_sources` (config.json), read from the published ref with `git show`; `set` marks the ones a project needs; `show` loads one. A project with none marked never loads one |
 | `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok; `--project` attributes Claude and Codex tokens to chunks and milestones. Aggregates only, never transcript text |
 | `dc_audit.py` | Gate 0: five-part freshness test, depth-2 rollups, stack, dead-code candidates |
 | `dc_review.py` | Gate 6: review packet, citation check, dedupe, suppression, agent cap, fixer scope, roadmap guard |

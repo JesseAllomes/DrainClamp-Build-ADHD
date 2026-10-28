@@ -70,6 +70,9 @@ it is `STALE`, and it refuses while findings block or a round is open.
 3. **Finders, in parallel, in one message.** Register each run, then spawn. The prompt stays this
    short, because the agent definition carries the method and a stable prompt caches:
    `Gate 6 review. Packet: .agent/review/R1/packet.md. Lens: A (correctness). Output JSON lines only.`
+   When the project marks domain skills, save each first (`dc_skills.py show <name> >
+   .agent/review/R1/skill-<name>.md`) and append `Domain rules: <those paths>.` to the critic and
+   checker prompts, so domain errors count as defects.
 4. **Ingest each result verbatim:** `dc_review.py ingest --round R1 --role critic-a --file -`
    (stdin heredoc). On Claude Code pass `--from-transcript <agent id>` instead of `--file -`: the
    script reads the reply from the subagent's transcript, so it never passes through your output.

@@ -259,8 +259,9 @@ def target_lines(chunk: dict, root: Path) -> list[str]:
             + ["  " + read_hint(t, root) for t in targets[:3]])
 
 
-def capsule(root: Path, data: dict) -> list[str]:
+def capsule(root: Path, data: dict, home: str | None = None) -> list[str]:
     """The resume view: what to do next and what to read, nothing else."""
+    import dc_skills  # imports this module; loaded late to avoid the cycle
     rows = roadmap(root)
     done_rows = sum(1 for r in rows if r["status"] == "done")
     ms = current_milestone(rows)
@@ -296,6 +297,8 @@ def capsule(root: Path, data: dict) -> list[str]:
     last = [c for c in chunks if c.get("done")]
     if last:
         lines.append(f"Last done: {last[-1]['id']} - {_clip(last[-1].get('note') or last[-1]['goal'])}")
+    if skills := dc_skills.capsule_line(data, home):
+        lines.append(skills)
     errs = [e for e in data["errors"] if e.get("status") != "fixed"]
     todos = sum(1 for t in data["todos"] if not t.get("done"))
     lines.append(f"Open errors: {len(errs)} | open to-dos: {todos}")
@@ -786,7 +789,7 @@ def main() -> int:
         return _dcio.EXIT_OK
 
     if args.cmd == "next":
-        print("\n".join(capsule(root, load(agent))))
+        print("\n".join(capsule(root, load(agent), args.home)))
         return _dcio.EXIT_OK
     if args.cmd == "charter":
         print("\n".join(charter_view(load_charter(agent))))

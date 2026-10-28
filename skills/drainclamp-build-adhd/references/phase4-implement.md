@@ -12,6 +12,11 @@ dc_project.py time touch  # opens or extends the build-time session
 The capsule replaces rereading the log or earlier chunk notes. When it says `No chunks yet`, split
 the milestone first (Gate 2, "Chunking the active milestone").
 
+When the capsule names `Skills:`, load each one once per session with `dc_skills.py show <name>`
+(add `--fetch` on the first load of the day) before editing code in its domain, and follow it over
+your own reading of that domain. Its other files load with `--file <path>` only when it points to
+them. Never load a skill the project has not marked.
+
 ## Loop (once per chunk)
 
 1. **Read the chunk's targets only.** Use the read hints the capsule prints. Anything outside the

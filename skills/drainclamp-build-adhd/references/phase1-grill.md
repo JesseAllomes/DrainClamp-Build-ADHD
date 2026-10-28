@@ -29,6 +29,15 @@ dc_project.py charter
   `DC:VERIFY` and its allowlist.
 - `CHARTER: none` or `invalid, ignored` means run Gate 1 as usual.
 
+## Domain skills
+
+When `dc_project.py next` says `Skills: not marked`, run `dc_skills.py list --fetch` and ask once
+which listed skills this project needs (a numbered multi-select, plus "none"). Propose only skills
+whose description matches the project's purpose or code; record the answer with
+`dc_skills.py set --skills a,b` or `dc_skills.py set --none`. The sources are the user's own
+skill repositories in `~/.drainclamp/config.json`, read from the published ref (`origin/main` by
+default), never a local working copy. Ask again only when the project's scope changes.
+
 ## Examples
 
 - **Ask**: must this existing API stay backward compatible? Two answers, two different
