@@ -1673,6 +1673,9 @@ def main() -> int:
         text = _read_input(args.file).strip()
         if not text:
             raise DcError("empty ticket")
+        if len(text) > TICKET_CAP:  # a ticket cut short reaches the fixer half-written
+            raise DcError(f"ticket {args.id} is {len(text)} characters; the cap is {TICKET_CAP}. "
+                          "Nothing stored: split it into smaller tickets (one per finding, tests in their own)")
         allow = [_rel(root, p) for p in args.allow.split(";") if p.strip()]
         if not allow:
             raise DcError("--allow names no file")
@@ -1682,7 +1685,7 @@ def main() -> int:
             f = _finding(rv, args.id)
             if f["status"] != "fixing":
                 raise DcError(f"{args.id} is {f['status']}; the user must decide `fix` first")
-            f["ticket"] = text[:TICKET_CAP]
+            f["ticket"] = text
             f["ticket_round"] = rnd["id"]
             fix = snapshot(root, rnd, args.id, allow)
             if not fix.get("guard"):

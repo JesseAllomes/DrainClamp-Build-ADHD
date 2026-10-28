@@ -581,6 +581,16 @@ check("skip refuses an empty change set instead of stamping nothing",
       rc != 0 and "no changed files" in out and not side(sc)["rounds"], out)
 
 
+# -- a ticket over the cap is refused, never stored cut short ---------------------------------------
+lt = fixing_repo("long-ticket", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+long_text = "TICKET r1\n" + "CHANGE: x\n" * (dc_review.TICKET_CAP // 10) + "DONE WHEN: the last line arrives\n"
+rc, out = rv(lt, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin=long_text)
+r1 = next(f for f in side(lt)["findings"] if f["id"] == "r1")
+check("a ticket over the cap is refused with a split hint and nothing is stored",
+      rc != 0 and "split" in out and not r1.get("ticket") and not (side(lt)["rounds"][0].get("fix") or {}).get("allow"), (rc, out))
+rc, out = rv(lt, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+check("a ticket at or under the cap is still stored", rc == 0 and "stored" in out, out)
+
 # -- scope names a ticket whose files did not change -----------------------------------------------
 bl = fixing_repo("blocked", finding("loop stops one item early", "for i in range(len(items) - 1):"))
 rv(bl, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
