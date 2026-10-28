@@ -185,7 +185,7 @@ def main() -> int:
         sys.stdout.write(_git(skill["repo"], "show", f"{skill['ref']}:{path}"))
         return _dcio.EXIT_OK
 
-    root = _dcio.repo_root(args.root)
+    root = _dcio.project_root(args.root)
     agent = root / _dcio.AGENT_DIR_NAME
     if args.cmd == "list":
         skills, warns = available(args.home, args.fetch)

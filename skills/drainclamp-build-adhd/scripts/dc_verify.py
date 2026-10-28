@@ -660,7 +660,7 @@ def main() -> int:
                         help="run a tier with no DrainClamp state on disk (standalone use)")
     args = parser.parse_args()
 
-    root = _dcio.repo_root(args.root)
+    root = _dcio.project_root(args.root)
     agent = _dcio.agent_dir(root)
 
     if args.record_id:

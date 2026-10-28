@@ -369,7 +369,7 @@ def main() -> int:
     if args.root_flag is not None and args.root is not None:
         raise DcError("give the root once: positionally or as --root, not both")
 
-    root = _dcio.repo_root(args.root_flag or args.root)
+    root = _dcio.project_root(args.root_flag or args.root)
 
     if args.no_refresh:
         header, records = load_cache(cache_path(root))

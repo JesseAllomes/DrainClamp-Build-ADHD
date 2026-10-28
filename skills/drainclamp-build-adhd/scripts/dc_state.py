@@ -863,7 +863,7 @@ def main() -> int:
                         help="actually write; without it the block is only shown")
     args = parser.parse_args()
 
-    root = _dcio.repo_root(args.root)
+    root = _dcio.project_root(args.root)
     if args.resume_view:
         if args.section or args.source or args.log_entry or args.promote_to_agents or args.purge_check or args.show or args.confirm:
             parser.error("--resume-view cannot be combined with another action")
@@ -877,6 +877,8 @@ def main() -> int:
     agent = _dcio.agent_dir(root)
     state_path = agent / _dcio.STATE_NAME
     warn_unignored(root, agent)
+    if args.section or args.log_entry:
+        _dcio.ensure_project_marker(root)  # Gate 2: group repos only
 
     if args.section:
         if not args.source:

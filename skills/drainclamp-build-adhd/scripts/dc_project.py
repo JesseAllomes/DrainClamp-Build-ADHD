@@ -769,7 +769,7 @@ def main() -> int:
               "(git repo, state, charter, sidecar; registered).")
         print("Next: open that folder and run /drainclamp-build-adhd.")
         return _dcio.EXIT_OK
-    root = _dcio.repo_root(args.root)
+    root = _dcio.project_root(args.root)
     if args.cmd in ("complete", "reopen"):
         status = "complete" if args.cmd == "complete" else "active"
         set_lifecycle(root, status, args.home, args.note)
