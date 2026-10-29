@@ -1008,6 +1008,390 @@ def commit_step(root: Path, mid: str, cid: str = "", verified: bool = False,
 
 # -- CLI ---------------------------------------------------------------------
 
+# -- G7 new-project intake -----------------------------------------------------
+# The question flow is model behaviour (references/phase1-grill.md). This block does the
+# deterministic parts: whether intake runs, the card, the open Blocking/Shaping items,
+# the ~N estimate, the caps, the discovery m0 fallback and the charter write.
+
+INTAKE_NAME = "intake.json"
+INTAKE_CAPS = {"build": 8, "quick": 3}
+SHAPING_ROOM = 3     # Shaping questions are asked only while fewer than this many were asked
+QUICK_ITEMS = ("1", "3", "6")   # quick tier: Problem, MVP | Out, Success only
+# key, label, class, card question, recommended default, alternative
+INTAKE_ITEMS = (
+    ("1", "Problem", "blocking", "what problem, and today's workaround (time x runs a year)?",
+     "state the problem in one line and time the manual workaround", "describe it later in discovery"),
+    ("2", "User", "shaping", "who uses it and what do they get?",
+     "the requester is the only user", "name another user"),
+    ("3", "MVP", "shaping", "first milestone | out of scope?",
+     "smallest end-to-end slice | everything else", "list what is out"),
+    ("4", "Inputs", "blocking", "systems, files, APIs: where, and is access held?",
+     "use the sources already named in the request, access held", "access still to be arranged"),
+    ("5", "Limits", "blocking", "data that never leaves, approvals, deadline, budget?",
+     "no data leaves the machine, no approvals needed, no deadline", "name a limit"),
+    ("6", "Success", "blocking", "one SMART measure a check or named manual step can prove?",
+     "one DC:VERIFY command exits 0 on a sample input", "a named manual acceptance step"),
+    ("7", "Risk", "shaping", "main risk and the manual fallback?",
+     "bad output; fall back to the manual process", "name another risk"),
+)
+INTAKE_TRIGGERS = {  # flag -> (class, label, question, recommended default)
+    "live-write": ("blocking", "Live write", "which live system is written, and how is a wrong write undone?",
+                   "write only to a test copy first; keep a backup to roll back"),
+    "personal-data": ("blocking", "Personal data", "which personal data is touched, and where may it be stored?",
+                      "keep it local; store no more than needed"),
+    "multi-system": ("blocking", "Systems", "which system wins when the integrated systems disagree?",
+                     "the system of record wins; flag differences"),
+    "no-access": ("blocking", "Access", "who grants the missing API access, and by when?",
+                  "request access now; build against a stub meanwhile"),
+    "unverifiable": ("blocking", "Verifiable", "what observable check proves it works?",
+                     "a sample input with a known expected output"),
+    "long-mvp": ("shaping", "Split", "the MVP is over a week: which part ships first?",
+                 "ship the first milestone alone"),
+    "contradiction": ("blocking", "Conflict", "two answers conflict: which one holds?",
+                      "the later answer holds"),
+}
+PREMORTEM = "If this fails in 3 months, what most likely caused it?"
+VAGUE = {"", "?", "idk", "dunno", "unsure", "maybe", "whatever", "tbd", "not sure", "dont know",
+         "don't know", "no idea", "anything", "any"}
+
+
+def _s(v) -> str:
+    return str(v or "").strip()
+
+
+def intake_needed(root: Path, agent: Path) -> bool:
+    """New project: no state file, or a charter whose purpose or success is blank."""
+    done = _dcio.read_text(agent / INTAKE_NAME)
+    if done and '"written": true' in done:
+        return False
+    if not (agent / _dcio.STATE_NAME).is_file():
+        return True
+    c = load_charter(agent)
+    return isinstance(c, dict) and not (_s(c.get("purpose")) and _s(c.get("success")))
+
+
+def _charter_filled(c: dict) -> dict:
+    sc = _s(c.get("milestones")) or any(isinstance(r, dict) and _s(r.get("feature"))
+                                         for r in (c.get("scope") or []))
+    return {"1": bool(_s(c.get("purpose"))), "2": bool(_s(c.get("stakeholders")) or _s(c.get("sponsor"))),
+            "3": bool(sc and _s(c.get("out_of_scope"))), "4": bool(c.get("data")),
+            "5": any(_s(c.get(k)) for k in ("security", "never", "approvals", "retention")),
+            "6": bool(_s(c.get("success"))),
+            "7": any(isinstance(r, dict) and _s(r.get("risk")) for r in (c.get("risks") or []))}
+
+
+def _new_item(label, cls, q, rec, alt, src=None) -> dict:
+    return {"label": label, "cls": cls, "q": q, "rec": rec, "alt": alt, "ans": None,
+            "src": src, "reasked": 0, "disc": False}
+
+
+def intake_session(agent: Path, tier: str = "build") -> dict:
+    text = _dcio.read_text(agent / INTAKE_NAME)
+    if text:
+        try:
+            s = json.loads(text)
+            if isinstance(s, dict) and isinstance(s.get("items"), dict):
+                return s
+        except ValueError:
+            pass
+    c = load_charter(agent)
+    filled = _charter_filled(c if isinstance(c, dict) else {})
+    items = {}
+    for key, label, cls, q, rec, alt in INTAKE_ITEMS:
+        if tier == "quick":
+            cls = "blocking" if key in QUICK_ITEMS else "skip"
+        items[key] = _new_item(label, cls, q, rec, alt, "charter" if filled[key] else None)
+    return {"tier": tier, "items": items, "asked": 0, "cur": None, "flags": [],
+            "done": False, "n_extra": 0, "discovery": []}
+
+
+def _save_intake(agent: Path, s: dict) -> None:
+    _dcio.atomic_write(agent / INTAKE_NAME, json.dumps(s, indent=2, sort_keys=True) + "\n")
+
+
+def _order(s: dict) -> list[str]:
+    return [i[0] for i in INTAKE_ITEMS] + [k for k in s["items"] if k.startswith("x")] + ["pm"]
+
+
+def _resolved(it: dict) -> bool:
+    return it["src"] is not None or it["disc"]
+
+
+def _open(s: dict, cls: str) -> list[str]:
+    return [k for k in _order(s) if k in s["items"] and s["items"][k]["cls"] == cls
+            and not _resolved(s["items"][k])]
+
+
+def _pm_pending(s: dict) -> bool:
+    return "pm" in s["items"] and not _resolved(s["items"]["pm"])
+
+
+def intake_estimate(s: dict) -> int:
+    """Questions asked so far (the open one included) plus the ones still worth asking."""
+    cur = s["cur"] if s["cur"] in s["items"] and not _resolved(s["items"].get(s["cur"], {"src": 1})) else None
+    blocking = len([k for k in _open(s, "blocking") if k != cur])
+    pm = 1 if _pm_pending(s) and cur != "pm" else 0
+    shaping = len([k for k in _open(s, "shaping") if k != cur]) if s["tier"] == "build" else 0
+    room = max(0, SHAPING_ROOM - s["asked"] - blocking - pm)
+    return min(s["asked"] + blocking + pm + min(shaping, room), INTAKE_CAPS[s["tier"]])
+
+
+def _short(text, n: int = 56) -> str:
+    text = " ".join(_s(text).split())
+    return text if len(text) <= n else text[:n - 3] + "..."
+
+
+def intake_card(s: dict, header: str) -> list[str]:
+    out = [header]
+    for key, label, *_ in INTAKE_ITEMS:
+        it = s["items"][key]
+        if it["cls"] == "skip" and it["src"] is None:
+            state = "skipped (quick)"
+        elif it["disc"]:
+            state = f"? {_short(it['q'])} (m0 discovery)"
+        elif it["src"] is None:
+            state = f"? {_short(it['q'])}"
+        elif it["src"] == "charter":
+            state = "filled"
+        elif it["src"] == "assumed":
+            state = f"assumed: {_short(it['ans'])}"
+        else:
+            state = f"filled: {_short(it['ans'])}"
+        out.append(f"{key} {label}: {state}")
+    return out
+
+
+def _qtext(it: dict) -> str:
+    return it["q"] if it["label"] in ("Pre-mortem",) else f"{it['label']}: {it['q']}"
+
+
+def _pick_next(s: dict) -> str | None:
+    blocking = _open(s, "blocking")
+    if blocking:
+        return blocking[0]
+    if _pm_pending(s):
+        return "pm"
+    if s["tier"] == "build" and s["asked"] < SHAPING_ROOM:
+        shaping = _open(s, "shaping")
+        if shaping:
+            return shaping[0]
+    return None
+
+
+FINAL = "INTAKE: final card - ok, or what to change (then: intake ok)"
+
+
+def _finish(s: dict, capped: bool) -> list[str]:
+    """Close the intake: unresolved Blocking -> m0 discovery, Shaping -> assumed defaults."""
+    disc = []
+    for k in _order(s):
+        it = s["items"].get(k)
+        if not it or _resolved(it) or it["cls"] == "skip":
+            continue
+        if it["cls"] == "blocking":
+            if capped:
+                it["disc"] = True
+                disc.append(_qtext(it))
+        elif it["cls"] == "shaping":
+            it["ans"], it["src"] = it["rec"], "assumed"
+    s["cur"], s["done"], s["discovery"] = None, True, disc
+    head = [f"INTAKE: cap {INTAKE_CAPS[s['tier']]} reached; m0 " + intake_m0(disc)] if disc else []
+    return head + intake_card(s, FINAL)
+
+
+def intake_m0(disc: list[str]) -> str:
+    return "discovery - answer by probing or a spike, not chat: " + " | ".join(disc)
+
+
+def intake_turn(s: dict) -> list[str]:
+    """The next question turn (<= 3 lines), or the final card when nothing is open."""
+    cur = s["cur"]
+    if cur and cur in s["items"] and not _resolved(s["items"][cur]):
+        key = cur
+    else:
+        key = _pick_next(s)
+        if key is None:
+            return _finish(s, False)
+        if s["asked"] >= INTAKE_CAPS[s["tier"]]:
+            return _finish(s, True)
+        s["asked"] += 1
+        s["cur"] = key
+    it = s["items"][key]
+    n = max(intake_estimate(s), s["asked"])
+    q = it["q"] if key == "pm" else _qtext(it)
+    return [f"Q{s['asked']} of ~{n} · {q} 1) {it['rec']} (recommended) 2) {it['alt']} 3) other",
+            "Reply 1, 2, text, default or rest."]
+
+
+def intake_record(s: dict, key: str, text: str, source: str) -> list[str]:
+    if key not in s["items"]:
+        raise DcError(f"unknown intake item {key}")
+    it = s["items"][key]
+    t = _s(text)
+    if t in ("1", "2") and source == "user":
+        t = it["rec"] if t == "1" else it["alt"]
+    elif t.lower().strip(" .!") in VAGUE and source == "user" and it["cls"] == "blocking":
+        if it["reasked"] < 1:
+            it["reasked"] = 1
+            s["cur"] = key
+            return [f"Pick one for {it['label']}: 1) {it['rec']} (recommended) 2) {it['alt']} "
+                    "3) leave it for discovery"]
+        t, source = it["rec"], "assumed"
+    it["ans"], it["src"], it["disc"] = t, source, False
+    if s["cur"] == key:
+        s["cur"] = None
+    return intake_turn(s)
+
+
+def intake_flag(s: dict, name: str) -> list[str]:
+    if name not in INTAKE_TRIGGERS:
+        raise DcError(f"unknown trigger {name}; one of {', '.join(INTAKE_TRIGGERS)}")
+    if name in s["flags"]:
+        return [f"INTAKE: {name} already queued."]
+    s["flags"].append(name)
+    cls, label, q, rec = INTAKE_TRIGGERS[name]
+    if name == "live-write" and s["tier"] == "build":
+        s["items"].setdefault("pm", _new_item("Pre-mortem", "blocking", PREMORTEM,
+                                              "stale input data", "a manual step skipped"))
+    s["n_extra"] += 1
+    s["items"][f"x{s['n_extra']}"] = _new_item(label, cls, q, rec, "answer in discovery")
+    return [f"INTAKE: trigger {name} queued a {cls} question. Open blocking "
+            f"{len(_open(s, 'blocking'))}, ~{intake_estimate(s)} questions."]
+
+
+def intake_add(s: dict, text: str, cls: str) -> list[str]:
+    if cls not in ("blocking", "shaping", "cosmetic"):
+        raise DcError("class must be blocking, shaping or cosmetic")
+    s["n_extra"] += 1
+    key = f"x{s['n_extra']}"
+    it = _new_item("Extra", cls, _s(text), "follow the repo convention", "answer in discovery")
+    s["items"][key] = it
+    if cls == "cosmetic":
+        it["cls"], it["ans"], it["src"] = "shaping", "follow the repo convention", "repo"
+        return [f"INTAKE: cosmetic, not asked: {_short(text)} -> follow the repo convention."]
+    return [f"INTAKE: queued {cls} question {key}. Open blocking {len(_open(s, 'blocking'))}, "
+            f"~{intake_estimate(s)} questions."]
+
+
+def intake_write(root: Path, agent: Path, s: dict, name: str = "") -> list[str]:
+    """Write the answers through the charter schema; return the DC:DECISIONS lines."""
+    if not s["done"]:
+        if _open(s, "blocking") or _pm_pending(s):
+            raise DcError("Blocking items are still open; run `intake next`, or `intake rest`")
+        _finish(s, False)
+    path = agent / CHARTER_NAME
+    raw_file = {}
+    text = _dcio.read_text(path)
+    if text:
+        try:
+            raw_file = json.loads(text)
+        except ValueError:
+            raw_file = {}
+    c = dict(raw_file.get("charter") or {}) if isinstance(raw_file, dict) else {}
+    it = s["items"]
+
+    def ans(k):
+        v = it.get(k)
+        return v["ans"] if v and v["src"] not in (None, "charter") and v["ans"] else None
+
+    if ans("1"):
+        c["purpose"] = ans("1")
+    if ans("2"):
+        c["stakeholders"] = ans("2")
+    if ans("3"):
+        mvp, _, out = ans("3").partition("|")
+        if mvp.strip():
+            c["milestones"] = (mvp.strip() + "\n" + _s(c.get("milestones"))).strip()
+        if out.strip():
+            c["out_of_scope"] = out.strip()
+    if ans("4"):
+        c["data"] = [d.strip() for d in re.split(r"[;\n]", ans("4")) if d.strip()]
+    if ans("5"):
+        c["security"] = ans("5")
+    if ans("6"):
+        c["success"] = ans("6")
+        c["acceptance"] = _s(c.get("acceptance")) or ans("6")
+    risks = list(c.get("risks") or [])
+    for k in ("7", "pm"):
+        if ans(k):
+            risks.append({"risk": ans(k), "likelihood": "Med", "impact": "Med",
+                          "guardrail": "manual fallback" if k == "7" else ""})
+    if risks:
+        c["risks"] = risks
+    extra = [f"{_short(v['q'], 80)} -> {v['ans']}" for k, v in it.items()
+             if k.startswith("x") and v["src"] and v["ans"]]
+    if extra:
+        c["assumptions"] = "\n".join(([_s(c.get("assumptions"))] if _s(c.get("assumptions")) else [])
+                                     + extra)
+    if s.get("discovery"):
+        c["milestones"] = (f"m0 {intake_m0(s['discovery'])}\n" + _s(c.get("milestones"))).strip()
+    c["name"] = _s(c.get("name")) or _s(name) or root.name
+    clean = clean_charter(c)
+    _dcio.atomic_write(path, json.dumps(
+        {"schema": SCHEMA_VERSION, "created": (raw_file or {}).get("created") or _iso(_now()),
+         "charter": clean}, indent=2, sort_keys=True) + "\n")
+    s["written"] = True
+    lines = []
+    for k in _order(s):
+        v = it.get(k)
+        if not v or v["ans"] is None or v["src"] in (None, "charter"):
+            continue
+        if v["src"] == "user" and v["cls"] != "blocking":
+            continue
+        lines.append(f"{v['q'] if k == 'pm' else _qtext(v)} -> {v['ans']} ({v['src']})")
+    return lines
+
+
+def intake_command(root: Path, agent: Path, args) -> list[str]:
+    op = args.iop
+    words = " ".join(args.words)
+    if op == "start" and not intake_needed(root, agent):
+        return ["INTAKE: skip (resumed project)"]
+    s = intake_session(agent, args.tier)
+    if op == "start":
+        blocking = _open(s, "blocking")
+        head = (f"INTAKE: card ({s['tier']}); {len(blocking)} blocking open, "
+                f"~{intake_estimate(s)} questions; run `intake next`" if blocking else
+                "INTAKE: card, nothing blocking open - ok, or what to change (then: intake ok)")
+        out = intake_card(s, head)
+    elif op == "next":
+        out = intake_turn(s)
+    elif op == "answer":
+        key, _, text = words.partition(" ")
+        out = intake_record(s, key, text, args.source)
+    elif op == "default":
+        key = s["cur"]
+        if not key:
+            raise DcError("no question is open; run `intake next`")
+        out = intake_record(s, key, s["items"][key]["rec"], "assumed")
+    elif op == "rest":
+        for k in _order(s):
+            v = s["items"].get(k)
+            if v and not _resolved(v) and v["cls"] != "skip" and k != "pm":
+                v["ans"], v["src"] = v["rec"], "assumed"
+        s["cur"], s["done"], s["discovery"] = None, True, []
+        out = intake_card(s, FINAL)
+    elif op == "rec":
+        key, _, text = words.partition(" ")
+        if key not in s["items"] or not text.strip():
+            raise DcError("usage: intake rec ITEM TEXT")
+        s["items"][key]["rec"] = text.strip()
+        out = [f"INTAKE: recommended default for {key} set."]
+    elif op == "flag":
+        out = intake_flag(s, words)
+    elif op == "add":
+        out = intake_add(s, words, args.cls)
+    elif op == "ok":
+        decisions = intake_write(root, agent, s, args.name)
+        _save_intake(agent, s)
+        return (["INTAKE: charter written (.agent/charter.json). Gate 2 DC:DECISIONS:"]
+                + (decisions or ["no open questions"]))
+    else:
+        raise DcError(f"unknown intake op {op}")
+    _save_intake(agent, s)
+    return out
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dc_project.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1104,6 +1488,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="treat the repo as review-required even without CODEOWNERS")
     cf.add_argument("--verify-cmd", help="command for the clean-tree check")
 
+    ik = sub.add_parser("intake", help="G7 new-project intake: card, questions, caps, charter write")
+    ik.add_argument("iop", nargs="?", default="start",
+                    choices=("start", "next", "answer", "default", "rest", "rec", "flag", "add", "ok"))
+    ik.add_argument("words", nargs="*", help="answer: ITEM TEXT; flag: trigger; add: question; rec: text")
+    ik.add_argument("--tier", choices=("build", "quick"), default="build")
+    ik.add_argument("--source", choices=("user", "assumed", "repo"), default="user")
+    ik.add_argument("--class", dest="cls", default="shaping")
+    ik.add_argument("--name", default="")
     cr = sub.add_parser("create", help="new project folder from a charter JSON file")
     cr.add_argument("--charter", required=True, help="charter JSON (name and purpose required)")
     cr.add_argument("--location", help="one of project_roots in config.json (default: first)")
@@ -1137,6 +1529,9 @@ def main() -> int:
               " Its state file is untouched.")
         return _dcio.EXIT_OK
     agent = root / _dcio.AGENT_DIR_NAME
+    if args.cmd == "intake":
+        print("\n".join(intake_command(root, agent, args)))
+        return _dcio.EXIT_OK
 
     if args.cmd == "summary":
         s = summary(load(agent), args.home)
