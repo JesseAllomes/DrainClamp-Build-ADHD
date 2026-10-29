@@ -106,3 +106,47 @@ chunk in the milestone. It compares their **targets** by path, so two symbols of
 A failed implementation or verification emits **no** Gate 5 terminator and does not mark the
 milestone `done`. It also cannot retroactively unsay an earlier gate's success sentence — Gate 2
 correctly reported what it did at the time.
+
+## Compact advice
+
+At the end of a **completed step**, print one line after the Done / In progress / Next block:
+`Compact: safe (state saved)` or `Compact: not yet: <reason>`. A completed step is a chunk done, a
+milestone closed, a publish, deploy or release finished, or a hand-off written. Never print it
+mid-step, on a question, or on every reply. At a milestone boundary Gate 5's own purge lines
+(section 2 and "Chunk boundaries") count as this line: do not print both.
+
+Take the verdict from the script, not from memory:
+
+```
+dc_state.py --root R --compact-check
+```
+
+It prints `COMPACT: safe` (exit 0) or `COMPACT: not safe: <first failing check>` (exit 2). Checks, in
+order: state file saved at its current generation (no write or lock pending); the last `DC:LOG` entry
+is newer than the last edit of any changed file outside `.agent/` (`2 edited files not logged`); no
+open `dc_review.py` round and no uncommitted Gate 6 fix; no background work you started still
+running; no question to the user whose answer is not on disk. Say `Compact: not yet: <reason>` with
+that reason; say `Compact: safe (state saved)` only on `safe`.
+
+The script cannot see host processes or the conversation, so the last two checks read a small record
+you keep in `.agent/drainclamp-compact.json`:
+
+```
+dc_state.py --root R --running add NAME     # before starting a background agent or long command
+dc_state.py --root R --running done NAME    # when it has finished and its result is saved
+dc_state.py --root R --pending-question set    # before asking the user something that blocks work
+dc_state.py --root R --pending-question clear  # once the answer is written to state or a file
+```
+
+You never run `/compact` yourself and never say you did; the user runs it.
+
+### Idle reminder (opt-in, off by default)
+
+`dc_install.py --compact-reminder [on|off]` adds or removes a Claude Code Notification hook
+(matcher `idle_prompt`) in `~/.claude/settings.json` (or `CLAUDE_CONFIG_DIR`). When the user has been
+idle and `--compact-check` says safe, it shows "DrainClamp: safe to compact"; it never runs
+`/compact`. Install and removal are idempotent and keep every other settings key.
+
+Delay: Claude Code fires `idle_prompt` about 60 seconds after a reply and only if the user has not
+typed (Claude Code hooks reference). No setting or variable for that delay is documented, so the
+3 minute target cannot be set; the install output states the 60 seconds.

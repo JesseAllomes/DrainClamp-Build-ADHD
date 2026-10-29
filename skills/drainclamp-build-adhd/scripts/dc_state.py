@@ -883,6 +883,111 @@ def mark_rows(raw: str, marks: dict[str, str]) -> str:
     return "\n".join(out)
 
 
+COMPACT_NAME = "drainclamp-compact.json"
+LOG_STAMP = re.compile(r"^-\s+(\d{4}-\d{2}-\d{2}T\S+)")
+
+
+def compact_record(agent: Path) -> dict:
+    """The agent's own record of background work and a pending question."""
+    try:
+        data = json.loads(_dcio.read_text(agent / COMPACT_NAME) or "{}")
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    running = data.get("running") if isinstance(data.get("running"), list) else []
+    return {"running": [str(r) for r in running], "pending_question": bool(data.get("pending_question"))}
+
+
+def compact_record_update(agent: Path, running: tuple[str, str] | None,
+                          question: str | None) -> dict:
+    """--running add|done NAME and --pending-question set|clear; both small, both idempotent."""
+    with _dcio.FileLock(agent, name="drainclamp-compact.lock"):
+        rec = compact_record(agent)
+        if running:
+            verb, name = running
+            names = [n for n in rec["running"] if n != name]
+            rec["running"] = names + [name] if verb == "add" else names
+        if question:
+            rec["pending_question"] = question == "set"
+        _dcio.atomic_write(agent / COMPACT_NAME, json.dumps(rec, indent=2) + "\n")
+    return rec
+
+
+def _git_names(root: Path, *args: str) -> list[str]:
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-c", "core.quotepath=off", *args], cwd=root,
+                             capture_output=True, text=True, encoding="utf-8", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [l for l in out.stdout.splitlines() if l.strip()] if out.returncode == 0 else []
+
+
+def compact_check(root: Path) -> tuple[bool, str]:
+    """Is it safe to /compact now? Returns (safe, reason). Read-only."""
+    agent = root / _dcio.AGENT_DIR_NAME
+    raw = _dcio.read_text(agent / _dcio.STATE_NAME)
+    if raw is None:
+        return False, "state file not saved"
+    try:
+        state = State.parse(raw)
+    except DcError as exc:
+        return False, f"state file does not parse ({exc})"
+    if (agent / _dcio.LOCK_NAME).exists():
+        return False, "state write in progress (lock held)"
+    capsule = _dcio.read_text(agent / RESUME_NAME)
+    if capsule is not None:
+        m = re.search(r"^Generation:\s*(\d+)\s*$", capsule, re.M)
+        if m and int(m.group(1)) != state.generation:
+            return False, "state not at its current generation (interrupted write)"
+    # Edits newer than the last log entry.
+    stamp = None
+    for line in log_lines(state.sections["LOG"]):
+        m = LOG_STAMP.match(line)
+        if m:
+            try:
+                stamp = datetime.fromisoformat(m.group(1))
+            except ValueError:
+                pass
+    changed = set(_git_names(root, "ls-files", "-m", "-o", "--exclude-standard"))
+    changed |= set(_git_names(root, "diff", "--cached", "--name-only", "--relative"))
+    if stamp is not None:
+        changed |= set(_git_names(root, "log", f"--since={stamp.isoformat()}",
+                                  "--name-only", "--format=", "--relative"))
+    unlogged = 0
+    for rel in sorted(changed):
+        if rel.replace("\\", "/").startswith(".agent/"):
+            continue
+        try:
+            mtime = datetime.fromtimestamp((root / rel).stat().st_mtime, timezone.utc)
+        except OSError:
+            continue  # deleted
+        if stamp is None or mtime.replace(microsecond=0) > stamp:  # log stamps are whole seconds
+            unlogged += 1
+    if unlogged:
+        return False, f"{unlogged} edited file{'s' if unlogged != 1 else ''} not logged"
+    # Gate 6.
+    try:
+        data = json.loads(_dcio.read_text(agent / "drainclamp-project.json") or "{}")
+    except ValueError:
+        data = {}
+    review = data.get("review") if isinstance(data, dict) else None
+    if isinstance(review, dict):
+        for r in review.get("rounds") or []:
+            if isinstance(r, dict) and not r.get("finished") and not r.get("aborted"):
+                return False, "Gate 6 round open"
+        for f in review.get("findings") or []:
+            if isinstance(f, dict) and f.get("status") == "fixing":
+                return False, "Gate 6 fix not committed"
+    rec = compact_record(agent)
+    if rec["running"]:
+        return False, f"background work running: {', '.join(rec['running'])}"
+    if rec["pending_question"]:
+        return False, "question to the user pending"
+    return True, ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="dc_state.py", description=__doc__)
     parser.add_argument("--root", default=None)
@@ -902,6 +1007,12 @@ def main() -> int:
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--resume-view", action="store_true",
                         help="read saved state with completed rows and older logs omitted")
+    parser.add_argument("--compact-check", action="store_true",
+                        help="print 'COMPACT: safe' or 'COMPACT: not safe: <reason>'; exit 2 if not safe")
+    parser.add_argument("--running", nargs=2, metavar=("add|done", "NAME"),
+                        help="record background work the session started (or finished)")
+    parser.add_argument("--pending-question", choices=("set", "clear"),
+                        help="record that a question to the user awaits an answer not yet on disk")
     parser.add_argument("--promote-to-agents", action="store_true",
                         help="copy selected DC:DECISIONS constraints into AGENTS.md")
     parser.add_argument("--select", help="comma-separated constraint indexes")
@@ -911,6 +1022,18 @@ def main() -> int:
     args = parser.parse_args()
 
     root = _dcio.project_root(args.root)
+    if args.compact_check:
+        safe, why = compact_check(root)
+        print("COMPACT: safe" if safe else f"COMPACT: not safe: {why}")
+        return _dcio.EXIT_OK if safe else _dcio.EXIT_CHECK_FAILED
+    if args.running or args.pending_question:
+        if args.running and args.running[0] not in ("add", "done"):
+            parser.error("--running takes add|done NAME")
+        compact_record_update(_dcio.agent_dir(root), args.running, args.pending_question)
+        rec = compact_record(root / _dcio.AGENT_DIR_NAME)
+        print(f"compact record: running={','.join(rec['running']) or 'none'} "
+              f"pending_question={'yes' if rec['pending_question'] else 'no'}")
+        return _dcio.EXIT_OK
     if args.resume_view:
         if args.section or args.source or args.log_entry or args.mark or args.close or args.promote_to_agents or args.purge_check or args.show or args.confirm:
             parser.error("--resume-view cannot be combined with another action")
