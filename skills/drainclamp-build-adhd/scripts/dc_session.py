@@ -68,6 +68,21 @@ def row(index: int, entry: dict) -> str:
     return f"({index}) - {label} (last worked {day(entry)}{suffix})"
 
 
+def print_rows(rows: list[dict]) -> None:
+    """Numbered rows, with a group heading above each run of one group's projects.
+
+    Numbers run straight through, so a heading never changes what `--complete N`
+    resolves to. Entries with no group print exactly as before.
+    """
+    group = None
+    for i, entry in enumerate(rows, start=1):
+        if entry.get("group") != group:
+            group = entry.get("group")
+            if group:
+                print(f"  [{group}]")
+        print("  " + ("  " if group else "") + row(i, entry))
+
+
 def menu(home: str | None) -> int:
     active = dc_registry.listing("active", home)
     complete = dc_registry.listing("complete", home)
@@ -75,8 +90,7 @@ def menu(home: str | None) -> int:
     # Every active project is listed: a capped menu made the user re-run with
     # --all to reach a project the cap hid, which is a second question.
     print("DRAINCLAMP: what are you working on now?")
-    for i, entry in enumerate(active, start=1):
-        print("  " + row(i, entry))
+    print_rows(active)
     if not active:
         print("  (no active projects)")
 
@@ -159,8 +173,7 @@ def main() -> int:
             print("DRAINCLAMP: no completed projects.")
             return _dcio.EXIT_OK
         print("DRAINCLAMP: completed projects")
-        for i, entry in enumerate(rows, start=1):
-            print("  " + row(i, entry))
+        print_rows(rows)
         return _dcio.EXIT_OK
 
     if args.json:

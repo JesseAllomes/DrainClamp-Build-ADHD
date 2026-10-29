@@ -30,7 +30,7 @@ def git(cwd, *args):
 
 def run(script, *args, cwd=None):
     proc = subprocess.run([sys.executable, "-B", str(SCRIPTS / script), *args],
-                          cwd=str(cwd) if cwd else None, capture_output=True, text=True)
+                          cwd=str(cwd) if cwd else None, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -183,6 +183,56 @@ check("G2 top-level scan is larger than a project's", dc_audit.scan(g2)["files"]
 # single-project repo: no prefix, same arguments as before
 check("G2 top level has no prefix", _dcio.git_prefix(g2) == "" and _dcio.scope_args("") == [])
 check("G2 prefix uses forward slashes", _dcio.git_prefix(a2 / "src") == "a/src/")
+
+# ---- G3: registry and session menu by project ----------------------------------
+import dc_registry  # noqa: E402
+import dc_session  # noqa: E402
+
+home3 = tempfile.mkdtemp(prefix="dcreg3-")
+os.environ["DRAINCLAMP_HOME"] = home3
+g3 = make_group("g3")
+solo = tmp / "solo3"
+solo.mkdir()
+git(solo, "init", "-q")
+log(g3 / "a", "g3 a first")
+log(solo, "solo first")          # most recent of the three so far
+log(g3 / "b", "g3 b first")      # b is now newest: its group must still stay together
+# second-resolution stamps can tie on a fast host: pin the order a, solo, b (oldest first)
+loaded = dc_registry.load(home3)
+for stamp, folder in (("2026-10-01T00:00:01+00:00", g3 / "a"), ("2026-10-01T00:00:02+00:00", solo),
+                      ("2026-10-01T00:00:03+00:00", g3 / "b")):
+    dc_registry.find(loaded, folder.resolve())["last"] = stamp
+dc_registry.save(loaded, home3)
+reg = dc_registry.load(home3)["projects"]
+by_root = {e["root"]: e for e in reg}
+ea, eb = by_root.get((g3 / "a").as_posix()), by_root.get((g3 / "b").as_posix())
+check("G3 two registry entries, keyed by project root", ea is not None and eb is not None and ea is not eb and len(reg) == 3, [e["root"] for e in reg])
+check("G3 group repo entries carry a group and `group > project` name",
+      ea and ea.get("group") == "g3" and ea["name"] == "g3 \u203a a", ea)
+check("G3 single-project entry has no group and a plain name",
+      by_root[solo.as_posix()].get("group") is None and by_root[solo.as_posix()]["name"] == "solo3")
+rc, out = run("dc_session.py")
+lines = out.splitlines()
+check("G3 menu shows one group heading", out.count("[g3]") == 1, out)
+heading = lines.index("  [g3]")
+check("G3 menu lists both projects under it, numbering continuous",
+      lines[heading + 1].startswith("    (1) - g3 \u203a b") and lines[heading + 2].startswith("    (2) - g3 \u203a a")
+      and lines[heading + 3].startswith("  (3) - solo3"), out)
+rc, out = run("dc_session.py", "--json")
+rows = json.loads(out)["active"]
+check("G3 json listing keeps group clustered", [r["name"] for r in rows] == ["g3 \u203a b", "g3 \u203a a", "solo3"], out)
+rc, out = run("dc_session.py", "--complete", "2")
+check("G3 picking row 2 resolves that project's own entry", rc == 0 and "g3 \u203a a marked complete" in out, out)
+rc, out = run("dc_session.py", "--reopen", "1")
+check("G3 reopen resumes the right project", rc == 0 and (g3 / "a").as_posix() in out, out)
+# a legacy entry keyed by a top-level root keeps working, with no migration
+legacy = tmp / "legacy3"
+legacy.mkdir()
+git(legacy, "init", "-q")
+entry = dc_registry.touch(legacy, home3)
+check("G3 top-level project registers with its plain name", entry["name"] == "legacy3" and "group" not in entry, entry)
+check("G3 a missing group key lists as an ordinary row",
+      dc_registry.cluster_groups([{"root": "x", "name": "x"}, {"root": "y", "name": "y"}])[0]["name"] == "x")
 
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)
