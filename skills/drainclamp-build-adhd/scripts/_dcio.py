@@ -155,6 +155,44 @@ def ensure_project_marker(root: Path) -> None:
         marker.write_bytes(b"")
 
 
+def git_prefix(root: Path) -> str:
+    """`a/` for a project in sub-folder `a` of its repo, `` at the top level or outside git.
+
+    Status and diff output is repo-relative whatever the cwd; this is what to strip
+    to make it project-relative.
+    """
+    try:
+        out = subprocess.run(["git", "rev-parse", "--show-prefix"], cwd=str(root),
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    text = out.stdout.strip().replace("\\", "/") if out.returncode == 0 else ""
+    return text if text.endswith("/") and "\0" not in text else ""  # a prefix always ends in `/`
+
+
+def scope_args(prefix: str) -> list[str]:
+    """Pathspec limiting a git status/diff/log to the project's own folder."""
+    return ["--", "."] if prefix else []
+
+
+def project_path(rel: str, prefix: str) -> str | None:
+    """A repo-relative path made project-relative; None when it is in another project."""
+    if not prefix:
+        return rel
+    return rel[len(prefix):] if rel.startswith(prefix) else None
+
+
+def project_head(root: Path) -> list[str]:
+    """Git args naming the project's own HEAD: the last commit that touched its folder.
+
+    In a group repo a sibling's commit moves HEAD but not this project, so it must
+    not read as a change here. At the top level this is plain `rev-parse HEAD`.
+    """
+    if git_prefix(root):
+        return ["log", "-1", "--format=%H", "--", "."]
+    return ["rev-parse", "HEAD"]
+
+
 def agent_dir(root: Path | None = None) -> Path:
     """`.agent/` under the repo root, created on demand."""
     target = (root or repo_root()) / AGENT_DIR_NAME

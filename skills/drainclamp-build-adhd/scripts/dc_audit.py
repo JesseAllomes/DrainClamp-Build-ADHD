@@ -83,7 +83,7 @@ def git_lines(root: Path, *args: str) -> list[str] | None:
 
 
 def head_commit(root: Path) -> str:
-    lines = git_lines(root, "rev-parse", "HEAD")
+    lines = git_lines(root, *_dcio.project_head(root))
     if not lines:
         return ""  # no git, or a repository with no commits yet
     return lines[0].strip()
@@ -163,7 +163,8 @@ def dirty_fingerprint(root: Path) -> tuple[str, int]:
     byte-for-byte should not invalidate the audit, and `touch` alone should not
     either. Paths are part of the input, so a rename moves the fingerprint.
     """
-    lines = git_lines(root, "status", "--porcelain", "-uall")
+    prefix = _dcio.git_prefix(root)
+    lines = git_lines(root, "status", "--porcelain", "-uall", *_dcio.scope_args(prefix))
     digest = hashlib.sha256()
     digest.update(f"dc-audit-dirty-v{AUDIT_SCHEMA}\n".encode("utf-8"))
 
@@ -184,7 +185,8 @@ def dirty_fingerprint(root: Path) -> tuple[str, int]:
         code, rest = line[:2], line[3:]
         paths = [p.strip().strip('"') for p in rest.split(" -> ")]
         for rel in paths:
-            if not eligible(rel):
+            rel = _dcio.project_path(rel, prefix)
+            if rel is None or not eligible(rel):
                 continue
             target = root / rel
             state = sha_file(target) if target.is_file() else "absent"
@@ -395,7 +397,7 @@ def freshness(cached: dict, current: dict) -> list[str]:
         return ["no cached audit"]
     if cached.get("schema") != AUDIT_SCHEMA:
         return ["audit schema changed"]
-    if cached.get("root") != current["root"]:
+    if cached.get("root") != current["root"] or cached.get("prefix", "") != current.get("prefix", ""):
         return ["canonical root changed"]
 
     reasons: list[str] = []
@@ -528,10 +530,12 @@ def main() -> int:
     configs = config_files(root, allowed)
     dirty_hash, dirty_count = dirty_fingerprint(root)
     verify_hash, verify_entries = verify_block_fingerprint(root)
+    prefix = _dcio.git_prefix(root)
 
     current = {
         "schema": AUDIT_SCHEMA,
         "root": root.as_posix(),
+        **({"prefix": prefix} if prefix else {}),
         "head": head_commit(root),
         "dirty_fingerprint": dirty_hash,
         "dirty_files": dirty_count,

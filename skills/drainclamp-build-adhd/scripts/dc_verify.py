@@ -196,16 +196,19 @@ def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     is available the caller falls back to configured checks rather than guessing
     an empty change set — an empty set would silently verify nothing.
     """
+    prefix = _dcio.git_prefix(root)
+    scope = _dcio.scope_args(prefix)
+    rel_flag = ["--relative"] if prefix else []  # project-relative, siblings excluded
     if base:
         git_ref(base)
-        lines = git_lines(root, "diff", "--name-only", "-z", f"{base}...HEAD")
+        lines = git_lines(root, "diff", "--name-only", *rel_flag, "-z", f"{base}...HEAD", *scope)
         if lines is None:
-            lines = git_lines(root, "diff", "--name-only", "-z", base)
+            lines = git_lines(root, "diff", "--name-only", *rel_flag, "-z", base, *scope)
         if lines is None:
             return [], "unavailable"
         return sorted({ln for ln in lines if ln}), f"base {base}"
 
-    lines = git_lines(root, "status", "--porcelain", "-z", "-uall")
+    lines = git_lines(root, "status", "--porcelain", "-z", "-uall", *scope)
     if lines is None:
         return [], "unavailable"
     found: set[str] = set()
@@ -213,11 +216,13 @@ def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     for line in fields:
         if len(line) < 4:
             continue
-        found.add(line[3:])
+        # Status paths stay repo-relative whatever the cwd; make them project-relative.
+        names = [line[3:]]
         if "R" in line[:2] or "C" in line[:2]:
             source = next(fields, "")
             if source:
-                found.add(source)
+                names.append(source)
+        found.update(p for p in (_dcio.project_path(n, prefix) for n in names) if p)
     return sorted(found), "working tree"
 
 
@@ -228,11 +233,14 @@ def tree_fingerprint(root: Path) -> str | None:
     command. Without this a record kept passing a tier after the code it
     tested had changed. None when git cannot say, so no record can match.
     """
-    head = git_lines(root, "rev-parse", "HEAD")
+    head = git_lines(root, *_dcio.project_head(root))
     changed, how = changed_files(root, None)
     if how == "unavailable":
         return None
     parts = {"head": head[0] if head else "", "files": {}}
+    prefix = _dcio.git_prefix(root)
+    if prefix:
+        parts["prefix"] = prefix  # two projects in one repo never share a record
     for rel in changed:
         if rel == ".agent" or rel.startswith(".agent/"):
             continue

@@ -35,12 +35,13 @@ def run(script, *args, cwd=None):
 
 
 def make_group(name, projects=("a", "b")):
-    """A git repo with one committed source file per sub-folder project."""
+    """A git repo (`.agent/` ignored) with one committed source file per sub-folder project."""
     repo = tmp / name
     repo.mkdir()
     git(repo, "init", "-q")
     git(repo, "config", "user.email", "t@example.com")
     git(repo, "config", "user.name", "t")
+    (repo / ".gitignore").write_text(".agent/\n", encoding="utf-8")
     for p in projects:
         (repo / p / "src").mkdir(parents=True)
         (repo / p / "src" / f"{p}.py").write_text(f"def {p}_fn():\n    return 1\n", encoding="utf-8")
@@ -117,6 +118,71 @@ check("G1 outside git returns start unchanged", _dcio.project_root(loose / "x") 
 # --expect-generation stays per project
 rc, out = log(a, "stale write", "--expect-generation", "0")
 check("G1 expect-generation guard refuses a stale write in a", rc != 0, out.strip()[:80])
+
+# ---- G2: every git query scoped to the project ------------------------------
+import json  # noqa: E402
+import dc_audit  # noqa: E402
+import dc_map  # noqa: E402
+import dc_review  # noqa: E402
+import dc_verify  # noqa: E402
+
+g2 = make_group("g2")
+a2, b2 = g2 / "a", g2 / "b"
+(a2 / "src" / "extra.py").write_text("def extra():\n    return 2\n", encoding="utf-8")
+git(g2, "add", "-A")
+git(g2, "commit", "-q", "-m", "more")
+rc, out = run("dc_audit.py", "--root", str(a2))
+check("G2 audit of a runs", rc == 0, out.strip()[:120])
+cache = json.loads((a2 / ".agent" / "audit.json").read_text(encoding="utf-8"))
+check("G2 audit cache records the prefix", cache.get("prefix") == "a/", cache.get("prefix"))
+check("G2 audit counts only a's files", cache["scan"]["files"] == 2, cache["scan"]["files"])
+head_a = cache["head"]
+
+# uncommitted work in b/ is invisible from a/
+(b2 / "src" / "b.py").write_text("def b_fn():\n    return 99\n", encoding="utf-8")
+(b2 / "src" / "new_b.py").write_text("x = 1\n", encoding="utf-8")
+rc, out = run("dc_audit.py", "--root", str(a2))
+check("G2 sibling edits leave a's audit cache fresh", "CACHE: fresh" in out, out.strip()[:120])
+rc, out = run("dc_audit.py", "--root", str(b2))
+check("G2 b's own audit does see its edits", rc == 0 and "AUDIT: refreshed" in out, out.strip()[:120])
+check("G2 dirty fingerprint of a ignores b",
+      dc_audit.dirty_fingerprint(a2)[1] == 0 and dc_audit.dirty_fingerprint(b2)[1] == 2)
+check("G2 changed_files of a is empty", dc_verify.changed_files(a2, None) == ([], "working tree"),
+      dc_verify.changed_files(a2, None))
+changed_b, _how = dc_verify.changed_files(b2, None)
+check("G2 changed_files of b is project-relative", changed_b == ["src/b.py", "src/new_b.py"], changed_b)
+check("G2 review change set of a is empty", dc_review._changed(a2) == [])
+inv = dc_review._inventory(a2)
+check("G2 review inventory of a holds only a", "src/a.py" in inv and "src/b.py" not in inv, inv)
+tree_a = dc_verify.tree_fingerprint(a2)
+check("G2 tree fingerprint of a is stable", tree_a is not None and tree_a == dc_verify.tree_fingerprint(a2))
+check("G2 tree fingerprints differ across projects", tree_a != dc_verify.tree_fingerprint(b2))
+
+# a sibling commit moves repo HEAD but not a's own head
+git(g2, "add", "-A")
+git(g2, "commit", "-q", "-m", "b work")
+check("G2 sibling commit does not move a's head", dc_audit.head_commit(a2) == head_a)
+check("G2 sibling commit leaves a's tree fingerprint alone", dc_verify.tree_fingerprint(a2) == tree_a)
+rc, out = run("dc_audit.py", "--root", str(a2))
+check("G2 a's audit still fresh after the sibling commit", "CACHE: fresh" in out, out.strip()[:120])
+
+# branch-relative change set is scoped and project-relative
+base = git(g2, "rev-parse", "HEAD").stdout.strip()
+(a2 / "src" / "a.py").write_text("def a_fn():\n    return 5\n", encoding="utf-8")
+(b2 / "src" / "b.py").write_text("def b_fn():\n    return 6\n", encoding="utf-8")
+git(g2, "add", "-A")
+git(g2, "commit", "-q", "-m", "both")
+check("G2 --base diff of a lists only a, project-relative",
+      dc_verify.changed_files(a2, base + "~1")[0] == ["src/a.py"], dc_verify.changed_files(a2, base + "~1"))
+
+# map lists only the project's files
+records = dc_map.refresh(a2)
+check("G2 map of a lists only a's files", set(records) == {"src/a.py", "src/extra.py"}, sorted(records))
+check("G2 top-level scan is larger than a project's", dc_audit.scan(g2)["files"] > dc_audit.scan(a2)["files"])
+
+# single-project repo: no prefix, same arguments as before
+check("G2 top level has no prefix", _dcio.git_prefix(g2) == "" and _dcio.scope_args("") == [])
+check("G2 prefix uses forward slashes", _dcio.git_prefix(a2 / "src") == "a/src/")
 
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)
