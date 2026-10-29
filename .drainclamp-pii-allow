@@ -1,2 +1,4 @@
 # dc_pii.py allow rules: values are hashed, never stored. See dc_pii.py --help.
 value NAME sha256:fe529f92689b9e53  author name, already public in LICENSE and plugin.json
+value EMAIL sha256:d8fb32acfa65c0e0  synthetic test address, not a person
+value EMAIL sha256:3578543c523d8b0b  synthetic test address, not a person
