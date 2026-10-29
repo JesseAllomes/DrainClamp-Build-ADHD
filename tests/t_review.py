@@ -118,6 +118,11 @@ check("max agents above 6 refused", rc != 0 and "1..6" in out, out)
 # -- guard before any review ---------------------------------------------------------------------
 rc, out = set_roadmap(root, "done")
 check("mode milestone: closing an unreviewed milestone refused NOT-RUN", rc == 6 and "NOT-RUN" in out, out)
+rc, out = st(root, "--close", "m1", "--log", "closed m1")
+check("mode milestone: --close runs the same guard (NOT-RUN, exit 6)", rc == 6 and "NOT-RUN" in out, out)
+check("a refused --close leaves the row and the log alone",
+      "| m1 | add the parser | a.py | active |" in (root / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8")
+      and "closed m1" not in (root / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8"))
 
 # -- packet ----------------------------------------------------------------------------------------
 rc, out = rv(root, "packet", "--milestone", "m1")

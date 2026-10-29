@@ -215,7 +215,7 @@ def read_hint(target: str, root: Path | None = None) -> str:
     return f"read {path}"
 
 
-CLOSE = "close the milestone (Gate 4 log, Gate 5: dc_state.py --purge-check)."
+CLOSE = "close the milestone: dc_state.py --close <m> --log \"<sentence>\" (roadmap, log, then the --purge-check verdict)."
 
 
 def close_line(root: Path, data: dict, rows: list[dict], mid: str) -> str:

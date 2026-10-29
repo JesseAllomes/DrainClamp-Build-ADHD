@@ -6,9 +6,12 @@ Runs at a **real milestone boundary**. Inside a milestone, the only boundary is 
 ## 1. Write state back first
 
 ```
-dc_state.py --append-log "<one sentence: what the diff did>"
-dc_state.py --set ROADMAP --file <updated roadmap>
+dc_state.py --close <m> --log "<one sentence: what the diff did>"
 ```
+
+`--close` flips only that row's status to `done`, appends the log line, and prints the section 2
+verdict. `--mark <m>=<pending|active|done>` (repeatable) flips others. Both run the roadmap guard
+and honour `--expect-generation`. Never hand-write a roadmap file for `--set ROADMAP`.
 
 State is written before any purge is recommended. A purge with unsaved state loses the work.
 
