@@ -58,5 +58,6 @@ Gate 5 may recommend a purge but cannot invoke it. With documented host compacti
 Never write `AGENTS.md`, `CLAUDE.md`, `.gitignore`, or `.git/info/exclude` without an explicit request. `.agent/` may
 be created freely. List exact targets before recursive delete, directory rename, or overwriting copy. Use `dca-scout`
 only when the host exposes it; it is read-only (`Glob`, `Grep`, `Read`, no `Write`), as are the Gate 6 critic,
-checker and refuter. `dca-fixer` writes only the files its ticket allows; `dc_review.py scope` enforces that. Never simulate a subagent with
-worktrees or nested CLI processes. Re-scope any report marked truncated.
+checker and refuter. `dca-fixer` writes only the files its ticket allows; `dc_review.py scope` enforces that. Use host subagents with worktree
+isolation for parallel parts; a named external agent (Codex via `codex exec`, `dc_codex.py`) is allowed as the Gate 6
+critic and an opt-in builder; never fake a subagent with a nested copy of the host CLI. Re-scope any report marked truncated.

@@ -25,9 +25,18 @@ a command the host does not have is worse than the generic instruction.
 Detect at runtime; do not infer from the host's name. Subagent support changes between releases, and
 a hardcoded "Claude only" rule ages badly.
 
-> Use a native subagent only when the current host exposes one. Otherwise work inline. **Never**
-> simulate one with git worktrees or nested CLI processes — that spends more than it saves and adds
-> a failure mode nobody is watching.
+> Use a native subagent when the current host exposes one, with worktree isolation for parallel
+> builders (Gate 4 conductor build). Otherwise work inline and say so in one line. **Never** fake a
+> subagent with a nested copy of the host's own CLI — that spends more than it saves and adds a
+> failure mode nobody is watching.
+
+**Codex as a named external agent.** When `codex` is on PATH, every Gate 6 round adds a read-only
+Codex critic (`dc_review.py codex`, which runs `codex exec -C <root> -s read-only -o <file>` through
+`dc_codex.py`). A second model family catches different defects; its result file is data and goes
+through the same refuter as the Claude critics. A missing, failing or slow Codex is one line and the
+round goes on. Codex as a builder is opt-in per project (`-s workspace-write` in its own worktree,
+same brief, budget, branch and merge rules as a Sonnet builder). `DRAINCLAMP_NO_CODEX=1` switches
+both off.
 
 The definition lives at `agents/dca-scout.md` at the repository root, because Claude Code's plugin
 loader reads agents only from there and silently ignores a path inside `skills/`. Claude Code reads
