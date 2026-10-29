@@ -791,7 +791,18 @@ def report(hits: list[dict], head: str, cap: int | None = REPORT_CAP) -> list[st
 
 # -- commands -----------------------------------------------------------------
 
+BUILDER_REF = "refs/heads/dc/"
+
+
 def cmd_prepush(root: Path, stdin_text: str, home: str | None) -> int:
+    # Conductor builds (Gate 4): builder branches `dc/*` stay local; only the conductor's
+    # merged result is pushed. This also stops a repo's auto-push-on-commit hook publishing one.
+    builder = sorted({b for ln in stdin_text.splitlines() for b in ln.split()[0:3:2]
+                      if b.startswith(BUILDER_REF)})
+    if builder:
+        print(f"DRAINCLAMP: push refused: builder branch {', '.join(builder)} stays local; "
+              "the conductor merges it and pushes the merged result.", file=sys.stderr)
+        return _dcio.EXIT_CHECK_FAILED
     opts = options(config(home))
     hits = []
     commits = push_commits(root, stdin_text.splitlines())
