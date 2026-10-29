@@ -62,6 +62,24 @@ def _key(root: Path | str) -> str:
     return text.casefold() if os.name == "nt" else text
 
 
+def group_of(root: Path | str) -> str | None:
+    """Group name (the git top-level folder) when `root` is a project below it, else None."""
+    resolved = Path(root).resolve()
+    top = _dcio.repo_root(resolved)
+    if top == resolved or not _dcio.is_within(resolved, top):
+        return None
+    return top.name
+
+
+def display_name(root: Path | str) -> str:
+    """`group › project` below a git top level, else the folder name."""
+    resolved = Path(root).resolve()
+    group = group_of(resolved)
+    if group is None:
+        return resolved.name
+    return f"{group} › {resolved.relative_to(_dcio.repo_root(resolved)).as_posix()}"
+
+
 def _valid(entry) -> bool:
     return (
         isinstance(entry, dict)
@@ -144,23 +162,26 @@ def touch(root: Path | str, home: Path | str | None = None,
     """
     resolved = Path(root).resolve()
     if throwaway(resolved, home):
-        return {"root": str(resolved).replace("\\", "/"), "name": name or resolved.name,
+        return {"root": str(resolved).replace("\\", "/"), "name": name or display_name(resolved),
                 "status": "active", "last": _now()}
     lock_dir = home_dir(home)
     lock_dir.mkdir(parents=True, exist_ok=True)
     with _dcio.FileLock(lock_dir):
         reg = load(home)
         entry = find(reg, resolved)
+        group = group_of(resolved)
         if entry is None:
             entry = {
                 "root": str(resolved).replace("\\", "/"),
-                "name": name or resolved.name,
+                "name": name or display_name(resolved),
                 "status": "active",
                 "last": _now(),
             }
             reg["projects"].append(entry)
         else:
             entry["last"] = _now()
+        if group and "group" not in entry:
+            entry["group"] = group  # additive; entries keyed by a top-level root never get one
         save(reg, home)
     return entry
 
@@ -217,4 +238,22 @@ def listing(status: str = "active", home: Path | str | None = None) -> list[dict
             pass  # a stale index is survivable; a crash here is not
     rows = [e for e in reg["projects"] if e.get("status") == status]
     rows.sort(key=lambda e: (e.get("last") or "", e.get("name") or ""), reverse=True)
-    return rows
+    return cluster_groups(rows)
+
+
+def cluster_groups(rows: list[dict]) -> list[dict]:
+    """Keep a group's projects together, at the place its most recent project sits.
+
+    The menu numbers this order, so a follow-up `--complete 2` resolves against the
+    same list the user read. With no grouped entries the order is untouched.
+    """
+    out: list[dict] = []
+    placed: set[str] = set()
+    for entry in rows:
+        group = entry.get("group")
+        if not group:
+            out.append(entry)
+        elif group not in placed:
+            placed.add(group)
+            out.extend(e for e in rows if e.get("group") == group)
+    return out

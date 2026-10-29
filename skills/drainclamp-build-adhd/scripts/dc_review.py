@@ -1437,7 +1437,7 @@ def _parse_sets(values: list[str]) -> list[tuple[str, str, str]]:
 
 def main() -> int:
     args = build_parser().parse_args()
-    root = _dcio.repo_root(args.root)
+    root = _dcio.project_root(args.root)
     agent = root / _dcio.AGENT_DIR_NAME
     out: list[str] = []
     code = [_dcio.EXIT_OK]

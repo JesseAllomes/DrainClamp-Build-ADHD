@@ -100,7 +100,7 @@ def main() -> int:
     parser.add_argument("--context", type=int, default=3)
     args = parser.parse_args()
 
-    root = _dcio.repo_root(args.root)
+    root = _dcio.project_root(args.root)
 
     # ---- symbol resolution ------------------------------------------------
     if args.symbol:

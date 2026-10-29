@@ -111,7 +111,7 @@ is unignored you get one warning and nothing else.
 | `dc_chunk.py` | Range reader; refuses ambiguous symbols; advises on read sizing |
 | `dc_state.py` | Schema v1 state, read-only `--resume-view`, crash-recoverable log rollover, purge calculus, narrow promotion |
 | `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never indexes a temp-directory repo, never trusts a corrupt file |
-| `dc_session.py` | Gate S: the project menu, plus `--complete` and `--reopen` |
+| `dc_session.py` | Gate S: the project menu (grouped for group repos), plus `--complete` and `--reopen` |
 | `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
 | `dc_skills.py` | Domain skills: lists skills from the repos in `skill_sources` (config.json), read from the published ref with `git show`; `set` marks the ones a project needs; `show` loads one. A project with none marked never loads one |
 | `dc_pii.py` | PII push gate: scans every commit a push would publish (added lines, messages, file names, Office text), refuses unreadable binaries, never prints a value, fails closed; hashed allow rules in `.drainclamp-pii-allow`; `drift` flags pii-redact detector changes |
@@ -243,6 +243,27 @@ The same rule bites lock files. A waiter that reads the lock to check its owner 
 then the owner's delete fails; a lock file being deleted can be neither opened nor created. So
 `FileLock` retries its release, treats a delete-pending lock as busy rather than forbidden, and
 checks for a dead owner once a second instead of on every poll.
+
+## Group repos
+
+One git repo may hold several projects in sub-folders (`payroll/leave`, `payroll/sleepover`). Each
+keeps its own `.agent/` state, audit, map, registry entry and git scope.
+
+- **Project root.** `_dcio.project_root()` walks up from `--root` (or the cwd) to the nearest folder
+  holding `.agent/drainclamp-state.md` or an empty `.drainclamp-project` marker. With neither, an
+  explicit `--root` inside the repo is honoured as given; otherwise the git top level, as before.
+  Gate 2 writes the marker when the project is below the top level. Always pass `--root <project>`
+  in a group repo. Hooks, worktrees and `.git` checks still use the top level (`repo_root()`).
+- **Scoped git.** Status, diff, log and `ls-files` run in the project folder with `-- .`, and the
+  audit and Gate 3 fingerprints include the folder prefix. A sibling's edits or commits are never a
+  stale signal, a scope breach or audit cost.
+- **Menu.** Projects show as `group › project` under a `[group]` heading; numbering is unchanged.
+- **Siblings.** `dc_project.py next` prints `SIBLINGS: <n> uncommitted file(s) in other projects of
+  this repo` when n > 0, with a worktree-per-session hint. It counts; it never touches those files.
+- **Overview.** Gate S rewrites `<top level>/.agent/drainclamp-group.md` (one line per project: status,
+  done/total milestones, last log date) as a read-only cache, never an authority.
+
+Single-project repos are unchanged: same root, same git commands, no marker, no overview file.
 
 ## Install
 
@@ -401,6 +422,7 @@ py -3 -B tests/t_review.py     # Gate 6: packet, citations, merge, suppression, 
 py -3 -B tests/t_review_feed.py # the review block project-board reads
 py -3 -B tests/t_review_e2e.py  # a live Gate 6 run (real agents) replayed: 3 planted defects, 1 decoy
 py -3 -B tests/t_skeleton.py   # one change through the core gates
+py -3 -B tests/t_group.py      # group repos: project root, scoped git, menu, siblings, overview
 ```
 
 23 test suites, no third-party runner. Fixtures are generated, never hand-edited:

@@ -259,6 +259,44 @@ def target_lines(chunk: dict, root: Path) -> list[str]:
             + ["  " + read_hint(t, root) for t in targets[:3]])
 
 
+def sibling_changes(root: Path) -> int | None:
+    """Uncommitted files in the other projects of a group repo; None outside one.
+
+    Counts only. Read from `git status` at the repo top level minus this project's
+    own prefix; nothing is staged, stashed or opened.
+    """
+    prefix = _dcio.git_prefix(root)
+    if not prefix:
+        return None
+    try:
+        done = subprocess.run(["git", "status", "--porcelain", "-z", "-uall"], cwd=str(root),
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    count = 0
+    fields = iter(done.stdout.split(chr(0)))
+    for line in fields:
+        if len(line) < 4:
+            continue
+        if "R" in line[:2] or "C" in line[:2]:
+            next(fields, "")  # the rename source is the same change
+        if _dcio.project_path(line[3:], prefix) is None:
+            count += 1
+    return count
+
+
+def sibling_lines(root: Path) -> list[str]:
+    """The `SIBLINGS:` report for `dc_project.py next`: empty unless a sibling has changes."""
+    n = sibling_changes(root)
+    if not n:
+        return []
+    return [f"SIBLINGS: {n} uncommitted file(s) in other projects of this repo",
+            "Use a worktree per session so parallel work stays apart; never stage, stash or touch those files."]
+
+
 def capsule(root: Path, data: dict, home: str | None = None) -> list[str]:
     """The resume view: what to do next and what to read, nothing else."""
     import dc_skills  # imports this module; loaded late to avoid the cycle
@@ -769,7 +807,7 @@ def main() -> int:
               "(git repo, state, charter, sidecar; registered).")
         print("Next: open that folder and run /drainclamp-build-adhd.")
         return _dcio.EXIT_OK
-    root = _dcio.repo_root(args.root)
+    root = _dcio.project_root(args.root)
     if args.cmd in ("complete", "reopen"):
         status = "complete" if args.cmd == "complete" else "active"
         set_lifecycle(root, status, args.home, args.note)
@@ -789,7 +827,7 @@ def main() -> int:
         return _dcio.EXIT_OK
 
     if args.cmd == "next":
-        print("\n".join(capsule(root, load(agent), args.home)))
+        print("\n".join(capsule(root, load(agent), args.home) + sibling_lines(root)))
         return _dcio.EXIT_OK
     if args.cmd == "charter":
         print("\n".join(charter_view(load_charter(agent))))

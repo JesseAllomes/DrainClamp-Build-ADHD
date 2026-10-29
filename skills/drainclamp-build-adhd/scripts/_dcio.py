@@ -4,7 +4,7 @@ Stdlib only. Everything that writes to `.agent/` goes through here so that
 atomicity, locking and generation checking are implemented once.
 
 Covers: atomic writes, PID-aware locking, generation validation, exit codes,
-repo-root resolution, the subprocess sandbox, and output normalisation.
+repo-root and project-root resolution, the subprocess sandbox, and output normalisation.
 """
 
 from __future__ import annotations
@@ -111,6 +111,86 @@ def repo_root(start: Path | str | None = None) -> Path:
     if out.returncode == 0 and out.stdout.strip():
         return Path(out.stdout.strip()).resolve()
     return base
+
+
+PROJECT_MARKER = ".drainclamp-project"
+
+
+def project_root(start: Path | str | None = None) -> Path:
+    """The DrainClamp project a path belongs to.
+
+    In a group repo several projects share one git top level. The project root is
+    the nearest folder, walking up from `start` (or cwd) to the top level, that
+    holds saved state or a `.drainclamp-project` marker. With neither, an explicit
+    `start` inside the repo is honoured as given (the first run of a new project
+    in a sub-folder); with no `start` the answer is the git top level, which is
+    what `repo_root()` has always returned. Outside git, `start`/cwd unchanged.
+    """
+    base = Path(start).resolve() if start else Path.cwd().resolve()
+    top = repo_root(base)
+    if top == base:
+        return top
+    probe = base
+    while True:
+        if (probe / AGENT_DIR_NAME / STATE_NAME).is_file() or (probe / PROJECT_MARKER).is_file():
+            return probe
+        if probe == top or probe.parent == probe:
+            break
+        probe = probe.parent
+    if start and is_within(base, top):
+        return base
+    return top
+
+
+def ensure_project_marker(root: Path) -> None:
+    """Gate 2: leave a marker where the project root is below the git top level.
+
+    Later runs without `--root` then find the project from any folder inside it.
+    Single-project repos (root is the top level) get nothing.
+    """
+    if repo_root(root) == root.resolve():
+        return
+    marker = root / PROJECT_MARKER
+    if not marker.exists():
+        marker.write_bytes(b"")
+
+
+def git_prefix(root: Path) -> str:
+    """`a/` for a project in sub-folder `a` of its repo, `` at the top level or outside git.
+
+    Status and diff output is repo-relative whatever the cwd; this is what to strip
+    to make it project-relative.
+    """
+    try:
+        out = subprocess.run(["git", "rev-parse", "--show-prefix"], cwd=str(root),
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    text = out.stdout.strip().replace("\\", "/") if out.returncode == 0 else ""
+    return text if text.endswith("/") and "\0" not in text else ""  # a prefix always ends in `/`
+
+
+def scope_args(prefix: str) -> list[str]:
+    """Pathspec limiting a git status/diff/log to the project's own folder."""
+    return ["--", "."] if prefix else []
+
+
+def project_path(rel: str, prefix: str) -> str | None:
+    """A repo-relative path made project-relative; None when it is in another project."""
+    if not prefix:
+        return rel
+    return rel[len(prefix):] if rel.startswith(prefix) else None
+
+
+def project_head(root: Path) -> list[str]:
+    """Git args naming the project's own HEAD: the last commit that touched its folder.
+
+    In a group repo a sibling's commit moves HEAD but not this project, so it must
+    not read as a change here. At the top level this is plain `rev-parse HEAD`.
+    """
+    if git_prefix(root):
+        return ["log", "-1", "--format=%H", "--", "."]
+    return ["rev-parse", "HEAD"]
 
 
 def agent_dir(root: Path | None = None) -> Path:
