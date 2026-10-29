@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -179,10 +180,69 @@ def resolve(rows: list[dict], choice: str, status: str) -> dict:
     return entry
 
 
+def gate0_lines(root: str) -> list[str]:
+    """Gate 0 freshness for `root`: dc_audit's own first line and its GATE3 line."""
+    proc = subprocess.run(
+        [sys.executable, "-B", str(Path(__file__).resolve().parent / "dc_audit.py"), "--root", root],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    out = [ln for ln in proc.stdout.splitlines() if ln.startswith(("AUDIT:", "CACHE:", "GATE3:"))]
+    if proc.returncode != 0 or not out:
+        tail = (proc.stderr.strip().splitlines() or ["no output"])[-1]
+        return [f"AUDIT: failed ({tail[:120]})"]
+    return out
+
+
+def three_lines(root: Path, data: dict) -> list[str]:
+    """`Done:` / `In progress:` / `Next:` from the roadmap and the sidecar chunks."""
+    import dc_project  # deferred: it imports this package's siblings
+    try:
+        rows = dc_project.roadmap(root)
+    except (OSError, DcError, KeyError, ValueError):
+        rows = []
+    done = [r["id"] for r in rows if r["status"] == "done"]
+    active = next((r for r in rows if r["status"] == "active"), None)
+    ms = dc_project.current_milestone(rows)
+    chunks = data["chunks"].get(ms["id"], []) if ms else []
+    nxt = next((c for c in chunks if not c.get("done")), None)
+    if ms is None:
+        nxt_text = "no startable milestone; check the roadmap" if rows else "no roadmap yet; run Gate 2"
+    elif nxt is not None:
+        nxt_text = f"{ms['id']}/{nxt['id']} {dc_project._clip(nxt['goal'])}"
+    elif chunks:
+        nxt_text = f"close {ms['id']}"
+    else:
+        nxt_text = f"split {ms['id']} into chunks ({dc_project._clip(ms['goal'])})"
+    prog = f"{active['id']}: {dc_project._clip(active['goal'])}" if active else "none"
+    return [f"Done: {', '.join(done) if done else 'nothing yet'}",
+            f"In progress: {prog}",
+            f"Next: {nxt_text}"]
+
+
+def resume(home: str | None, choice: str) -> int:
+    """Gate S choice -> one command: audit freshness, ROOT line, 3 lines, capsule, time, registry."""
+    import dc_project
+    entry = resolve(dc_registry.listing("active", home), choice, "active")
+    root = Path(entry["root"])
+    if not dc_registry.state_file(root).is_file() and not (root / _dcio.PROJECT_MARKER).is_file():
+        raise DcError(f"not a DrainClamp project (no state or marker): {root}")
+    for line in gate0_lines(str(root)):
+        print(line)
+    print(f"ROOT: {entry['root']}")
+    print(f"Pass --root {entry['root']} to every DrainClamp script this session.")
+    agent = root / _dcio.AGENT_DIR_NAME
+    data = dc_project.load(agent)
+    print("\n".join(three_lines(root, data)))
+    print("\n".join(dc_project.capsule(root, data, home) + dc_project.sibling_lines(root)))
+    dc_project.mutate(agent, dc_project.touch_time)
+    dc_registry.touch(root, home)
+    return _dcio.EXIT_OK
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="dc_session.py", description=__doc__)
     parser.add_argument("--home", default=None, help="registry directory override")
     parser.add_argument("--complete", help="menu number or path to mark complete")
+    parser.add_argument("--resume", help="menu number or path: audit, ROOT, Done/In progress/Next, capsule")
     parser.add_argument("--reopen", help="menu number or path to reopen")
     parser.add_argument("--list-complete", action="store_true",
                         help="numbered list of completed projects")
@@ -208,6 +268,9 @@ def main() -> int:
         print(f"DRAINCLAMP: {entry['name']} dropped from the index. "
               "Its repository and state file are untouched.")
         return _dcio.EXIT_OK
+
+    if args.resume:
+        return resume(args.home, args.resume)
 
     if args.complete:
         entry = resolve(dc_registry.listing("active", args.home), args.complete, "active")

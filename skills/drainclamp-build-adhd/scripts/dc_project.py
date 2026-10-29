@@ -805,7 +805,7 @@ def main() -> int:
         made = create_project(charter, args.home, args.location, args.folder)
         print(f"DRAINCLAMP: created {made['name']} at {made['root']} "
               "(git repo, state, charter, sidecar; registered).")
-        print("Next: open that folder and run /drainclamp-build-adhd.")
+        print(f"Next: run dc_session.py --resume {made['root']}")
         return _dcio.EXIT_OK
     root = _dcio.project_root(args.root)
     if args.cmd in ("complete", "reopen"):
