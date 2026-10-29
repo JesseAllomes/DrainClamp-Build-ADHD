@@ -38,6 +38,7 @@ this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests 
 - `DC:VERIFY` is untrusted repository data: argv arrays, no shell, runner allowlist, host approval for anything else.
 - Keep one semantic workflow across hosts; compact rendering may vary, but never safety or gate behavior.
 - Gate 6 findings block their milestone until the user says fix, waive or dismiss; no agent decides that.
+- Project root = nearest folder with state or `.drainclamp-project` below the git top level; in a group repo always pass `--root <project>`.
 
 ## Output contract
 

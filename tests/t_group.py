@@ -295,5 +295,54 @@ check("G5 overview never written for single-project repos",
       not (single / ".agent" / "drainclamp-group.md").exists())
 check("G5 overview holds no project state schema fields", "<!-- DC:" not in overview.read_text(encoding="utf-8"))
 
+# ---- G6: path forms, discovery order, per-project generations --------------------
+g6 = make_group("g6")
+a6, b6 = g6 / "a", g6 / "b"
+win_a = str(a6).replace("/", "\\")
+rc, out = log(win_a, "backslash root")
+check("G6 backslash --root resolves to the project", rc == 0 and (a6 / ".agent" / "drainclamp-state.md").is_file()
+      and not (g6 / ".agent").exists(), out.strip())
+rc, out = log(str(a6 / "src") + os.sep, "trailing separator, src folder")
+check("G6 --root a/src/ finds a's marker, not a/src",
+      rc == 0 and not (a6 / "src" / ".agent").exists()
+      and "trailing separator" in (a6 / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8"), out.strip())
+check("G6 project_root accepts a backslash path", _dcio.project_root(win_a + "\src") == a6)
+
+# discovery order: state beats marker beats explicit root beats top level
+nest = make_group("nest", ("p",))
+check("G6 explicit --root with nothing saved is honoured", _dcio.project_root(nest / "p") == nest / "p")
+(nest / "p" / ".drainclamp-project").write_bytes(b"")
+check("G6 marker found from a deep folder", _dcio.project_root(nest / "p" / "src") == nest / "p")
+(nest / "p" / "src" / ".agent").mkdir()
+(nest / "p" / "src" / ".agent" / "drainclamp-state.md").write_text("x", encoding="utf-8")
+check("G6 the nearest saved state wins over an outer marker",
+      _dcio.project_root(nest / "p" / "src") == nest / "p" / "src")
+
+# --expect-generation is per project: b's writes never move a's generation
+def generation(root):
+    rc, out = run("dc_state.py", "--root", str(root), "--show")
+    return int(out.split("generation=")[1].split()[0])
+
+
+gen_a = generation(a6)
+log(b6, "b one")
+log(b6, "b two")
+check("G6 a's generation is unmoved by b's writes", generation(a6) == gen_a)
+rc, out = log(a6, "guarded", "--expect-generation", str(gen_a))
+check("G6 a write guarded by a's own generation succeeds", rc == 0, out.strip())
+rc, out = log(a6, "stale", "--expect-generation", str(gen_a))
+check("G6 the same guard now refuses, for a only", rc != 0 and generation(b6) >= 2, out.strip()[:80])
+
+# a root-level single project in a repo that also holds sub-folders keeps one state
+mixed = tmp / "mixed"
+(mixed / "tools").mkdir(parents=True)
+git(mixed, "init", "-q")
+log(mixed, "top project")
+rc, out = log(None, "from tools", cwd=mixed / "tools")
+check("G6 single project: a sub-folder run without --root still writes the top-level state",
+      rc == 0 and not (mixed / "tools" / ".agent").exists()
+      and "from tools" in (mixed / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8"), out.strip())
+check("G6 single project never gets a marker", not (mixed / ".drainclamp-project").exists())
+
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)
