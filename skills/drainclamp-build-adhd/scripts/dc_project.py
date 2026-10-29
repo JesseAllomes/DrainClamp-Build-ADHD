@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -902,6 +903,109 @@ def set_lifecycle(root: Path, status: str, home: str | None, note: str = "",
     return mutate(agent, stamp)
 
 
+# -- auto-commit at a completed step (G9) -----------------------------------------
+
+AUTOCOMMIT_DEFAULT = {"enabled": True, "clean_tree": False, "review_required": False,
+                      "verify_cmd": ""}
+
+
+def autocommit_cfg(data: dict) -> dict:
+    cfg = dict(AUTOCOMMIT_DEFAULT)
+    stored = data.get("autocommit")
+    if isinstance(stored, dict):
+        cfg.update({k: v for k, v in stored.items() if k in AUTOCOMMIT_DEFAULT})
+    return cfg
+
+
+def _fast_verify_argv(root: Path) -> list[str]:
+    """First DC:VERIFY entry of the fast tier, or []."""
+    text = _dcio.read_text(root / _dcio.AGENT_DIR_NAME / _dcio.STATE_NAME)
+    try:
+        entries = dc_state.validate_verify_block(
+            dc_state.State.parse(text).sections["VERIFY"]) if text else []
+    except DcError:
+        entries = []
+    return next((list(e["argv"]) for e in entries if e["tier"] == "fast"), [])
+
+
+def start_step(root: Path, mid: str, cid: str = "") -> str:
+    """Record what is already edited, so the step's own edits can be told apart later."""
+    agent = root / _dcio.AGENT_DIR_NAME
+    if mid not in {r["id"] for r in roadmap(root)}:
+        raise DcError(f"milestone {mid} is not in DC:ROADMAP")
+    snap = _dcio.dirty_snapshot(root)
+    snap["at"] = _iso(_now())
+
+    def apply(data: dict) -> dict:
+        if cid:
+            _find(data["chunks"].get(mid, []), cid, f"chunk in {mid}")["start"] = snap
+        else:
+            data.setdefault("milestone_start", {})[mid] = snap
+        return data
+
+    mutate(agent, apply)
+    label = f"{mid}/{cid}" if cid else mid
+    return (f"step {label} started: {len(snap['files'])} file(s) already edited, "
+            "never auto-committed")
+
+
+def commit_step(root: Path, mid: str, cid: str = "", verified: bool = False,
+                trailers: list[str] | None = None, subject: str = "",
+                extra_paths: list[str] | None = None, home: str | None = None) -> list[str]:
+    """Auto-commit the step's own files. One COMMITTED or NOT COMMITTED line first."""
+    agent = root / _dcio.AGENT_DIR_NAME
+    data = load(agent)
+    cfg = autocommit_cfg(data)
+    if not cfg["enabled"]:
+        return ["NOT COMMITTED: auto-commit is off for this project "
+                "(dc_project.py config --autocommit on)"]
+    if not verified:
+        return ["NOT COMMITTED: the step's DC:VERIFY tier has not passed "
+                "(failed or skipped); pass --verified only after it does"]
+    chunk = _find(data["chunks"].get(mid, []), cid, f"chunk in {mid}") if cid else None
+    snap = (chunk or {}).get("start") if cid else (data.get("milestone_start") or {}).get(mid)
+    if not isinstance(snap, dict):
+        return [f"NOT COMMITTED: no start snapshot for {mid}{'/' + cid if cid else ''}; "
+                "run chunk start first, so pre-existing edits are never committed"]
+    targets = [t.split("::", 1)[0] for t in (chunk or {}).get("targets", [])]
+    targets += extra_paths or []
+    paths, before, outside = _dcio.step_candidates(root, snap, targets)
+    if chunk:
+        goal = chunk["goal"]
+    else:
+        goal = next((r["goal"] for r in roadmap(root) if r["id"] == mid), mid)
+    label = f"{mid}/{cid}" if cid else mid
+    title = subject.strip() or f"Complete {label}: {goal}"
+    clean_argv: list[str] = []
+    if cfg["clean_tree"]:
+        clean_argv = (shlex.split(cfg["verify_cmd"]) if cfg["verify_cmd"]
+                      else _fast_verify_argv(root))
+        if not clean_argv:
+            return ["NOT COMMITTED: clean-tree check is on but there is no command "
+                    "(set config --verify-cmd or a fast-tier DC:VERIFY entry)"]
+    branch = f"dc/{slugify(root.name) or 'project'}-{mid}"
+    lines = _dcio.auto_commit(root, paths, title, trailers, branch=branch,
+                              review_required=cfg["review_required"],
+                              clean_argv=clean_argv, home=home)
+    if lines[0].startswith("COMMITTED"):
+        short = lines[0].split()[1]
+
+        def apply(d: dict) -> dict:
+            if cid:
+                _find(d["chunks"].get(mid, []), cid, f"chunk in {mid}")["commit"] = short
+            else:
+                d.setdefault("milestone_commit", {})[mid] = short
+            return d
+
+        mutate(agent, apply)
+    if before:
+        lines.append(f"NOT COMMITTED: {before} file(s) had edits before this step")
+    if outside:
+        lines.append(f"LEFT: {len(outside)} changed file(s) outside this step's targets "
+                     "(pass --paths to include one)")
+    return lines
+
+
 # -- CLI ---------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -935,6 +1039,9 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--undo", action="store_true")
     d.add_argument("--context-high", action="store_true",
                    help="model-observed: context is over ~50%% of the window")
+    st = ch.add_parser("start", help="snapshot already-edited files before a step (auto-commit)")
+    st.add_argument("--milestone", required=True)
+    st.add_argument("--id", default="", help="chunk id; omit for a milestone with no chunks")
     ls = ch.add_parser("list")
     ls.add_argument("--milestone")
 
@@ -979,6 +1086,23 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--note", default="")
     d = tm.add_parser("delete")
     d.add_argument("--id", required=True)
+
+    cm = sub.add_parser("commit", help="auto-commit the step's own files (G9)")
+    cm.add_argument("--milestone", required=True)
+    cm.add_argument("--chunk", default="", help="chunk id; omit for a milestone with no chunks")
+    cm.add_argument("--verified", action="store_true",
+                    help="the step's DC:VERIFY tier passed; without it nothing is committed")
+    cm.add_argument("--trailer", action="append", default=[],
+                    help="attribution trailer line (repeatable); none by default")
+    cm.add_argument("--subject", default="", help="commit subject (default: from the step)")
+    cm.add_argument("--paths", default="", help="semicolon-separated extra paths the step edited")
+    cf = sub.add_parser("config", help="per-project settings; no flags prints them")
+    cf.add_argument("--autocommit", choices=("on", "off"))
+    cf.add_argument("--clean-tree", choices=("on", "off"),
+                    help="run the fast check in a temp worktree at the candidate commit")
+    cf.add_argument("--review-required", choices=("on", "off"),
+                    help="treat the repo as review-required even without CODEOWNERS")
+    cf.add_argument("--verify-cmd", help="command for the clean-tree check")
 
     cr = sub.add_parser("create", help="new project folder from a charter JSON file")
     cr.add_argument("--charter", required=True, help="charter JSON (name and purpose required)")
@@ -1031,6 +1155,36 @@ def main() -> int:
         print("\n".join(charter_view(load_charter(agent))))
         return _dcio.EXIT_OK
 
+    if args.cmd == "commit":
+        print("\n".join(commit_step(root, args.milestone, args.chunk, args.verified,
+                                    args.trailer, args.subject, _targets(args.paths),
+                                    args.home)))
+        return _dcio.EXIT_OK
+    if args.cmd == "config":
+        def edit(data: dict) -> dict:
+            cfg = autocommit_cfg(data)
+            if args.autocommit:
+                cfg["enabled"] = args.autocommit == "on"
+            if args.clean_tree:
+                cfg["clean_tree"] = args.clean_tree == "on"
+            if args.review_required:
+                cfg["review_required"] = args.review_required == "on"
+            if args.verify_cmd is not None:
+                cfg["verify_cmd"] = args.verify_cmd.strip()
+            data["autocommit"] = cfg
+            return data
+
+        changed = any(v is not None for v in (args.autocommit, args.clean_tree,
+                                              args.review_required, args.verify_cmd))
+        cfg = autocommit_cfg(mutate(agent, edit) if changed else load(agent))
+
+        def flag(v):
+            return "on" if v else "off"
+
+        print(f"DRAINCLAMP: autocommit {flag(cfg['enabled'])} | clean-tree "
+              f"{flag(cfg['clean_tree'])} | review-required {flag(cfg['review_required'])} | "
+              f"verify-cmd {cfg['verify_cmd'] or '(fast-tier DC:VERIFY)'}")
+        return _dcio.EXIT_OK
     if args.cmd == "fanout":
         crit = [x.strip() for x in args.critical.split(",") if x.strip()]
         print("\n".join(fanout(load(agent), root, args.milestone, args.no_subagents, crit)))
@@ -1045,6 +1199,9 @@ def main() -> int:
         return _dcio.EXIT_OK
 
     op = f"{args.cmd}.{args.op}"
+    if op == "chunk.start":
+        print("DRAINCLAMP: " + start_step(root, args.milestone, args.id))
+        return _dcio.EXIT_OK
     if op == "chunk.list":
         for mid, cs in load(agent)["chunks"].items():
             if args.milestone and mid != args.milestone:
