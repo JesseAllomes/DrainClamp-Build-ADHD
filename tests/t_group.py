@@ -234,5 +234,34 @@ check("G3 top-level project registers with its plain name", entry["name"] == "le
 check("G3 a missing group key lists as an ordinary row",
       dc_registry.cluster_groups([{"root": "x", "name": "x"}, {"root": "y", "name": "y"}])[0]["name"] == "x")
 
+# ---- G4: sibling guard -----------------------------------------------------------
+import dc_project  # noqa: E402
+
+g4 = make_group("g4")
+a4, b4 = g4 / "a", g4 / "b"
+log(a4, "g4 a")
+log(b4, "g4 b")
+git(g4, "add", "-A")
+git(g4, "commit", "-q", "-m", "markers")
+rc, out = run("dc_project.py", "--root", str(a4), "--home", HOME, "next")
+check("G4 no SIBLINGS line when siblings are clean", rc == 0 and "SIBLINGS:" not in out, out)
+(b4 / "src" / "b.py").write_text("def b_fn():\n    return 7\n", encoding="utf-8")
+(b4 / "src" / "scratch.py").write_text("y = 2\n", encoding="utf-8")
+(a4 / "src" / "a.py").write_text("def a_fn():\n    return 8\n", encoding="utf-8")  # own change: not counted
+rc, out = run("dc_project.py", "--root", str(a4), "--home", HOME, "next")
+check("G4 SIBLINGS counts only other projects' files",
+      "SIBLINGS: 2 uncommitted file(s) in other projects of this repo" in out, out)
+check("G4 worktree suggested", "worktree per session" in out, out)
+check("G4 sibling files untouched and unstaged",
+      git(g4, "diff", "--cached", "--name-only").stdout.strip() == ""
+      and "7" in (b4 / "src" / "b.py").read_text(encoding="utf-8"))
+rc, out = run("dc_project.py", "--root", str(b4), "--home", HOME, "next")
+check("G4 b sees a's one change", "SIBLINGS: 1 uncommitted" in out, out)
+# single-project repo: never printed, even with dirty files elsewhere in the tree
+(single / "src" / "x.py").write_text("z = 1\n", encoding="utf-8")
+rc, out = run("dc_project.py", "--root", str(single), "--home", HOME, "next")
+check("G4 single-project repo prints no SIBLINGS line", rc == 0 and "SIBLINGS" not in out, out)
+check("G4 sibling_changes is None outside a group", dc_project.sibling_changes(single) is None)
+
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

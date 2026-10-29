@@ -19,7 +19,8 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 | 5 Reset | milestone or chunk boundary | `phase5-reset.md`; `dc_state.py --purge-check` |
 | 6 Review | review mode on (`dc_review.py config`) at milestone close, after Gate 3, before Gate 5; or on request. Advisor after a pass | `phase6-review.md`; `dc_review.py` |
 
-Gate S runs first, prints its output verbatim, and stops; never choose for the user or resume silently. Read only the
+Gate S runs first, prints its output verbatim, and stops; never choose for the user or resume silently. A `SIBLINGS:` line from `dc_project.py next`
+(group repos) is relayed as printed. Read only the
 current gate reference (plus `platform-adapters.md` when host capability is in question). `dc_install.py` installs
 this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests the source checkout.
 
