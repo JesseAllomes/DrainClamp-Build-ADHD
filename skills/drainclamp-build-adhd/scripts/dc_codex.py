@@ -40,7 +40,23 @@ def executable() -> str | None:
     """Path to `codex`, or None when it is not installed or switched off."""
     if os.environ.get(OFF_ENV):
         return None
-    return shutil.which("codex")
+    # Search PATH entries only: on Windows shutil.which also tries the current directory
+    # first, and a codex.cmd/.exe inside the reviewed repository must never run.
+    cwd = Path.cwd().resolve()
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or entry == "." or not os.path.isabs(entry):
+            continue
+        try:
+            folder = Path(entry).resolve()
+        except OSError:
+            continue
+        if folder == cwd:
+            continue
+        found = shutil.which("codex", path=entry)
+        if found and Path(found).parent.resolve() == folder:
+            return found
+    return None
 
 
 def critic_method() -> str:

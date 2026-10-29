@@ -15,6 +15,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-
 tmp = Path(tempfile.mkdtemp(prefix="dcgate-"))
 home = tmp / "dchome"
 home.mkdir()
+(tmp / "none.txt").write_text("", encoding="utf-8")
 (home / "config.json").write_text(json.dumps({"pii_names_file": str(tmp / "none.txt")}),
                                   encoding="utf-8")
 os.environ["DRAINCLAMP_HOME"] = str(home)
@@ -161,6 +162,46 @@ rc2, cfg = git(repo, "config", "--global", "--get", "core.hooksPath", check_rc=F
 check("uninstall unsets our hooksPath", rc == 0 and not cfg.strip(), (out, cfg))
 check("uninstall removes only its own files", not (hooks / "pre-push").exists()
       and (hooks / "notes.txt").exists() and not (home / "pii-gate" / "scripts").exists())
+
+# 10. the pre-push dispatcher hands the destination remote ($1) to the scanner
+disp = dc_pushgate.dispatcher("pre-push", "/usr/bin/python3", tmp / "gate")
+check("the pre-push dispatcher passes the remote to the scanner", 'prepush --remote "$1"' in disp, disp)
+
+# 11. check() scans against the branch's own remote, origin for a detached HEAD
+rrepo = tmp / "remrepo"
+subprocess.run(["git", "init", "-q", "-b", "main", str(rrepo)], check=True, capture_output=True)
+commit(rrepo, "README.md", "hello\n", "start")
+git(rrepo, "config", "branch.main.remote", "upstream2")
+real_run, real_status = dc_pushgate.subprocess.run, dc_pushgate.status
+real_verdict = dc_pushgate.push_verdict
+recorded = []
+
+
+def recorder(argv, *a, **k):
+    if argv and argv[0] == "git":
+        return real_run(argv, *a, **k)  # repository lookups stay real
+    recorded.append(list(argv))
+    return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+
+def prepush_remote():
+    del recorded[:]
+    dc_pushgate.check(rrepo, None)
+    argv = next((c for c in recorded if "prepush" in c), [])
+    return argv[argv.index("--remote") + 1] if "--remote" in argv else None
+
+
+try:
+    dc_pushgate.subprocess.run = recorder
+    dc_pushgate.status = lambda root, home: (True, [])
+    check("check scans against the branch's own remote", prepush_remote() == "upstream2",
+          recorded)
+    git(rrepo, "checkout", "-q", "--detach")
+    check("a detached HEAD is scanned against origin", prepush_remote() == "origin", recorded)
+finally:
+    dc_pushgate.subprocess.run = real_run
+    dc_pushgate.status = real_status
+    dc_pushgate.push_verdict = real_verdict
 
 shutil.rmtree(tmp, ignore_errors=True)
 print("FAILURES: " + (", ".join(fails) if fails else "none"))

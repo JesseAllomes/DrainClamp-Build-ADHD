@@ -485,14 +485,16 @@ def _checked_fixes(root: Path, rv: dict, rnd: dict) -> dict:
         if batch.get("scope") != "ok" or not allow:
             raise DcError("STALE: fix batch has no passing scope evidence", _dcio.EXIT_TIMEOUT)
         ticketed = {fid: _finding(rv, fid) for fid in allow}
-        if any(f.get("status") not in {"fixed", "waived", "dismissed"}
+        # "open" here is a ticket the re-check reopened. It still blocks the milestone,
+        # so the round can finish (FINDINGS n) and a fix-diff round can take it on.
+        if any(f.get("status") not in {"fixed", "waived", "dismissed", "open"}
                for f in ticketed.values()):
             raise DcError("STALE: ticketed findings are not closed", _dcio.EXIT_TIMEOUT)
         checked = batch.get("checked_hashes")
         modified = set(batch.get("modified") or [])
         allowed = {p for paths in allow.values() for p in paths}
         fixed_paths = {p for fid, paths in allow.items()
-                       if ticketed[fid].get("status") == "fixed" for p in paths}
+                       if ticketed[fid].get("status") in ("fixed", "open") for p in paths}
         if (not isinstance(checked, dict) or not modified.issubset(allowed)
                 or not modified.issubset(checked)):
             raise DcError("STALE: fix batch lacks authorized checked hashes", _dcio.EXIT_TIMEOUT)
@@ -1625,6 +1627,21 @@ def main() -> int:
     if args.cmd in ("ingest", "codex"):
         items, junk = parse_findings(_reply(args, args.role))
         usage = transcript_tokens(args)
+        if not items and junk and args.cmd == "codex":
+            # Codex never blocks a round: drop the run register_codex added, so finish does
+            # not wait on a reply that cannot be read and a rerun is not a duplicate.
+            def drop_codex(rv: dict) -> None:
+                rnd = _round(rv, args.round)
+                for i in range(len(rnd["runs"]) - 1, -1, -1):
+                    r = rnd["runs"][i]
+                    if r["role"] == dc_codex.CRITIC_ROLE and r.get("found") is None:
+                        del rnd["runs"][i]
+                        break
+                rnd["codex"] = "skipped: unreadable reply"
+            change(drop_codex)
+            print(f"REVIEW {args.round} {dc_codex.CRITIC_ROLE}: SKIPPED (unreadable reply); "
+                  "the round goes on without it.")
+            return _dcio.EXIT_OK
         if not items and junk:
             # Something came back but nothing parsed. Recording it would log a finder that
             # read the code and found nothing, and finish would pass the round on it.
@@ -1805,6 +1822,7 @@ def main() -> int:
         elif not args.id or not (args.fixed or args.reopen):
             raise DcError("resolve needs --id with --fixed or --reopen, or --round with --file/--from-transcript")
         reopened: list[str] = []
+        ignored: list[tuple[str, str]] = []
 
         def reopen(f: dict, note: str, prefix: str = "re-check: ") -> None:
             f["status"] = "open"
@@ -1851,6 +1869,9 @@ def main() -> int:
                 if f.get("milestone") != rnd["milestone"] or fid in seen:
                     raise DcError(f"{fid}: not a finding of {args.round}'s milestone, or given twice")
                 seen.add(fid)
+                if f["status"] != "fixing":
+                    ignored.append((fid, f["status"]))  # the user's decision stands
+                    continue
                 note = str(v.get("note", ""))
                 if word == "RESOLVED":
                     fix(rv, f, note)
@@ -1863,6 +1884,9 @@ def main() -> int:
                   + (f", {junk} unparsable" if junk else ""))
             if reopened:
                 print("reopened: " + " ".join(reopened) + " (back to step 7: new ticket, fixer, scope, re-check)")
+            if ignored:
+                print("ignored: " + ", ".join(f"{i} ({s})" for i, s in ignored)
+                      + " -- not under re-check")
         else:
             print(out[0])
         return _dcio.EXIT_OK

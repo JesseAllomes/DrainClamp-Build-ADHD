@@ -94,7 +94,7 @@ def dispatcher(name: str, python: str, gate: Path) -> str:
             f'PY="{python}"\n'
             '[ -x "$PY" ] || PY=$(command -v python3 || command -v python || command -v py)\n'
             'if [ -z "$PY" ]; then echo "DRAINCLAMP PII: no Python; push refused (fail closed)" >&2; exit 1; fi\n'
-            f'printf \'%s\\n\' "$input" | "$PY" -B "{_sh_path(gate)}/scripts/dc_pii.py" prepush || exit 1\n'
+            f'printf \'%s\\n\' "$input" | "$PY" -B "{_sh_path(gate)}/scripts/dc_pii.py" prepush --remote "$1" || exit 1\n'
             f"{chain}"
             'if [ -x "$hook" ]; then printf \'%s\\n\' "$input" | "$hook" "$@"; exit $?; fi\nexit 0\n')
 
@@ -192,7 +192,10 @@ def check(root: Path, home: str | None) -> tuple[int, list[str]]:
     cmd = [sys.executable, "-B", str(SCRIPTS / "dc_pii.py"), "--root", str(root)]
     if home:
         cmd += ["--home", home]
-    scan = subprocess.run(cmd + ["prepush"], input=line, capture_output=True, text=True,
+    branch = _git("symbolic-ref", "--short", "-q", "HEAD", cwd=root, check=False)
+    remote = (_git("config", "--get", f"branch.{branch}.remote", cwd=root, check=False)
+              if branch else "") or "origin"
+    scan = subprocess.run(cmd + ["prepush", "--remote", remote], input=line, capture_output=True, text=True,
                           encoding="utf-8", errors="replace")
     drift = subprocess.run(cmd + ["drift"], capture_output=True, text=True, encoding="utf-8",
                            errors="replace")

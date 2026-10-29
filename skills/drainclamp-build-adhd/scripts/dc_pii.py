@@ -587,8 +587,13 @@ def options(cfg: dict) -> dict:
     if mode not in NAME_MODES:
         raise DcError(f"pii_name_mode must be one of {', '.join(NAME_MODES)}")
     terms = []
-    names_file = cfg.get("pii_names_file") or str(NAMES_FILE)
+    configured = cfg.get("pii_names_file")
+    names_file = configured or str(NAMES_FILE)
     text = _dcio.read_text(Path(names_file))
+    if configured and text is None:
+        raise DcError(f"pii_names_file {names_file} not found; refusing (fail closed)")
+    if text:
+        text = text.lstrip("﻿")
     if text:
         terms = parse_name_list(text)
     allow = [a for a in cfg.get("pii_allow") or [] if isinstance(a, str)]
@@ -606,6 +611,9 @@ def parse_allow(text: str | None) -> dict:
         if bits[0] == "value" and len(bits) >= 3 and re.fullmatch(r"sha256:[0-9a-f]{16}", bits[2]):
             rules["values"].add((bits[1].upper(), bits[2]))
         elif bits[0] == "path" and len(bits) >= 2:
+            if not re.search(r"[^*?/.]", re.sub(r"\[[^\]]*\]", "", bits[1])):
+                raise DcError(f"{ALLOW_FILE} line {n}: path rule {bits[1]!r} matches everything; "
+                              "name the files")
             rules["paths"].append(bits[1])
         else:
             raise DcError(f"{ALLOW_FILE} line {n} is not `value KIND sha256:<16 hex> reason` "
@@ -631,16 +639,35 @@ def git(root: Path, *args: str, binary: bool = False):
     return proc.stdout if binary else proc.stdout.decode("utf-8", "replace")
 
 
-def office_text(blob: bytes) -> str:
-    """The text inside an Office Open XML file: every XML part, tags stripped."""
+_ATTR_VALUE = re.compile(r'=\s*"([^"]*)"|=\s*\'([^\']*)\'')
+
+
+def _tag_attr_values(xml: str) -> list[str]:
+    """Attribute values that can carry contact details: with "@", or mailto: / tel: links."""
+    out = []
+    for tag in re.findall(r"<[^>]+>", xml):
+        for m in _ATTR_VALUE.finditer(tag):
+            v = m.group(1) if m.group(1) is not None else m.group(2)
+            if "@" in v or v.startswith(("mailto:", "tel:")):
+                out.append(v)
+    return out
+
+
+def office_text(blob: bytes) -> tuple[str, int]:
+    """(text, n_opaque): every XML part with tags stripped, and the count of parts
+    (embeddings, .bin objects) that cannot be read as text."""
     try:
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
-            parts = [n for n in z.namelist() if n.endswith(".xml") or n.endswith(".rels")]
+            names = z.namelist()
+            opaque = sum(1 for n in names if "/embeddings/" in n or n.lower().endswith(".bin"))
+            parts = [n for n in names if n.endswith(".xml") or n.endswith(".rels")]
             text = []
             for n in parts:
                 xml = z.read(n).decode("utf-8", "replace")
-                text.append(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", xml)))
-            return "\n".join(text)
+                body = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", xml))
+                attrs = _tag_attr_values(xml)
+                text.append(body + (" " + " ".join(attrs) if attrs else ""))
+            return "\n".join(text), opaque
     except (zipfile.BadZipFile, OSError, ValueError, RuntimeError):
         raise DcError("unreadable Office file") from None
 
@@ -652,8 +679,12 @@ def is_binary(blob: bytes) -> bool:
 def added_by_file(diff: str) -> tuple[dict, list[str]]:
     """{path: [(line, text)]} of added lines, and the paths git called binary."""
     files, binaries, current, line = {}, [], None, 0
+    in_header = False
     for raw in diff.split("\n"):
-        if raw.startswith("+++ "):
+        if raw.startswith("diff --git "):
+            in_header = True
+            continue
+        if in_header and raw.startswith("+++ "):
             p = raw[4:].rstrip("\t")
             current = None if p == "/dev/null" else re.sub(r"^b/", "", p)
             continue
@@ -664,6 +695,7 @@ def added_by_file(diff: str) -> tuple[dict, list[str]]:
             continue
         m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
         if m:
+            in_header = False
             line = int(m.group(1))
             continue
         if current and raw.startswith("+"):
@@ -714,11 +746,13 @@ def scan_blob(root, hits, opts, rules, rev, path, blob: bytes | None = None):
         blob = git(root, "cat-file", "blob", f"{rev}:{path}", binary=True)
     if path.lower().endswith(OFFICE):
         try:
-            text = office_text(blob)
+            text, n_opaque = office_text(blob)
         except DcError:
             hits.append({"rev": rev[:8], "where": path, "line": 0, "kind": "UNREADABLE"})
             return
         scan_text(hits, opts, rules, rev, path, [(0, text)])
+        if n_opaque > 0:
+            hits.append({"rev": rev[:8], "where": path, "line": 0, "kind": "UNSCANNABLE"})
     elif is_binary(blob):
         hits.append({"rev": rev[:8], "where": path, "line": 0, "kind": "UNSCANNABLE"})
     else:
@@ -727,8 +761,9 @@ def scan_blob(root, hits, opts, rules, rev, path, blob: bytes | None = None):
 
 
 def scan_commit(root: Path, sha: str, opts: dict, rules: dict, hits: list) -> None:
+    first = len(hits)
     parents = git(root, "rev-list", "--parents", "-n", "1", sha).split()[1:]
-    base = ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "-M"]
+    base =["diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "-M"]
     diff = git(root, *base, parents[0], sha) if parents else \
         git(root, "diff-tree", "-p", "--root", *base[1:], sha)
     files, binaries = added_by_file(diff)
@@ -742,14 +777,40 @@ def scan_commit(root: Path, sha: str, opts: dict, rules: dict, hits: list) -> No
         git(root, "diff-tree", "--root", "-r", "--name-only", "--diff-filter=AR", sha)
     for path in names.splitlines():
         if path.strip() and path != sha:
+            before = len(hits)
             scan_text(hits, opts, rules, sha, f"{path} (file name)",
                       [(0, re.sub(r"[/\\_.]+", " ", path))])
+            if len(hits) > before:
+                mask = "sha256:" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:12]
+                for h in hits[first:]:
+                    if h["where"] in (path, f"{path} (file name)"):
+                        h["masked"] = mask
+    # A hit in any file whose name itself is flagged withholds the name, whether
+    # the file is new or not; only added/renamed names count as findings.
+    name_flagged: dict = {}
+    for h in hits[first:]:
+        p = h["where"]
+        if h.get("masked") or p.startswith("("):
+            continue
+        if p not in name_flagged:
+            probe: list = []
+            scan_text(probe, opts, rules, sha, f"{p} (file name)",
+                      [(0, re.sub(r"[/\\_.]+", " ", p))])
+            name_flagged[p] = bool(probe)
+        if name_flagged[p]:
+            h["masked"] = "sha256:" + hashlib.sha256(p.encode("utf-8")).hexdigest()[:12]
     scan_text(hits, opts, rules, sha, "(commit message)",
               list(enumerate(git(root, "log", "-1", "--format=%B", sha).split("\n"), 1)))
 
 
-def push_commits(root: Path, ref_lines: list[str]) -> list[tuple[str, str]]:
-    """(commit, tip) pairs a push would publish, oldest first, each once."""
+def push_commits(root: Path, ref_lines: list[str],
+                 remote: str | None = None) -> list[tuple[str, str]]:
+    """(commit, tip) pairs a push would publish, oldest first, each once.
+
+    A new remote branch excludes only what the destination remote already holds; a URL
+    or unknown remote name excludes nothing (scan everything reachable: fail closed).
+    """
+    configured = git(root, "remote").split()
     seen, out = set(), []
     for raw in ref_lines:
         bits = raw.split()
@@ -758,7 +819,12 @@ def push_commits(root: Path, ref_lines: list[str]) -> list[tuple[str, str]]:
         _lref, lsha, _rref, rsha = bits
         if set(lsha) == {"0"}:
             continue  # deleting a remote branch publishes nothing
-        rng = [lsha, "--not", "--remotes"] if set(rsha) == {"0"} else [f"{rsha}..{lsha}"]
+        if set(rsha) != {"0"}:
+            rng = [f"{rsha}..{lsha}"]
+        elif remote and remote in configured:
+            rng = [lsha, "--not", f"--remotes={remote}"]
+        else:
+            rng = [lsha]
         for sha in git(root, "rev-list", "--reverse", *rng).split():
             if sha not in seen:
                 seen.add(sha)
@@ -780,9 +846,16 @@ def report(hits: list[dict], head: str, cap: int | None = REPORT_CAP) -> list[st
     lines = [f"{head}: {len(hits)} finding(s). Values are never printed."]
     for h in hits[:cap]:
         at = f":{h['line']}" if h["line"] else ""
-        lines.append(f"  {h['rev']} {h['where']}{at}  {h['kind']}")
+        if h.get("masked"):
+            tag = " (file name)" if h["where"].endswith(" (file name)") else ""
+            lines.append(f"  {h['rev']} [file name withheld {h['masked']}]{tag}{at}  {h['kind']}")
+        else:
+            lines.append(f"  {h['rev']} {h['where']}{at}  {h['kind']}")
     if cap is not None and len(hits) > cap:
         lines.append(f"  TRUNCATED: SHOWING {cap}/{len(hits)}")
+    if any(h.get("masked") for h in hits[:cap]):
+        lines.append("A flagged file name is withheld; list the commit's files locally with: "
+                     "git show --name-only <rev>")
     lines.append("Remove the data (rewrite the commits if it is in history), or if it is not "
                  f"PII: dc_pii.py allow --at <rev>:<file>:<line> --kind <KIND> --reason \"...\" "
                  f"(path rules for binaries go in {ALLOW_FILE} by hand).")
@@ -794,7 +867,16 @@ def report(hits: list[dict], head: str, cap: int | None = REPORT_CAP) -> list[st
 BUILDER_REF = "refs/heads/dc/"
 
 
-def cmd_prepush(root: Path, stdin_text: str, home: str | None) -> int:
+def _added_rules(new: dict, old: dict) -> list[str]:
+    """`path sha256:<12 hex>` / `value KIND` labels for the rules `new` has and `old` lacks; globs are never printed."""
+    out = [f"path sha256:{hashlib.sha256(g.encode('utf-8')).hexdigest()[:12]}"
+           for g in new["paths"] if g not in old["paths"]]
+    out += [f"value {kind}" for kind, h in sorted(new["values"]) if (kind, h) not in old["values"]]
+    return out
+
+
+def cmd_prepush(root: Path, stdin_text: str, home: str | None,
+                remote: str | None = None) -> int:
     # Conductor builds (Gate 4): builder branches `dc/*` stay local; only the conductor's
     # merged result is pushed. This also stops a repo's auto-push-on-commit hook publishing one.
     builder = sorted({b for ln in stdin_text.splitlines() for b in ln.split()[0:3:2]
@@ -805,8 +887,43 @@ def cmd_prepush(root: Path, stdin_text: str, home: str | None) -> int:
         return _dcio.EXIT_CHECK_FAILED
     opts = options(config(home))
     hits = []
-    commits = push_commits(root, stdin_text.splitlines())
+    ref_lines = stdin_text.splitlines()
+    commits = push_commits(root, ref_lines, remote)
     rules_by_tip = {}
+    pushed = []
+    for raw in ref_lines:
+        bits = raw.split()
+        if len(bits) == 4 and set(bits[1]) != {"0"}:
+            pushed.append((bits[1], bits[3]))
+    added, seen_tips = [], set()
+    for lsha, rsha in pushed:
+        if lsha in seen_tips:
+            continue
+        seen_tips.add(lsha)
+        new_rules = rules_by_tip.setdefault(lsha, allow_rules(root, lsha))
+        old_rules = {"values": set(), "paths": []}
+        if set(rsha) != {"0"}:
+            try:
+                old_rules = allow_rules(root, rsha)
+            except DcError:
+                pass  # unreadable old allow file: every rule counts as added
+        added += _added_rules(new_rules, old_rules)
+    if added:
+        print(f"DRAINCLAMP PII: this push adds {len(added)} allow rule(s): "
+              + " | ".join(added), file=sys.stderr)
+    for lsha, _rsha in pushed:
+        obj = lsha
+        for _ in range(10):
+            if git(root, "cat-file", "-t", obj).strip() != "tag":
+                break
+            raw = git(root, "cat-file", "-p", obj)
+            head, _sep, body = raw.partition("\n\n")
+            scan_text(hits, opts, rules_by_tip[lsha], lsha, "(tag message)",
+                      list(enumerate(body.split("\n"), 1)))
+            nxt = [ln.split()[1] for ln in head.splitlines() if ln.startswith("object ")]
+            if not nxt:
+                break
+            obj = nxt[0]
     for sha, tip in commits:
         rules = rules_by_tip.setdefault(tip, allow_rules(root, tip))
         scan_commit(root, sha, opts, rules, hits)
@@ -913,7 +1030,9 @@ def main() -> int:
     p.add_argument("--root", default=None)
     p.add_argument("--home", default=None, help="config directory override")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("prepush", help="git pre-push hook body: ref lines on stdin")
+    pp = sub.add_parser("prepush", help="git pre-push hook body: ref lines on stdin")
+    pp.add_argument("--remote", default=None,
+                    help="the remote name or URL git passes the hook as $1")
     sc = sub.add_parser("scan")
     g = sc.add_mutually_exclusive_group(required=True)
     g.add_argument("--range", help="commits A..B (as a push would publish them)")
@@ -931,7 +1050,7 @@ def main() -> int:
         return cmd_drift(args.home)
     root = Path(git(Path(args.root or "."), "rev-parse", "--show-toplevel").strip())
     if args.cmd == "prepush":
-        return cmd_prepush(root, sys.stdin.read(), args.home)
+        return cmd_prepush(root, sys.stdin.read(), args.home, args.remote)
     if args.cmd == "scan":
         return cmd_scan(root, args, args.home)
     return cmd_allow(root, args, args.home)

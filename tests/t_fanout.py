@@ -158,5 +158,101 @@ side.write_text(json.dumps(data), encoding="utf-8")
 rc, out = proj(r7, "merge-order", "--milestone", "m1", "--chunks", "c1,c2")
 check("cycle is an error", rc != 0 and "cycle" in out, out)
 
+# r43: the default Verify line falls back to a pointer when DC:VERIFY has no usable milestone runner
+EMPTY_VERIFY = "```json\n[]\n```"
+
+
+def set_verify(root, payload):
+    path = root / ".agent" / "drainclamp-state.md"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        EMPTY_VERIFY, "```json\n" + json.dumps(payload) + "\n```"), encoding="utf-8")
+
+
+def verify_line(root):
+    rc, out = proj(root, "brief", "--milestone", "m1", "--chunk", "c1")
+    return rc, next((ln for ln in out.splitlines() if ln.startswith("Verify:")), out)
+
+
+NO_RUNNER = "Verify: (no DC:VERIFY milestone runner: ask the conductor)"
+v1 = make_repo("verify-none")
+add(v1, "one", "--targets", "a.py")
+set_verify(v1, [{"id": "quick", "argv": ["pytest", "-q"], "cwd": ".", "tier": "fast"}])
+rc, line = verify_line(v1)
+check("brief falls back when DC:VERIFY has no milestone entry", rc == 0 and line == NO_RUNNER, line)
+v2 = make_repo("verify-bad")
+add(v2, "one", "--targets", "a.py")
+set_verify(v2, [{"id": "broken"}])
+rc, line = verify_line(v2)
+check("brief falls back when DC:VERIFY is malformed", rc == 0 and line == NO_RUNNER, line)
+v3 = make_repo("verify-ok")
+add(v3, "one", "--targets", "a.py")
+set_verify(v3, [{"id": "unit", "argv": ["python", "-m", "pytest", "-q"], "cwd": ".", "tier": "milestone"}])
+rc, line = verify_line(v3)
+check("brief uses the milestone runner's argv", rc == 0 and line == "Verify: python -m pytest -q", line)
+
+# r46: one open chunk is not a fan-out
+r9 = make_repo("single-chunk")
+add(r9, "only", "--targets", "a.py", "--size", "medium", "--parallel", "yes", "--why", "x")
+rc, out = fan(r9)
+check("one ready chunk is sequential", rc == 0 and out == "SEQUENTIAL: 1 ready chunk(s), need 2", out)
+
+# r60: same-named project folders in one repo get distinct branches
+multi = tmp / "multi"
+multi.mkdir()
+subprocess.run(["git", "init", "-q", str(multi)], check=True)
+state_text = dc_state.template_text().replace(
+    "<!-- DC:ROADMAP -->\n| id | goal | files | status |\n|---|---|---|---|\n",
+    "<!-- DC:ROADMAP -->\n| id | goal | files | status |\n|---|---|---|---|\n| m1 | build | a.py | active |\n")
+leaves = {}
+for folder in ("a", "b"):
+    leaf = multi / folder / "leave"
+    (leaf / ".agent").mkdir(parents=True)
+    (leaf / ".drainclamp-project").write_text("", encoding="utf-8")
+    (leaf / ".agent" / "drainclamp-state.md").write_text(state_text, encoding="utf-8")
+    add(leaf, "one", "--targets", "x.py")
+    leaves[folder] = leaf
+for folder, leaf in leaves.items():
+    rc, out = proj(leaf, "brief", "--milestone", "m1", "--chunk", "c1", "--verify", "x")
+    check(f"group project {folder}/leave names its own branch",
+          rc == 0 and any(ln.startswith(f"Branch: dc/{folder}-leave-") and ln.endswith("-m1-c1")
+                          for ln in out.splitlines()), out)
+
+# r61: a folder target clashes with a file inside it; chunks with no targets never fan out
+r10 = make_repo("folder-clash")
+add(r10, "one", "--targets", "src/", "--size", "medium", "--parallel", "yes", "--why", "x")
+add(r10, "two", "--targets", "src/a.py", "--size", "medium", "--parallel", "yes", "--why", "x")
+rc, out = fan(r10)
+check("a folder target and a file inside it share a path",
+      rc == 0 and out.startswith("SEQUENTIAL: c1 and c2 share "), out)
+r11 = make_repo("no-targets")
+add(r11, "one", "--size", "medium", "--parallel", "yes", "--why", "x")
+add(r11, "two", "--size", "medium", "--parallel", "yes", "--why", "x")
+rc, out = fan(r11)
+check("chunks with no targets are sequential", rc == 0 and out == "SEQUENTIAL: c1 has no targets", out)
+
+# r74: whole-tree and ./-prefixed targets clash with files inside them
+for n, (label, t1, t2) in enumerate((("a '.' target", ".", "src/a.py"),
+                                     ("a './src' target", "./src", "src/a.py"),
+                                     ("a './a.py' target", "./a.py", "a.py"))):
+    rr = make_repo(f"dot-clash-{n}")
+    add(rr, "one", "--targets", t1, "--size", "medium", "--parallel", "yes", "--why", "x")
+    add(rr, "two", "--targets", t2, "--size", "medium", "--parallel", "yes", "--why", "x")
+    rc, out = fan(rr)
+    check(f"{label} clashes with {t2}", rc == 0 and out.startswith("SEQUENTIAL: c1 and c2 share "), out)
+
+# r77: projects at x/y and x-y in one repo get distinct branches
+branches = {}
+for folder in ("x/y", "x-y"):
+    leaf = multi / "xy" / folder
+    (leaf / ".agent").mkdir(parents=True)
+    (leaf / ".drainclamp-project").write_text("", encoding="utf-8")
+    (leaf / ".agent" / "drainclamp-state.md").write_text(state_text, encoding="utf-8")
+    add(leaf, "one", "--targets", "x.py")
+    rc, out = proj(leaf, "brief", "--milestone", "m1", "--chunk", "c1", "--verify", "x")
+    branches[folder] = next((ln for ln in out.splitlines() if ln.startswith("Branch: ")), out)
+check("x/y and x-y get different builder branches",
+      all(b.startswith("Branch: ") for b in branches.values())
+      and len(set(branches.values())) == 2, branches)
+
 print(f"\n{'FAIL' if fails else 'PASS'}: {len(fails)} failure(s)")
 sys.exit(1 if fails else 0)

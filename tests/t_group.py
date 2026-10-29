@@ -306,7 +306,7 @@ rc, out = log(str(a6 / "src") + os.sep, "trailing separator, src folder")
 check("G6 --root a/src/ finds a's marker, not a/src",
       rc == 0 and not (a6 / "src" / ".agent").exists()
       and "trailing separator" in (a6 / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8"), out.strip())
-check("G6 project_root accepts a backslash path", _dcio.project_root(win_a + "\src") == a6)
+check("G6 project_root accepts a backslash path", _dcio.project_root(win_a + "\\src") == a6)
 
 # discovery order: state beats marker beats explicit root beats top level
 nest = make_group("nest", ("p",))
@@ -343,6 +343,37 @@ check("G6 single project: a sub-folder run without --root still writes the top-l
       rc == 0 and not (mixed / "tools" / ".agent").exists()
       and "from tools" in (mixed / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8"), out.strip())
 check("G6 single project never gets a marker", not (mixed / ".drainclamp-project").exists())
+
+# ---- G7: a sibling's uncommitted rename is one change ------------------------------
+g7 = make_group("g7")
+a7, b7 = g7 / "a", g7 / "b"
+log(a7, "g7 a")
+log(b7, "g7 b")
+(b7 / "src" / "s.py").write_text("s = 1\n", encoding="utf-8")
+git(g7, "add", "-A")
+git(g7, "commit", "-q", "-m", "sibling file")
+git(g7, "mv", "b/src/s.py", "b/src/t.py")
+rc, out = run("dc_project.py", "--root", str(a7), "--home", HOME, "next")
+check("G7 a sibling's uncommitted rename counts once, not twice",
+      "SIBLINGS: 1 uncommitted file(s) in other projects of this repo" in out, out)
+
+# ---- G8: DrainClamp's own files in a group repo are not sibling changes -------------
+g8 = make_group("g8")
+(g8 / ".gitignore").write_text("", encoding="utf-8")  # .agent/ is NOT ignored here
+git(g8, "add", "-A")
+git(g8, "commit", "-q", "-m", "no ignore")
+a8, b8 = g8 / "a", g8 / "b"
+log(a8, "g8 a")
+log(b8, "g8 b")  # writes b/.agent/drainclamp-state.md and b/.drainclamp-project
+(g8 / ".agent").mkdir(exist_ok=True)
+(g8 / ".agent" / "drainclamp-group.md").write_text("# group overview\n", encoding="utf-8")
+rc, out = run("dc_project.py", "--root", str(a8), "--home", HOME, "next")
+check("G8 DrainClamp's own files in the group repo raise no SIBLINGS line",
+      rc == 0 and "SIBLINGS:" not in out, out)
+(b8 / "src" / "b.py").write_text("def b_fn():\n    return 9\n", encoding="utf-8")
+rc, out = run("dc_project.py", "--root", str(a8), "--home", HOME, "next")
+check("G8 a real sibling source edit still shows, counted once",
+      "SIBLINGS: 1 uncommitted file(s) in other projects of this repo" in out, out)
 
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

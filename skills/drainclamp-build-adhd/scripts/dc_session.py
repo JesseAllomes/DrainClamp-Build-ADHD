@@ -182,9 +182,14 @@ def resolve(rows: list[dict], choice: str, status: str) -> dict:
 
 def gate0_lines(root: str) -> list[str]:
     """Gate 0 freshness for `root`: dc_audit's own first line and its GATE3 line."""
-    proc = subprocess.run(
-        [sys.executable, "-B", str(Path(__file__).resolve().parent / "dc_audit.py"), "--root", root],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-B", str(Path(__file__).resolve().parent / "dc_audit.py"), "--root", root],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    except subprocess.TimeoutExpired:
+        return ["AUDIT: failed (timed out after 300s)"]
+    except OSError as exc:
+        return [f"AUDIT: failed ({str(exc)[:120]})"]
     out = [ln for ln in proc.stdout.splitlines() if ln.startswith(("AUDIT:", "CACHE:", "GATE3:"))]
     if proc.returncode != 0 or not out:
         tail = (proc.stderr.strip().splitlines() or ["no output"])[-1]

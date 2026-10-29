@@ -99,6 +99,7 @@ for text, want in [
 tmp = Path(tempfile.mkdtemp(prefix="dcpii-"))
 home = tmp / "home"
 home.mkdir()
+(tmp / "no-names.txt").write_text("", encoding="utf-8")
 (home / "config.json").write_text(json.dumps({"pii_names_file": str(tmp / "no-names.txt")}),
                                   encoding="utf-8")
 remote = tmp / "remote.git"
@@ -268,6 +269,213 @@ for rel in listed_files:
                      "WORKTREE", rel, blob)
 check("the repository's own files scan clean", not hits,
       [f"{h['where']}:{h['line']} {h['kind']}" for h in hits[:10]])
+
+# 6. review R12 hardening: tags, XML attributes, diff headers, masked file names, allow rules,
+#    Office parts, and the destination remote of a new branch
+OPTS = {"name_mode": "smart", "terms": [], "allowlist": []}
+NORULES = {"values": set(), "paths": []}
+ZERO = dc_pii.ZERO
+
+# r49: an annotated tag's message is scanned
+git("tag", "-a", "-m", J("contact ", EMAIL), "v-pii")
+tag_sha = git("rev-parse", "v-pii")
+rc, out = pii("prepush", stdin=f"refs/tags/v-pii {tag_sha} refs/tags/v-pii {ZERO}\n")
+check("an annotated tag message is scanned", rc != 0 and "(tag message)" in out and EMAIL not in out, out)
+git("tag", "-d", "v-pii")
+
+# r50: contact details held in XML attribute values are scanned
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("word/document.xml", "<w:document/>")
+    z.writestr("word/_rels/document.xml.rels",
+               J('<Relationships><Relationship Id="rId1" Type="link" Target="mailto:', EMAIL,
+                 '" TargetMode="External"/></Relationships>'))
+hits = []
+dc_pii.scan_blob(repo, hits, OPTS, NORULES, "WORKTREE", "x.docx", buf.getvalue())
+check("a mailto: attribute in an Office part is scanned", any(h["kind"] == "EMAIL" for h in hits), hits)
+
+# r55: opaque Office parts are refused, media is not
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("word/document.xml", "<w:document/>")
+    z.writestr("word/embeddings/sheet.xlsx", b"PK-opaque")
+hits = []
+dc_pii.scan_blob(repo, hits, OPTS, NORULES, "WORKTREE", "x.docx", buf.getvalue())
+check("an embedded object in an Office file is UNSCANNABLE",
+      any(h["kind"] == "UNSCANNABLE" and h["where"] == "x.docx" for h in hits), hits)
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("word/document.xml", "<w:document/>")
+    z.writestr("word/media/image1.png", b"\x89PNG")
+hits = []
+dc_pii.scan_blob(repo, hits, OPTS, NORULES, "WORKTREE", "x.docx", buf.getvalue())
+check("media images in an Office file are not refused", not hits, hits)
+
+# r51: an added line starting "++ " is content, not a file header
+base = git("rev-parse", "HEAD")
+commit({"pp.txt": J("one\n++ ", EMAIL, "\nring ", MOBILE, "\n")}, "plus plus")
+rc, out = pii("scan", "--range", f"{base}..HEAD")
+check("an added line beginning '++ ' is scanned", rc != 0 and "pp.txt:2  EMAIL" in out, out)
+check("later lines of that file are still scanned", "pp.txt:3  PHONE" in out, out)
+git("reset", "-q", "--hard", base)
+
+# r52: a flagged file name is withheld from the refusal
+fname = J("Ma", "ry_", "Ngu", "yen_payslip.txt")
+commit({fname: "x\n"}, "named file")
+rc, out = prepush()
+check("a flagged file name is never printed", rc != 0 and J("Ma", "ry") not in out and J("Ngu", "yen") not in out
+      and "payslip" not in out and "file name withheld sha256:" in out and "git show --name-only" in out, out)
+git("reset", "-q", "--hard", base)
+
+# r53: an allow rule that matches everything fails closed; a push adding rules says so
+for glob in ["*", "**", "*/*", "**/*", "*.*"]:
+    try:
+        dc_pii.parse_allow(f"path {glob}  x\n")
+        refused = False
+    except dc_pii.DcError:
+        refused = True
+    check(f"allow path rule {glob!r} is refused", refused)
+commit({dc_pii.ALLOW_FILE: "path *  x\n"}, "allow everything")
+rc, out = prepush()
+check("an allow-everything path rule fails closed", rc != 0 and "line 1" in out
+      and "matches everything" in out, out)
+git("reset", "-q", "--hard", base)
+existing_allow = (repo / dc_pii.ALLOW_FILE).read_text(encoding="utf-8") \
+    if (repo / dc_pii.ALLOW_FILE).exists() else ""
+commit({dc_pii.ALLOW_FILE: existing_allow + "path docs/a.txt  reason\n"}, "allow a doc")
+rc, out = prepush()
+check("a push that adds an allow rule says so",
+      "this push adds 1 allow rule(s): path sha256:" in out and "docs/a.txt" not in out, out)
+git("reset", "-q", "--hard", base)
+
+# r48: a new branch pushed to a second remote is scanned in full
+remote_b = tmp / "remote-b.git"
+subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote_b)], check=True)
+git("remote", "add", "b", str(remote_b))
+old = commit({"old.txt": J("owner ", EMAIL, "\n")}, "old contact")
+git("push", "-q", "origin", "HEAD:main")
+git("fetch", "-q", "origin")
+new_branch = f"refs/heads/main {old} refs/heads/fresh {ZERO}\n"
+rc, out = pii("prepush", "--remote", "b", stdin=new_branch)
+check("a new branch to a second remote scans commits only the first holds",
+      rc != 0 and f"{old[:8]} old.txt:1  EMAIL" in out, out)
+rc, out = pii("prepush", "--remote", "origin", stdin=new_branch)
+check("a new branch excludes commits the destination remote already has", rc == 0, out)
+rc, out = pii("prepush", "--remote", str(remote_b), stdin=new_branch)
+check("a URL as the remote scans everything (fail closed)", rc != 0 and "old.txt:1  EMAIL" in out, out)
+rc, out = pii("prepush", stdin=new_branch)
+check("no remote name scans everything (fail closed)", rc != 0 and "old.txt:1  EMAIL" in out, out)
+
+# review R13 additions
+keep = git("rev-parse", "HEAD")
+
+
+def restore_remote():
+    git("reset", "-q", "--hard", keep)
+    git("push", "-q", "-f", "origin", f"{keep}:main")
+    git("fetch", "-q", "origin")
+
+
+# r54: a configured names file that is missing fails closed; a BOM is stripped
+try:
+    dc_pii.options({"pii_names_file": str(tmp / "missing-names.txt")})
+    missing_msg = None
+except dc_pii.DcError as exc:
+    missing_msg = str(exc)
+check("a configured but missing names file fails closed", missing_msg is not None
+      and "not found" in missing_msg, missing_msg)
+(tmp / "bom-names.txt").write_text("﻿" + J("Ngu", "yen") + "\n", encoding="utf-8")
+(tmp / "plain-names.txt").write_text(J("Ngu", "yen") + "\n", encoding="utf-8")
+bom_terms = dc_pii.options({"pii_names_file": str(tmp / "bom-names.txt")})["terms"]
+plain_terms = dc_pii.options({"pii_names_file": str(tmp / "plain-names.txt")})["terms"]
+check("a BOM on the first name is stripped", bom_terms == plain_terms and bool(bom_terms),
+      (bom_terms, plain_terms))
+try:
+    dc_pii.options({})
+    default_ok = True
+except dc_pii.DcError:
+    default_ok = False
+check("no configured names file does not raise", default_ok)
+
+# r66: a tel: attribute with no '@' is scanned
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("word/document.xml", "<w:document/>")
+    z.writestr("word/_rels/document.xml.rels",
+               J('<Relationships><Relationship Id="rId1" Type="link" Target="tel:',
+                 MOBILE.replace(" ", ""), '" TargetMode="External"/></Relationships>'))
+hits = []
+dc_pii.scan_blob(repo, hits, OPTS, NORULES, "WORKTREE", "x.docx", buf.getvalue())
+check("a tel: attribute without '@' in an Office part is scanned",
+      any(h["kind"] == "PHONE" for h in hits), hits)
+
+# r78: whitespace round '=' does not hide an attribute value
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("word/document.xml", "<w:document/>")
+    z.writestr("word/_rels/document.xml.rels",
+               J('<Relationships><Relationship Id="rId1" Type="link" Target = "mailto:', EMAIL,
+                 '" TargetMode="External"/></Relationships>'))
+hits = []
+dc_pii.scan_blob(repo, hits, OPTS, NORULES, "WORKTREE", "x.docx", buf.getvalue())
+check("an attribute with spaces round '=' is scanned", any(h["kind"] == "EMAIL" for h in hits), hits)
+
+# r71: bracket classes are wildcards too
+for glob in ["[!/]*", "*[!~]", "[a-z]*/*"]:
+    try:
+        dc_pii.parse_allow(J("path ", glob, "  x\n"))
+        refused = False
+    except dc_pii.DcError:
+        refused = True
+    check(f"allow path rule {glob!r} is refused", refused)
+for glob in ["src/[ab]*.py", "[ab].txt"]:
+    try:
+        ok_rules = dc_pii.parse_allow(J("path ", glob, "  x\n"))
+        accepted = glob in ok_rules["paths"]
+    except dc_pii.DcError:
+        accepted = False
+    check(f"allow path rule {glob!r} is accepted", accepted)
+
+# r73: the added-rules line never prints a glob
+cur_allow = (repo / dc_pii.ALLOW_FILE).read_text(encoding="utf-8") \
+    if (repo / dc_pii.ALLOW_FILE).exists() else ""
+commit({dc_pii.ALLOW_FILE: cur_allow + J("path ", "Ma", "ry_", "Ngu", "yen_payslip.pdf  binary\n")},
+       "allow a named file")
+rc, out = prepush()
+check("an added path rule is shown as a hash, never its glob",
+      "path sha256:" in out and J("Ma", "ry") not in out and J("Ngu", "yen") not in out, out)
+git("reset", "-q", "--hard", keep)
+
+# r76: an inner annotated tag's message is scanned
+git("tag", "-a", "-m", J("ring ", MOBILE), "v-inner")
+git("tag", "-a", "-m", "outer", "v-outer", "v-inner")
+outer_sha = git("rev-parse", "v-outer")
+rc, out = pii("prepush", stdin=f"refs/tags/v-outer {outer_sha} refs/tags/v-outer {ZERO}\n")
+check("an inner annotated tag message is scanned",
+      rc != 0 and "(tag message)" in out and MOBILE.replace(" ", "") not in out
+      and MOBILE not in out, out)
+git("tag", "-d", "v-outer")
+git("tag", "-d", "v-inner")
+
+# r75: a hit in a modified file with a flagged name withholds the name
+named = J("Ma", "ry_", "Ngu", "yen_notes.txt")
+commit({named: "x\n"}, "named file")
+push()
+commit({named: "x\n" + J("mail ", EMAIL, "\n")}, "add contact to named file")
+rc, out = prepush()
+check("a hit in a modified file with a flagged name never prints the name",
+      rc != 0 and "EMAIL" in out and J("Ma", "ry") not in out and J("Ngu", "yen") not in out
+      and "file name withheld sha256:" in out, out)
+restore_remote()
+
+# r63: an unreadable allow file on the remote side counts every new rule as added
+commit({dc_pii.ALLOW_FILE: "nonsense line\n"}, "break remote allow")
+push()
+commit({dc_pii.ALLOW_FILE: "path docs/b.txt  fixture\n"}, "valid allow")
+rc, out = prepush()
+check("an unreadable old allow file counts every new rule as added",
+      "this push adds 1 allow rule(s)" in out and "Traceback" not in out, out)
+restore_remote()
 
 shutil.rmtree(tmp, ignore_errors=True)
 print("FAILURES: " + (", ".join(fails) if fails else "none"))

@@ -297,6 +297,41 @@ for bad in ("7", str(tmp / "nope")):
     rc, so, se = run_script("dc_session.py", "--home", str(rsm_home), "--resume", bad)
     check(f"resume refuses {bad[-6:]}", rc != 0 and "ERROR" in se and "ROOT:" not in so, so + se)
 
+# gate0_lines: every way the audit run can fail is one AUDIT: failed line, never a traceback
+real_run = dc_session.subprocess.run
+
+
+def fake_run(result=None, raises=None):
+    def run(*_a, **_k):
+        if raises is not None:
+            raise raises
+        return result
+    return run
+
+
+try:
+    dc_session.subprocess.run = fake_run(subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="", stderr="boom\n"))
+    check("a failing audit run is one AUDIT: failed line",
+          dc_session.gate0_lines(".") == ["AUDIT: failed (boom)"], dc_session.gate0_lines("."))
+    dc_session.subprocess.run = real_run
+    dc_session.subprocess.run = fake_run(subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="nothing useful\n", stderr=""))
+    check("an audit run with no AUDIT/CACHE/GATE3 line is failed (no output)",
+          dc_session.gate0_lines(".") == ["AUDIT: failed (no output)"], dc_session.gate0_lines("."))
+    dc_session.subprocess.run = real_run
+    dc_session.subprocess.run = fake_run(raises=subprocess.TimeoutExpired(cmd="x", timeout=300))
+    check("an audit timeout is reported, not raised",
+          dc_session.gate0_lines(".") == ["AUDIT: failed (timed out after 300s)"],
+          dc_session.gate0_lines("."))
+    dc_session.subprocess.run = real_run
+    dc_session.subprocess.run = fake_run(raises=OSError("cannot start"))
+    check("an audit that cannot start is one AUDIT: failed line, not raised",
+          dc_session.gate0_lines(".") == ["AUDIT: failed (cannot start)"],
+          dc_session.gate0_lines("."))
+finally:
+    dc_session.subprocess.run = real_run
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

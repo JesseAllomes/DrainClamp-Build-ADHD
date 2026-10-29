@@ -20,6 +20,7 @@ Every write bumps `rev`, so a writer holding an old copy can be told so.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -283,6 +284,9 @@ def sibling_changes(root: Path) -> int | None:
             continue
         if "R" in line[:2] or "C" in line[:2]:
             next(fields, "")  # the rename source is the same change
+        parts = line[3:].replace("\\", "/").split("/")
+        if ".agent" in parts or parts[-1] == _dcio.PROJECT_MARKER:
+            continue  # DrainClamp's own files are not another project's work
         if _dcio.project_path(line[3:], prefix) is None:
             count += 1
     return count
@@ -516,17 +520,41 @@ def _fanout_fields(a: dict, siblings: list[dict]) -> dict:
 
 def _path_key(target: str) -> str:
     """Target as a comparable path: `::symbol` stripped, slashes unified, case-folded."""
-    return target.split("::", 1)[0].strip().replace("\\", "/").lower()
+    key = target.split("::", 1)[0].strip().replace("\\", "/").lower()
+    while key.startswith("./"):
+        key = key[2:]
+    return "." if key in (".", "") and target.strip() else key
 
 
 def _chunk_files(c: dict) -> set[str]:
     return {_path_key(t) for t in c.get("targets") or [] if _path_key(t)}
 
 
+def _overlap(a: set[str], b: set[str]) -> str | None:
+    """The first path two target sets share: equal, or one inside the other's folder."""
+    for x in sorted(a):
+        for y in sorted(b):
+            if x == "." or y == ".":
+                return y if x == "." else x
+            if x == y or y.startswith(x.rstrip("/") + "/"):
+                return y
+            if x.startswith(y.rstrip("/") + "/"):
+                return x
+    return None
+
+
 def chunk_branch(root: Path, mid: str, cid: str) -> tuple[str, str]:
     """(branch, worktree path) for one builder chunk; chunk ids repeat across milestones."""
-    slug = slugify(root.name) or "project"
     repo = _dcio.repo_root(root)
+    try:
+        rel = root.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        rel = "."
+    if rel == ".":
+        slug = slugify(root.name) or "project"
+    else:  # a short hash keeps a/b and a-b apart
+        slug = (f"{slugify(rel.replace('/', '-')) or 'project'}-"
+                f"{hashlib.sha256(rel.encode('utf-8')).hexdigest()[:6]}")
     return f"dc/{slug}-{mid}-{cid}", (repo / ".worktrees" / f"{slug}-{mid}-{cid}").as_posix()
 
 
@@ -568,10 +596,17 @@ def fanout(data: dict, root: Path, mid: str, no_subagents: bool = False,
                 f"{c['id']} has no size (needs medium+)"
         elif c.get("parallel", "no") == "no":
             why = f"{c['id']} is marked parallel no"
+        elif not _chunk_files(c):
+            why = f"{c['id']} has no targets"
         else:
-            clash = next((x for x in pick if _chunk_files(x) & _chunk_files(c)), None)
+            shared = None
+            clash = None
+            for x in pick:
+                shared = _overlap(_chunk_files(x), _chunk_files(c))
+                if shared:
+                    clash = x
+                    break
             if clash:
-                shared = sorted(_chunk_files(clash) & _chunk_files(c))[0]
                 why = f"{clash['id']} and {c['id']} share {shared}"
             elif len(pick) >= MAX_BUILDERS:
                 why = f"{c['id']} waits (at most {MAX_BUILDERS} builders)"

@@ -813,6 +813,19 @@ rv(rt, "decide", "--set", "r1=fix")
 rc, out = rv(rt, "resolve", "--id", "r1", "--fixed")
 check("resolve --fixed after a reopen needs a new ticket", rc != 0 and "no ticket" in out, out)
 
+# -- a round at the cap finishes with a reopened ticket; a fix-diff round takes it on ------------
+rf = fixing_repo("reopenfinish", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rv(rf, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(rf / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+rv(rf, "scope", "--round", "R1")
+rv(rf, "resolve", "--id", "r1", "--reopen", "--note", "re-check REGRESSION")
+rc, out = rv(rf, "finish", "--round", "R1")
+check("finish closes a round whose ticket was reopened, still blocking",
+      rc == 2 and "FINDINGS 1" in out and "blocking: r1" in out, out)
+green(rf)
+rc, out = rv(rf, "packet", "--milestone", "m1", "--only", "a.py")
+check("a fix-diff round starts once the capped round is finished", rc == 0 and "REVIEW R2" in out, out)
+
 # -- the fixer may not touch .agent/ ---------------------------------------------------------------
 gd = fixing_repo("guard", finding("loop stops one item early", "for i in range(len(items) - 1):"))
 rv(gd, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
@@ -1216,6 +1229,78 @@ else:
     archive_refused = False
     out = 'no archived evidence'
 check('finish refuses archived evidence changed after scope', archive_refused, out)
+
+# r45: a batch re-check needs a registered refuter/recheck run
+nr = make_repo("no-recheck")
+rv(nr, "config", "--mode", "milestone")
+green(nr)
+rv(nr, "packet", "--milestone", "m1")
+rv(nr, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+rv(nr, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-",
+   stdin=finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rv(nr, "adjudicate", "--round", "R1", "--set", "r1=open", "--note", "fixture")
+rv(nr, "decide", "--set", "r1=fix")
+check("no-recheck fixture finding is fixing", [f["status"] for f in side(nr)["findings"]] == ["fixing"],
+      side(nr)["findings"])
+rc, out = rv(nr, "resolve", "--round", "R1", "--file", "-",
+             stdin=json.dumps({"id": "r1", "verdict": "RESOLVED", "note": "fixture"}))
+check("a batch resolve with no registered re-check run is refused",
+      rc != 0 and "no registered re-check run" in out
+      and [f["status"] for f in side(nr)["findings"]] == ["fixing"], out)
+
+# r58: a batch re-check cannot override a waived finding
+wv = make_repo("batch-ignored")
+rv(wv, "config", "--mode", "milestone")
+green(wv)
+rv(wv, "packet", "--milestone", "m1")
+rv(wv, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
+rv(wv, "run", "--round", "R1", "--role", "refuter", "--model", "sonnet")
+rv(wv, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-",
+   stdin="\n".join([finding("loop stops one item early", "for i in range(len(items) - 1):"),
+                    finding("sum ignores its list", "total += items[i]", line=4)]))
+rv(wv, "adjudicate", "--round", "R1", "--file", "-",
+   stdin="\n".join(json.dumps({"id": i, "verdict": "CONFIRMED", "note": "fixture"}) for i in ("r1", "r2")))
+rv(wv, "decide", "--set", "r1=fix", "--set", "r2=waive:accepted by the owner")
+rv(wv, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(wv / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+rv(wv, "scope", "--round", "R1")
+waived_before = {f["id"]: f for f in side(wv)["findings"]}["r2"]
+check("batch-ignored fixture has one fixing and one waived finding",
+      [f["status"] for f in side(wv)["findings"]] == ["fixing", "waived"], side(wv)["findings"])
+rc, out = rv(wv, "resolve", "--round", "R1", "--file", "-",
+             stdin="\n".join([json.dumps({"id": "r1", "verdict": "RESOLVED", "note": "range fixed"}),
+                              json.dumps({"id": "r2", "verdict": "REGRESSION", "note": "reopen it"})]))
+after = {f["id"]: f for f in side(wv)["findings"]}
+check("a batch re-check leaves a waived finding waived and fixes the fixing one",
+      rc == 0 and after["r1"]["status"] == "fixed" and after["r2"] == waived_before
+      and "ignored: r2 (waived)" in out, (out, after["r2"]))
+
+# r57: an unreadable Codex reply is skipped, never a blocked round
+saved_env_path, saved_off = os.environ["PATH"], os.environ.get("DRAINCLAMP_NO_CODEX")
+os.environ["PATH"] = str(cxbin) + os.pathsep + saved_env_path
+os.environ.pop("DRAINCLAMP_NO_CODEX", None)
+try:
+    cxu = make_repo("codexunreadable")
+    rv(cxu, "config", "--mode", "milestone")
+    green(cxu)
+    rv(cxu, "packet", "--milestone", "m1")
+    (cxbin / "mode").write_text("ok", encoding="utf-8")
+    (cxbin / "reply").write_text("I found no issues.\n", encoding="utf-8")
+    rc, out = rv(cxu, "codex", "--round", "R1")
+    runs = side(cxu)["rounds"][0]["runs"]
+    check("an unreadable Codex reply is a one-line skip with no stuck run",
+          rc == 0 and "SKIPPED (unreadable reply)" in out
+          and not any(r["role"] == "critic-codex" for r in runs)
+          and side(cxu)["rounds"][0]["codex"].startswith("skipped"), (out, runs))
+    rv(cxu, "run", "--round", "R1", "--role", "critic-a", "--model", "inline")
+    rv(cxu, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+    rc, out = rv(cxu, "finish", "--round", "R1")
+    check("the round finishes without Codex after an unreadable reply, with no nag",
+          rc == 0 and "NOTE: Codex" not in out, out)
+finally:
+    os.environ["PATH"] = saved_env_path
+    if saved_off is not None:
+        os.environ["DRAINCLAMP_NO_CODEX"] = saved_off
 
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

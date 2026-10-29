@@ -52,7 +52,7 @@ it is `STALE`, and it refuses while findings block or a round is open.
   Register each run with the model it actually ran on.
 - **Cross-model review.** Review state lives in `.agent/`, not in a host. To have another model
   family attack the change, run the round from another host in the same repository: build in one,
-  review in the other. Never reach the other host through a nested CLI.
+  review in the other. The one exception is the Codex critic in step 3 (`codex exec`, read-only, via `dc_review.py codex`); never reach any other host through a nested CLI.
 - **Cap.** At most `max_agents` (≤6) runs per round. Register every run *before* spawning it:
   `dc_review.py run --round R<n> --role <role> --model <model>`. The script refuses the run over
   the cap, and that refusal is the cap. The Codex critic (step 3) is the one run outside it: the

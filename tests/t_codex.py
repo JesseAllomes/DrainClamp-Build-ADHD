@@ -87,6 +87,60 @@ ok, why = attempt("slow", timeout=1)
 check("a slow codex times out instead of blocking", not ok and "timed out" in why, why)
 check("a failed run leaves no stale result behind", not result.exists() or not result.read_text().strip())
 
+# 5. a codex inside the current directory (the reviewed repo) is never run
+import subprocess  # noqa: E402
+
+cwd_dir, empty_dir = tmp / "cwdrepo", tmp / "emptybin"
+cwd_dir.mkdir()
+empty_dir.mkdir()
+if os.name == "nt":
+    (cwd_dir / "codex.cmd").write_text("@echo off\r\n", encoding="utf-8")
+else:
+    (cwd_dir / "codex").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (cwd_dir / "codex").chmod(0o755)
+probe = ("import sys; sys.path.insert(0, sys.argv[1]); import dc_codex; "
+         "print(dc_codex.executable())")
+
+
+def probe_executable(path_value):
+    env = {**os.environ, "PATH": path_value}
+    env.pop(dc_codex.OFF_ENV, None)
+    proc = subprocess.run([sys.executable, "-c", probe, str(SCRIPTS)], cwd=str(cwd_dir), env=env,
+                          capture_output=True, text=True)
+    return proc.stdout.strip(), proc.stderr
+
+
+got, err = probe_executable(str(empty_dir))
+check("a codex only in the current directory is not found", got == "None", (got, err))
+got, err = probe_executable(str(empty_dir) + os.pathsep + ".")
+check("a '.' PATH entry does not make the current directory searchable", got == "None", (got, err))
+got, err = probe_executable(str(empty_dir) + os.pathsep + str(cwd_dir))
+check("the current directory as an absolute PATH entry is still skipped", got == "None", (got, err))
+other = tmp / "elsewhere"
+other.mkdir()
+if os.name == "nt":
+    (other / "codex.cmd").write_text("@echo off\r\n", encoding="utf-8")
+else:
+    (other / "codex").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (other / "codex").chmod(0o755)
+got, err = probe_executable(str(empty_dir) + os.pathsep + str(other))
+check("a codex in an absolute PATH entry is found",
+      got != "None" and Path(got).resolve().parent == other.resolve(), (got, err))
+
+# a symlinked codex on PATH (POSIX) is accepted
+if os.name == "nt":
+    check("symlinked codex on PATH (skipped on Windows)", True)
+else:
+    real_dir, link_dir = tmp / "real", tmp / "linkbin"
+    real_dir.mkdir()
+    link_dir.mkdir()
+    (real_dir / "codex").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (real_dir / "codex").chmod(0o755)
+    os.symlink(real_dir / "codex", link_dir / "codex")
+    got, err = probe_executable(str(link_dir))
+    check("a codex symlinked into a PATH folder is found",
+          got != "None" and Path(got).parent.resolve() == link_dir.resolve(), (got, err))
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)
