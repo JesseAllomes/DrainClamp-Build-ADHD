@@ -275,6 +275,80 @@ rv(cap, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="N
 rc, out = rv(cap, "finish", "--round", "R1")
 check("a clean inline round passes, tagged partial", rc == 0 and "COVERAGE: partial" in out, out)
 
+# -- Codex as a read-only critic: outside the cap, data through the same parser ------------------
+cxbin = Path(tempfile.mkdtemp(prefix="dcfakecodex-"))
+(cxbin / "fake.py").write_text(
+    "import sys, pathlib\n"
+    "a = sys.argv[1:]\n"
+    "prompt = sys.stdin.read()\n"
+    "here = pathlib.Path(sys.argv[0]).parent\n"
+    "assert a[a.index('-s') + 1] == 'read-only' and 'packet.md' in prompt\n"
+    "if (here / 'mode').read_text().strip() == 'fail': sys.exit(4)\n"
+    "pathlib.Path(a[a.index('-o') + 1]).write_text((here / 'reply').read_text())\n",
+    encoding="utf-8")
+if os.name == "nt":
+    (cxbin / "codex.cmd").write_text(f'@"{sys.executable}" "{cxbin / "fake.py"}" %*\r\n',
+                                     encoding="utf-8")
+else:
+    (cxbin / "codex").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{cxbin / "fake.py"}" "$@"\n',
+                                 encoding="utf-8")
+    (cxbin / "codex").chmod(0o755)
+saved_path = os.environ["PATH"]
+os.environ["PATH"] = str(cxbin) + os.pathsep + saved_path
+os.environ.pop("DRAINCLAMP_NO_CODEX", None)
+
+cxr = make_repo("codexcritic")
+rv(cxr, "config", "--mode", "milestone", "--max-agents", "1")
+green(cxr)
+rc, out = rv(cxr, "packet", "--milestone", "m1")
+check("the packet names the Codex step when codex is on PATH", "dc_review.py codex --round R1" in out, out)
+rv(cxr, "run", "--round", "R1", "--role", "critic-a", "--model", "inline")
+(cxbin / "mode").write_text("ok", encoding="utf-8")
+(cxbin / "reply").write_text(finding("loop stops one item early",
+                                    "for i in range(len(items) - 1):") + "\n",
+                             encoding="utf-8")
+rc, out = rv(cxr, "codex", "--round", "R1")
+runs = side(cxr)["rounds"][0]["runs"]
+check("a Codex run registers outside the cap and ingests through the parser",
+      rc == 0 and "critic-codex: 1 in, 1 new" in out
+      and [r["role"] for r in runs] == ["critic-a", "critic-codex"], out)
+check("Codex findings wait for the refuter like any critic's",
+      any(f["status"] == "candidate" for f in side(cxr)["findings"]), side(cxr)["findings"])
+rc, out = rv(cxr, "codex", "--round", "R1")
+check("one Codex run per round", rc != 0 and "already has a critic-codex run" in out, out)
+
+cxf = make_repo("codexfail")
+rv(cxf, "config", "--mode", "milestone")
+green(cxf)
+rv(cxf, "packet", "--milestone", "m1")
+(cxbin / "mode").write_text("fail", encoding="utf-8")
+rc, out = rv(cxf, "codex", "--round", "R1")
+check("a failing Codex is one line and never blocks", rc == 0 and "SKIPPED (exited 4" in out
+      and side(cxf)["rounds"][0]["codex"].startswith("skipped"), out)
+rv(cxf, "run", "--round", "R1", "--role", "critic-a", "--model", "inline")
+rv(cxf, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+rc, out = rv(cxf, "finish", "--round", "R1")
+check("a round finishes without Codex after a skip, with no nag", rc == 0 and "NOTE: Codex" not in out, out)
+
+cxn = make_repo("codexnote")
+rv(cxn, "config", "--mode", "milestone")
+green(cxn)
+rv(cxn, "packet", "--milestone", "m1")
+rv(cxn, "run", "--round", "R1", "--role", "critic-a", "--model", "inline")
+rv(cxn, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
+rc, out = rv(cxn, "finish", "--round", "R1")
+check("finish notes a round that never tried Codex", "NOTE: Codex was on PATH but not run" in out, out)
+
+os.environ["DRAINCLAMP_NO_CODEX"] = "1"
+cxo = make_repo("codexoff")
+rv(cxo, "config", "--mode", "milestone")
+green(cxo)
+rc, out = rv(cxo, "packet", "--milestone", "m1")
+check("without codex the packet says the round runs without it", "codex: not on PATH" in out, out)
+rc, out = rv(cxo, "codex", "--round", "R1")
+check("codex missing is a one-line skip", rc == 0 and "SKIPPED (not on PATH)" in out, out)
+os.environ["PATH"] = saved_path
+
 # -- abort, and binary files in the change set ------------------------------------------------
 ab = make_repo("abort")
 rv(ab, "config", "--mode", "milestone")

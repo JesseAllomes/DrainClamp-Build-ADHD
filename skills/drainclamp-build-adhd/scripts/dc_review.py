@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import _dcio
+import dc_codex
 import dc_map
 import dc_project
 import dc_state
@@ -44,8 +45,11 @@ DEPTH_ROLES = {
     "milestone": ("critic-a", "critic-b", "checker", "refuter"),
     "final": ("critic-a", "critic-b", "checker", "refuter"),
 }
-ROLES = ("critic-a", "critic-b", "checker", "refuter", "fixer", "recheck")
-FINDER_ROLES = ("critic-a", "critic-b", "checker")
+ROLES = ("critic-a", "critic-b", "critic-codex", "checker", "refuter", "fixer", "recheck")
+FINDER_ROLES = ("critic-a", "critic-b", "critic-codex", "checker")
+# Codex is a named external critic (another model family), added to every round when it is
+# on PATH. The agent cap meters Claude subagents, so its one run per round sits outside it.
+UNCAPPED_ROLES = ("critic-codex",)
 JUDGE_ROLES = ("refuter", "recheck")
 SEVERITIES = ("critical", "high", "medium", "low")
 BLOCKING = dc_project.REVIEW_BLOCKING            # candidate, open, fixing
@@ -1354,6 +1358,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--role", required=True, choices=ROLES)
     r.add_argument("--model", required=True, help="e.g. sonnet/high, or inline")
 
+    cx = sub.add_parser("codex", help="run Codex as a read-only critic for a round, then ingest it")
+    cx.add_argument("--round", required=True)
+    cx.add_argument("--timeout", type=int, default=dc_codex.CRITIC_TIMEOUT)
+
     i = sub.add_parser("ingest", help="validate and record a finder's output")
     i.add_argument("--round", required=True)
     i.add_argument("--role", required=True, choices=FINDER_ROLES)
@@ -1548,6 +1556,8 @@ def main() -> int:
               f"callers {meta['callers']} | COVERAGE: {meta['coverage']}")
         print(f"roles: {' '.join(DEPTH_ROLES[depth])} (register each: dc_review.py run "
               f"--round {rid} --role <r> --model <m>)")
+        print(f"codex: dc_review.py codex --round {rid} (run it alongside the finders)"
+              if dc_codex.executable() else "codex: not on PATH; this round runs without it")
         return _dcio.EXIT_OK
 
     if args.cmd == "run":
@@ -1556,20 +1566,63 @@ def main() -> int:
             if rnd.get("finished") or rnd.get("aborted"):
                 raise DcError(f"round {args.round} is closed; start a new one")
             cap = int(rv["config"].get("max_agents") or 6)
-            if len(rnd["runs"]) >= cap:
+            capped = [r for r in rnd["runs"] if r["role"] not in UNCAPPED_ROLES]
+            if args.role in UNCAPPED_ROLES:
+                if any(r["role"] == args.role for r in rnd["runs"]):
+                    raise DcError(f"round {args.round} already has a {args.role} run")
+            elif len(capped) >= cap:
                 raise DcError(f"REVIEW CAP: round {args.round} has used {cap}/{cap} agent runs. "
                               "Finish it and start a fix-diff round after the user says go.",
                               _dcio.EXIT_CHECK_FAILED)
             rnd["runs"].append({"role": args.role, "model": _clip(args.model, 40), "at": _now(),
                                 "found": None})
-            out.append(f"REVIEW {args.round} run {len(rnd['runs'])}/{cap}: {args.role} ({args.model})")
+            used = sum(1 for r in rnd["runs"] if r["role"] not in UNCAPPED_ROLES)
+            out.append(f"REVIEW {args.round} run {used}/{cap}: {args.role} ({args.model})"
+                       + (" (outside the cap)" if args.role in UNCAPPED_ROLES else ""))
             if args.model.lower() == "inline":
                 rnd["coverage"] = "partial (inline, not independent)"
         change(apply_run)
         print(out[0])
         return _dcio.EXIT_OK
 
-    if args.cmd == "ingest":
+    if args.cmd == "codex":
+        def check_open(rv: dict) -> None:
+            rnd = _round(rv, args.round)
+            if rnd.get("finished") or rnd.get("aborted"):
+                raise DcError(f"round {args.round} is closed")
+            if any(r["role"] == dc_codex.CRITIC_ROLE for r in rnd["runs"]):
+                raise DcError(f"round {args.round} already has a {dc_codex.CRITIC_ROLE} run")
+        check_open(review_of(dc_project.load(agent)))
+        folder = agent / REVIEW_DIR / args.round
+        packet = folder / "packet.md"
+        if not packet.is_file():
+            raise DcError(f"no packet for {args.round}: run `dc_review.py packet` first")
+        exe = dc_codex.executable()
+        why = "not on PATH" if exe is None else ""
+        result = folder / "codex.jsonl"
+        if exe:
+            ok, why = dc_codex.run(dc_codex.critic_argv(exe, root, result),
+                                   dc_codex.critic_prompt(packet.relative_to(root).as_posix()),
+                                   result, args.timeout)
+        if why:
+            def note_skip(rv: dict) -> None:
+                _round(rv, args.round)["codex"] = _clip(f"skipped: {why}", 200)
+            change(note_skip)
+            print(f"REVIEW {args.round} {dc_codex.CRITIC_ROLE}: SKIPPED ({why}); "
+                  "the round goes on without it.")
+            return _dcio.EXIT_OK
+
+        def register_codex(rv: dict) -> None:
+            check_open(rv)
+            rnd = _round(rv, args.round)
+            rnd["runs"].append({"role": dc_codex.CRITIC_ROLE, "model": "codex", "at": _now(),
+                                "found": None})
+            rnd["codex"] = "ran"
+        change(register_codex)
+        # Its reply is data: it goes through the same parser, caps and refuter as any critic.
+        args.role, args.file, args.from_transcript = dc_codex.CRITIC_ROLE, str(result), None
+
+    if args.cmd in ("ingest", "codex"):
         items, junk = parse_findings(_reply(args, args.role))
         usage = transcript_tokens(args)
         if not items and junk:
@@ -1875,6 +1928,9 @@ def main() -> int:
         data = change(apply_finish)
         name, rc, detail = verdict(root, data, result["rnd"]["milestone"])
         print(f"REVIEW {args.round} finished: {name} ({'; '.join(detail)})")
+        if not result["rnd"].get("codex") and dc_codex.executable():
+            print(f"NOTE: Codex was on PATH but not run in {args.round} "
+                  "(every round adds it: dc_review.py codex --round <R>).")
         return rc
 
     if args.cmd == "brief":
