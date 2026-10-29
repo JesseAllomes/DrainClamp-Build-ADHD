@@ -1,0 +1,2 @@
+# dc_pii.py allow rules: values are hashed, never stored. See dc_pii.py --help.
+value NAME sha256:fe529f92689b9e53  author name, already public in LICENSE and plugin.json

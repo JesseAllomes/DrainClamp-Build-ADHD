@@ -1,0 +1,79 @@
+# Common given names in Australia, lower case, for dc_pii.py's name rule: a Title Case pair is
+# read as a person only when its first word is listed here (or a title or people label precedes it).
+# Whitespace separated; `#` starts a comment. Names that are also common words (May, Will, Mark...)
+# are listed but only count after a label: see AMBIGUOUS in dc_pii.py.
+aaliyah aaron abbey abby abdul abdullah abel abigail abraham abu ada adam adeline adrian adriana
+adrienne agnes ahmad ahmed aidan aiden aileen ainsley aisha aislinn aiyana ajay akash alan alana
+alanna albert alberto alec alejandro alessandra alessandro alex alexa alexander alexandra alexis
+alfie alfred ali alice alicia alina alisha alison alistair alivia aliyah allan allen allison alma
+alva alvin amal amanda amani amara amber amelia amelie amir amira amit amos amy ana anastasia anders
+andre andrea andreas andrew andy aneesh angel angela angelica angelina angelo angie angus anh
+anika anita anja ann anna annabel annabelle anne annette annie anthony antoinette anton antonio
+anya april archer archie ari aria ariana arianna ariel arjun arlo armand arnold aroha arthur
+arun arya asha ashley ashlee ashton asif aston astrid atticus aubrey audrey august augustus aurora
+austin ava avery axel ayaan ayesha aylin azalea bailey barbara barnaby barry bart basil bassam bea
+beatrice beatrix beau belinda bella ben benedict benjamin bennett benny bernadette bernard bernice
+beryl beth bethany betty beverley bianca bill billie billy blair blake bob bobby bonnie boyd brad
+bradley brady brandon brayden brendan brenda brent brett brian briana bridget brittany
+brodie brody brooke brooklyn bruce bruno bryce bryn caitlin caleb callum calvin cameron camila
+camilla campbell candice cara carl carla carlos carly carmel carmen carol caroline carolyn carter
+casey cassandra cassidy catherine cathy cecilia cedric celeste celia chad chanel chantelle charles
+charlie charlotte chase chelsea cheng cheryl chester chloe chris christian christina christine
+christopher chun ciara cindy claire clara clare clarence claudia clay clayton clem clement cleo
+cliff clifford clint clive cody colin colleen connor conor constance cooper cora corey corinne
+craig cristina crystal curtis cynthia daisy dale damian damien damon dan dana daniel daniela
+daniella danielle danny dante daphne darcy darius darren darryl daryl dave david dawn dean deanna
+debbie deborah debra declan deepak deidre delilah della dennis derek desmond destiny devi devon
+dexter diana diane dianne dimitri dina dinesh dino dion dmitri dominic dominique don donald donna
+doreen doris dorothy doug douglas drew duc duncan dustin dwayne dylan ebony ed eddie eden edgar
+edith edmund edward edwin eileen elaine eleanor elena eli eliana elias elijah elise eliza
+elizabeth ella elle ellen ellie elliot elliott ellis eloise elsa elsie elvis emanuel emerson emil
+emilia emilie emily emma emmanuel emmett emre enzo eric erica erik erin ernest esha esme esther
+ethan eugene eva evan evangeline eve evelyn everett evie ezekiel ezra faith farah farhan fatima
+fay felicity felix fern fernando finlay finley finn fiona flora florence floyd flynn frances
+francesca francis franco frank frankie fred freddie frederick freya gabriel gabriela gabriella
+gabrielle gail garry gary gavin gemma gene geoff geoffrey george georgia georgina gerald geraldine
+gerard gia gideon gilbert gillian gina giovanni gisele giuseppe glen glenda glenn gloria gordon
+grace graeme graham grant greg gregory greta guy gwen gwendolyn hailey haley hamish hamza hana
+hank hannah hans harley harlow harold harper harrison harry harvey hassan hayden hayley hazel
+heath heather hector heidi helen helena henry herbert hiroshi holly hope howard hudson hugh hugo
+hui hunter huong hussein ian ibrahim ida ignatius ike imogen ingrid ira irene iris isaac isabel
+isabella isabelle isaiah isla ismail ivan ivy jace jack jackie jackson jacob jacqueline jade jai
+jaiden jake james jamie jan jane janet janice janine jared jarrod jason jasmine jasper javier jay
+jayden jean jeanette jeff jeffrey jemima jenna jennifer jenny jeremy jerome jerry jesse jessica
+jessie jett jia jill jim jimmy jin joan joanna joanne jocelyn jodie joe joel joey johan john
+johnny jolene jon jonah jonathan jordan jorge jose joseph josephine josh joshua josie joy joyce
+juan judith judy jules julia julian juliana julie juliet june justin kai kaitlyn kamal kara karen
+kari karina karl kate katelyn katherine kathleen kathryn kathy katie katrina kay kayla keira keith
+kelly kelvin ken kendall kenneth kerry kevin khalid khanh kiara kieran kim kimberley kirk kirra
+kirsten kit kobe krishna kristen kristina kurt kyle kylie lachlan lacey lana lance lara larry
+laura lauren laurence lawrence layla leah lee leila lena leo leon leonard leonie levi lewis lexi
+liam lian lily lina linda lindsay lindsey ling lisa liv logan lois lola lorraine louis louisa
+louise luca lucas lucia lucinda lucy luis luka luke lyla lydia lyn lynda lynette lynn mabel
+mackenzie maddison madeleine madeline madison maeve maggie mai maisie malcolm malik mandy manish
+manuel mara marc marcel marcus margaret margot maria mariah marian marie marilyn marina mario
+marion marjorie mark marley marlene marshall martha martin marvin mary mason mathew matilda matt
+matthew maureen maurice max maxine maya megan mehmet mei mel melanie melinda melissa melody
+mercedes meredith mia micah michael michaela michel michele michelle miguel mikayla mike mila
+milan miles millie milo mina minh mira miranda miriam mitchell mohamed mohammad mohammed molly
+monica monique morgan muhammad murray mustafa nadia naomi natalia natalie natasha nate nathan
+nathaniel neil nell nellie neville ngoc nicholas nick nicola nicole nigel nikhil nikita
+nina noah noel nora norah norma norman oakley olive oliver olivia omar oscar owen paige pam pamela
+paolo patricia patrick paul paula pauline pearl peggy penelope penny percy peter petra phil
+philip phillip phoebe phuong pia pierre piper pooja preston priscilla priya quentin quinn rachel
+rafael rahul raj rajesh ralph ramon randall raphael raquel ravi ray raymond reagan rebecca reece
+reggie reid remy renee reuben rex rhett rhonda rhys ricardo richard rick ricky riley rita rob
+robert roberta roberto robin robyn rocco rod rodney roger rohan roland roman ron ronald ronan rory
+rosa rosalind rose rosemary rosie ross rowan roxanne roy ruben ruby rudy rupert russell ruth ryan
+sabrina sadie sahil saira sally salma sam samantha samara sami samir samuel sandra sanjay santiago
+sara sarah sasha saul savannah scarlett scott sean sebastian selena selina seth shane shannon
+sharon shaun shauna shawn sheila shelby shelley sheridan sherry shirley shreya sian sidney siena
+simon simone sione sofia sonia sophia sophie spencer stacey stanley stefan stella stephanie
+stephen steve steven stuart sue summer sunil susan suzanne sybil sylvia tahlia talia tamara
+tammy tania tanya tara tariq tasha tate taylor ted teresa terrence terry tessa thanh thea theo
+theodore theresa thomas tia tiana tiffany tim timothy tina toby todd tom tommy toni tony tracey
+travis trent trevor trinh trinity tristan troy trudy tuan tyler tyson uma ursula valentina
+valerie vanessa vera veronica vicki victor victoria vihaan vikram vince vincent violet virginia
+vivian vivienne wade walter wanda warren wayne wei wendy wes wesley will willa william willow
+wilson winona winston xavier xin yasmin yolanda yusuf yvette yvonne zac zach zachary zahra zain
+zak zara zeke zoe zoey
