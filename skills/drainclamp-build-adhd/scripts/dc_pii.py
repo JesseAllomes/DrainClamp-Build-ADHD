@@ -770,15 +770,15 @@ def allow_rules(root: Path, rev: str) -> dict:
     return parse_allow(text)
 
 
-def report(hits: list[dict], head: str) -> list[str]:
+def report(hits: list[dict], head: str, cap: int | None = REPORT_CAP) -> list[str]:
     if not hits:
         return []
     lines = [f"{head}: {len(hits)} finding(s). Values are never printed."]
-    for h in hits[:REPORT_CAP]:
+    for h in hits[:cap]:
         at = f":{h['line']}" if h["line"] else ""
         lines.append(f"  {h['rev']} {h['where']}{at}  {h['kind']}")
-    if len(hits) > REPORT_CAP:
-        lines.append(f"  TRUNCATED: SHOWING {REPORT_CAP}/{len(hits)}")
+    if cap is not None and len(hits) > cap:
+        lines.append(f"  TRUNCATED: SHOWING {cap}/{len(hits)}")
     lines.append("Remove the data (rewrite the commits if it is in history), or if it is not "
                  f"PII: dc_pii.py allow --at <rev>:<file>:<line> --kind <KIND> --reason \"...\" "
                  f"(path rules for binaries go in {ALLOW_FILE} by hand).")
@@ -814,10 +814,11 @@ def cmd_scan(root: Path, args, home: str | None) -> int:
         rules = allow_rules(root, "HEAD")
         for path in git(root, "ls-tree", "-r", "--name-only", "HEAD").splitlines():
             scan_blob(root, hits, opts, rules, "HEAD", path)
-    else:  # --history: every blob ever committed on any ref, and every message
+    else:  # --history: every blob ever committed on any ref (or one remote's), and every message
+        refs = [f"--remotes={args.remote}"] if args.remote else ["--all"]
         rules = allow_rules(root, "HEAD")
         seen = set()
-        for row in git(root, "rev-list", "--objects", "--all").splitlines():
+        for row in git(root, "rev-list", "--objects", *refs).splitlines():
             sha, _, path = row.partition(" ")
             if not path or sha in seen:
                 continue
@@ -831,12 +832,12 @@ def cmd_scan(root: Path, args, home: str | None) -> int:
                 continue
             scan_blob(root, hits, opts, rules, sha, path,
                       git(root, "cat-file", "blob", sha, binary=True))
-        for block in git(root, "log", "--all", "--format=%H%x00%B%x01").split("\x01"):
+        for block in git(root, "log", *refs, "--format=%H%x00%B%x01").split("\x01"):
             sha, _, body = block.strip("\n").partition("\x00")
             if sha:
                 scan_text(hits, opts, rules, sha, "(commit message)",
                           list(enumerate(body.split("\n"), 1)))
-    lines = report(hits, f"DRAINCLAMP PII: {root.name}")
+    lines = report(hits, f"DRAINCLAMP PII: {root.name}", None if args.full else REPORT_CAP)
     print("\n".join(lines) if lines else f"DRAINCLAMP PII: {root.name} clean.")
     return _dcio.EXIT_CHECK_FAILED if hits else _dcio.EXIT_OK
 
@@ -902,6 +903,8 @@ def main() -> int:
     g = sc.add_mutually_exclusive_group(required=True)
     g.add_argument("--range", help="commits A..B (as a push would publish them)")
     g.add_argument("--history", action="store_true", help="every blob and message on any ref")
+    sc.add_argument("--full", action="store_true", help="list every finding (no cap)")
+    sc.add_argument("--remote", help="with --history: only what that remote holds (e.g. origin)")
     g.add_argument("--tree", action="store_true", help="every file at HEAD, whole contents")
     al = sub.add_parser("allow", help="allow a reported finding by location; value never shown")
     al.add_argument("--at", required=True, help="<rev>:<file>:<line> from a report")

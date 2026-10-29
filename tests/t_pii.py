@@ -213,6 +213,14 @@ rc, out = prepush()
 check("an unreadable config refuses (fail closed)", rc != 0 and "fail closed" in out, out)
 (home / "config.json").write_text("{}", encoding="utf-8")
 
+# history audit: --remote sees only what the remote holds; --full lists everything
+commit({"local.txt": J("ring ", MOBILE, "\n")}, "local only")
+rc, out = pii("scan", "--history", "--remote", "origin")
+check("a remote history audit ignores unpushed commits", rc == 0 and "clean" in out, out)
+rc, out = pii("scan", "--history", "--full")
+check("a full-history audit sees local commits too", rc != 0 and "local.txt:1  PHONE" in out, out)
+git("reset", "-q", "--hard", "origin/main")
+
 # 4. drift against a pii-redact checkout
 src = tmp / "pii-redact"
 subprocess.run(["git", "init", "-q", "-b", "main", str(src)], check=True)
