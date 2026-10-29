@@ -51,8 +51,8 @@ You cannot invoke `/clear` or `/compact`. No host exposes them to the model. Gat
 
 | Verdict | Output |
 |---|---|
-| `COMPLETE`, host documents a clear command | script line, then `Run /clear now, then mark the project complete with dc_session.py --complete <n>.` |
-| `COMPLETE`, host support unknown | script line, then `Start a fresh session, then mark the project complete with dc_session.py --complete <n>.` |
+| `COMPLETE`, host documents a clear command | run `dc_project.py --root <root> complete --note "<one line>"` first, while context is loaded; then the script line and `Run /clear now.` |
+| `COMPLETE`, host support unknown | run `dc_project.py --root <root> complete --note "<one line>"` first; then the script line and `Start a fresh session.` |
 | `PURGE`, host documents a compaction command | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.`<br>`Run /compact now, then resume from .agent/drainclamp-state.md.` |
 | `PURGE`, host support unknown | first line, then `Start a fresh session and resume from .agent/drainclamp-state.md.` |
 | `HOLD` | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context retained (overlap NN%).` |
