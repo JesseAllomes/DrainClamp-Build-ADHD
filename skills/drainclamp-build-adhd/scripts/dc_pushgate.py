@@ -200,7 +200,31 @@ def check(root: Path, home: str | None) -> tuple[int, list[str]]:
     out = [ln for ln in (scan.stdout + scan.stderr).splitlines() if ln.strip()]
     out += gate_lines
     out += [ln for ln in drift.stdout.splitlines() if ln.startswith("WARN")]
-    return (_dcio.EXIT_OK if scan.returncode == 0 else _dcio.EXIT_CHECK_FAILED), out
+    verdict = push_verdict(scan.returncode, gate_lines)
+    out.append(verdict)
+    return (_dcio.EXIT_OK if verdict.startswith("PUSH: go") else _dcio.EXIT_CHECK_FAILED), out
+
+
+def push_verdict(scan_rc: int, gate_lines: list[str]) -> str:
+    """The one line Gate P acts on: push only on `PUSH: go`.
+
+    Hold when the scan found anything or failed, and when the hook is missing or its
+    copied scanner differs (the hook and this check must run the same scanner). A repo
+    with its own hooksPath may still push after a clean check: the gate covered this
+    push, not the user's manual ones.
+    """
+    text = " ".join(gate_lines)
+    if scan_rc == _dcio.EXIT_CHECK_FAILED:
+        return "PUSH: hold (PII found: remove it or allow it, see above)"
+    if scan_rc != _dcio.EXIT_OK:
+        return "PUSH: hold (the scanner failed; nothing was checked)"
+    if "not installed" in text:
+        return "PUSH: hold (push gate not installed: the user runs dc_pushgate.py install)"
+    if "differs from this plugin" in text:
+        return "PUSH: hold (installed scanner is out of date: rerun dc_pushgate.py install)"
+    if "INACTIVE" in text:
+        return "PUSH: go (manual pushes from this repo are not covered by the hook)"
+    return "PUSH: go"
 
 
 def main() -> int:

@@ -32,7 +32,7 @@ this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests 
 - Reuse existing helpers. Keep bulk in `.agent/`, never auto-load the log archive, and trim failures to first-party evidence.
 - Gate 2 success is exactly `Master state and optimizations saved to .agent/drainclamp-state.md. Continuing pipeline.`
 - Never impersonate the host or claim an unobserved purge/reset. Use `DRAINCLAMP:` for purge/hold messages.
-- Push only after `dc_pushgate.py check` passes; never `--no-verify`, never print a flagged value. Nothing on a remote may hold PII.
+- Push only on `PUSH: go` from `dc_pushgate.py check`; never `--no-verify`, never print a flagged value. Nothing on a remote may hold PII.
 - Every cap declares `SHOWING`, `TRUNCATED`, or `COVERAGE: partial`; a skipped gate is not a passed gate.
 - `dc_verify.py --tier` requires Gate 2 state with a roadmap row and non-empty decisions; only `--allow-no-state` bypasses it.
 - After a gap, run `dc_audit.py`, read `dc_state.py --resume-view`, then `dc_project.py next`; read only the chunk targets it names and

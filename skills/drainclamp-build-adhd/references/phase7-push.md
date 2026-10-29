@@ -17,8 +17,9 @@ dc_pushgate.py --root <repo> check
 ```
 
 It scans what pushing the current branch would publish (every unpushed commit: added lines,
-commit messages, added file names, Office text; unreadable binaries refused), then prints the
-hook status and any pii-redact drift. Push only on exit 0 and `PUSH GATE: active.`
+commit messages, added file names, Office text; unreadable binaries refused), prints the hook
+status and any pii-redact drift, and ends with one verdict line. **Push only on `PUSH: go`**
+(exit 0); on `PUSH: hold (<reason>)` tell the user the reason and stop.
 
 ## On a refusal
 
@@ -41,12 +42,14 @@ kind) and stop. They decide:
 - Printing, echoing or quoting a flagged value.
 - Allowing a finding the user has not confirmed is not PII.
 
-## Status lines
+## Verdicts
 
-- `PUSH GATE: not installed` — ask the user to approve `dc_pushgate.py install`.
-- `PUSH GATE: INACTIVE for this repository` — the repo has its own `core.hooksPath` (husky and
-  similar). The gate's `check` still covers your push; tell the user their manual pushes from
-  this repo are not covered.
-- `installed scanner differs` — rerun `dc_pushgate.py install` (after a plugin update).
-- `WARN: pii-redact ... changed since the port` — the push may go ahead; tell the user the
+- `PUSH: go` — push.
+- `PUSH: go (manual pushes from this repo are not covered by the hook)` — the repo has its own
+  `core.hooksPath` (husky and similar). Push, and tell the user once.
+- `PUSH: hold (PII found ...)` — see "On a refusal".
+- `PUSH: hold (push gate not installed ...)` or `(installed scanner is out of date ...)` — the
+  user runs `dc_pushgate.py install` (a global git config change is theirs to approve).
+- `PUSH: hold (the scanner failed ...)` — report the error; nothing was checked.
+- A `WARN: pii-redact ... changed since the port` line never holds a push; tell the user the
   detectors need porting again (`dc_pii.py drift`).

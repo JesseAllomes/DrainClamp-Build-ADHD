@@ -66,9 +66,12 @@ repo = tmp / "repo"
 subprocess.run(["git", "clone", "-q", str(remote), str(repo)], check=True, capture_output=True)
 commit(repo, "README.md", "hello\n", "start")
 
-# 1. not installed: status says so, and a push goes through untouched
+# 1. not installed: status says so, and Gate P holds
 rc, out = gate("status")
 check("status before install says not installed", rc != 0 and "not installed" in out, out)
+rc, out = gate("check", root=repo)
+check("check holds a clean push when the hook is not installed", rc != 0
+      and "PUSH: hold (push gate not installed" in out, out)
 
 # 2. a foreign global hooksPath is never replaced without --force
 git(repo, "config", "--global", "core.hooksPath", str(tmp / "theirs"))
@@ -137,10 +140,19 @@ git(repo, "config", "--unset", "core.hooksPath")
 commit(repo, "c.txt", J("ring 0412", " 345", " 678\n"), "phone")
 rc, out = gate("check", root=repo)
 check("check refuses outgoing PII and reports the hook", rc != 0 and "PHONE" in out
-      and "PUSH GATE: active" in out, out)
+      and "PUSH GATE: active" in out and out.strip().endswith("PUSH: hold (PII found: remove it or allow it, see above)"), out)
 git(repo, "reset", "-q", "--hard", "HEAD~1")
 rc, out = gate("check", root=repo)
-check("check passes a clean branch", rc == 0 and "clean" in out, out)
+check("check passes a clean branch", rc == 0 and "clean" in out and out.strip().endswith("PUSH: go"), out)
+git(repo, "config", "core.hooksPath", ".husky")
+rc, out = gate("check", root=repo)
+check("a repo with its own hooksPath may push but is told", rc == 0
+      and out.strip().endswith("PUSH: go (manual pushes from this repo are not covered by the hook)"), out)
+git(repo, "config", "--unset", "core.hooksPath")
+(home / "pii-gate" / "assets" / "given-names.txt").write_text("changed", encoding="utf-8")
+rc, out = gate("check", root=repo)
+check("a stale installed scanner holds the push", rc != 0 and "PUSH: hold (installed scanner is out of date" in out, out)
+gate("install")
 
 # 9. uninstall: our hooksPath unset, our files gone, a foreign file kept
 (hooks / "notes.txt").write_text("mine", encoding="utf-8")
