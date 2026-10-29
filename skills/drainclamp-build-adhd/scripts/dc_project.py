@@ -523,11 +523,11 @@ def _chunk_files(c: dict) -> set[str]:
     return {_path_key(t) for t in c.get("targets") or [] if _path_key(t)}
 
 
-def chunk_branch(root: Path, cid: str) -> tuple[str, str]:
-    """(branch, worktree path) for one builder chunk."""
+def chunk_branch(root: Path, mid: str, cid: str) -> tuple[str, str]:
+    """(branch, worktree path) for one builder chunk; chunk ids repeat across milestones."""
     slug = slugify(root.name) or "project"
     repo = _dcio.repo_root(root)
-    return f"dc/{slug}-{cid}", (repo / ".worktrees" / f"{slug}-{cid}").as_posix()
+    return f"dc/{slug}-{mid}-{cid}", (repo / ".worktrees" / f"{slug}-{mid}-{cid}").as_posix()
 
 
 def fanout(data: dict, root: Path, mid: str, no_subagents: bool = False,
@@ -584,7 +584,7 @@ def fanout(data: dict, root: Path, mid: str, no_subagents: bool = False,
         return [f"SEQUENTIAL: {reason}"]
     lines = [f"PARALLEL: {', '.join(c['id'] for c in pick)} (independent, medium+)"]
     for c in pick:
-        branch, tree = chunk_branch(root, c["id"])
+        branch, tree = chunk_branch(root, mid, c["id"])
         lines.append(f"  {c['id']} -> branch {branch}  worktree {tree}")
     if later:
         lines.append(f"  then in order after the merge: {', '.join(c['id'] for c in later)}")
@@ -612,7 +612,7 @@ def brief(data: dict, root: Path, mid: str, cid: str, budget: int = 40000,
     c = _find(chunks, cid, f"chunk in {mid}")
     contract = next((x for x in chunks if x["goal"].lower().startswith("contract:")
                      and x["id"] != cid and x.get("done")), None)
-    branch, tree = chunk_branch(root, cid)
+    branch, tree = chunk_branch(root, mid, cid)
     files = c.get("targets") or []
     lines = [f"BUILDER BRIEF {mid}/{cid}",
              f"Goal: {_clip(c['goal'])}",
@@ -653,7 +653,7 @@ def merge_order(data: dict, root: Path, mid: str, ids: list[str] | None = None) 
             raise DcError("dependency cycle among: " + ", ".join(sorted(pending)))
         out.append(ready[0])
         pending.discard(ready[0])
-    return [f"{cid} {chunk_branch(root, cid)[0]}" for cid in out]
+    return [f"{cid} {chunk_branch(root, mid, cid)[0]}" for cid in out]
 
 
 # -- lifecycle: create from a charter, complete, reopen ------------------------

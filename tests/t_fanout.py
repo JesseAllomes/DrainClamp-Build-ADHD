@@ -68,8 +68,8 @@ lines = out.splitlines()
 check("independent medium chunks go parallel",
       rc == 0 and lines[0] == "PARALLEL: c2, c3 (independent, medium+)" and len(lines) == 3, out)
 check("branch and worktree naming",
-      "c2 -> branch dc/fan-out-demo-c2  worktree " in lines[1]
-      and lines[1].endswith(".worktrees/fan-out-demo-c2"), lines[1])
+      "c2 -> branch dc/fan-out-demo-m1-c2  worktree " in lines[1]
+      and lines[1].endswith(".worktrees/fan-out-demo-m1-c2"), lines[1])
 
 rc, out = fan(r1, "--no-subagents")
 check("host without subagents", out == "SEQUENTIAL: host has no subagents", out)
@@ -148,7 +148,7 @@ add(r7, "d", "--deps", "c2,c3")
 rc, out = proj(r7, "merge-order", "--milestone", "m1")
 order = [l.split()[0] for l in out.splitlines()]
 check("merge order follows deps", rc == 0 and order == ["c1", "c2", "c3", "c4"], out)
-check("merge order lists the branch", out.splitlines()[0] == "c1 dc/order-c1", out)
+check("merge order lists the branch", out.splitlines()[0] == "c1 dc/order-m1-c1", out)
 rc, out = proj(r7, "merge-order", "--milestone", "m1", "--chunks", "c4,c3")
 check("merge order of a subset", [l.split()[0] for l in out.splitlines()] == ["c3", "c4"], out)
 side = r7 / ".agent" / "drainclamp-project.json"
