@@ -124,7 +124,8 @@ dead.wait()
 (tmp / _dcio.LOCK_NAME).write_text(
     json.dumps({"pid": dead.pid, "acquired": time.time() - 10_000}), encoding="utf-8"
 )
-lk = _dcio.FileLock(tmp, timeout=1.0)
+# The dead-PID check shells out to tasklist on Windows (over a second on a busy machine).
+lk = _dcio.FileLock(tmp, timeout=5.0)
 try:
     lk.acquire()
     broke_dead = True
