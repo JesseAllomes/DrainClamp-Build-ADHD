@@ -15,7 +15,7 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 | 1 Grill | a material choice is open, a charter has blanks, or skills are unmarked | `phase1-grill.md`; `dc_project.py charter`, `dc_skills.py` |
 | 2 Externalise | state is missing/stale or roadmap changed | `phase2-blueprint.md`; `dc_state.py`, `dc_project.py` |
 | 3 Checks | verify config changed or `DC:VERIFY` is empty | `phase3-select-checks.md`; `dc_verify.py` |
-| 4 Implement | always | `phase4-implement.md`; `dc_project.py`, `dc_map.py`, `dc_chunk.py`, `dc_skills.py` |
+| 4 Implement | always | `phase4-implement.md`; `dc_project.py` (`fanout`), `dc_map.py`, `dc_chunk.py`, `dc_skills.py` |
 | 5 Reset | milestone or chunk boundary | `phase5-reset.md`; `dc_state.py --purge-check` |
 | 6 Review | review mode on (`dc_review.py config`) at milestone close, after Gate 3, before Gate 5; or on request. Advisor after a pass | `phase6-review.md`; `dc_review.py` |
 | P Push | before every `git push`, compulsory | `phase7-push.md`; `dc_pushgate.py`, `dc_pii.py` |
