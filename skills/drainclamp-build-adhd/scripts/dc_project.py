@@ -411,10 +411,12 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
         cs = data["chunks"].setdefault(mid, [])
         cid = _next_id(cs, "c")
         est = _num(a, "est", required=False)
-        cs.append({"id": cid, "goal": _text(a, "goal", True),
-                   "targets": _targets(a.get("targets")),
-                   "est_min": int(est) if est else None, "done": False, "done_at": None,
-                   "note": ""})
+        chunk = {"id": cid, "goal": _text(a, "goal", True),
+                 "targets": _targets(a.get("targets")),
+                 "est_min": int(est) if est else None, "done": False, "done_at": None,
+                 "note": ""}
+        chunk.update(_fanout_fields(a, cs))
+        cs.append(chunk)
         return f"chunk {mid}/{cid} added"
     if op in ("chunk.done", "chunk.undo", "chunk.note"):
         mid = _text(a, "milestone", True)
@@ -475,6 +477,166 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
         data["time"].remove(s)
         return f"time {s['id']} deleted"
     raise DcError(f"unknown operation: {op}")
+
+
+# -- conductor build: chunk flags, fan-out test, builder brief, merge order -----
+
+SIZES = ("small", "medium", "large")
+MAX_BUILDERS = 4
+
+
+def _fanout_fields(a: dict, siblings: list[dict]) -> dict:
+    """Optional chunk flags from `chunk add`. Additive: old chunks simply lack them."""
+    out: dict = {}
+    deps = [d.strip() for d in str(a.get("deps") or "").split(",") if d.strip()]
+    known = {c["id"] for c in siblings}
+    for d in deps:
+        if d not in known:
+            raise DcError(f"--deps: unknown chunk {d} in this milestone")
+    if deps:
+        out["deps"] = deps
+    size = _text(a, "size")
+    if size:
+        if size not in SIZES:
+            raise DcError(f"--size must be one of {', '.join(SIZES)}")
+        out["size"] = size
+    par = _text(a, "parallel")
+    if par:
+        if par not in ("yes", "no"):
+            raise DcError("--parallel must be yes or no")
+        if not _text(a, "why"):
+            raise DcError("--why is required with --parallel (one line)")
+        out["parallel"] = par
+    if _text(a, "why"):
+        out["why"] = _text(a, "why")[:NOTE_CAP]
+    if _text(a, "critical"):
+        out["critical"] = _text(a, "critical")[:NOTE_CAP]
+    return out
+
+
+def _path_key(target: str) -> str:
+    """Target as a comparable path: `::symbol` stripped, slashes unified, case-folded."""
+    return target.split("::", 1)[0].strip().replace("\\", "/").lower()
+
+
+def _chunk_files(c: dict) -> set[str]:
+    return {_path_key(t) for t in c.get("targets") or [] if _path_key(t)}
+
+
+def chunk_branch(root: Path, cid: str) -> tuple[str, str]:
+    """(branch, worktree path) for one builder chunk."""
+    slug = slugify(root.name) or "project"
+    repo = _dcio.repo_root(root)
+    return f"dc/{slug}-{cid}", (repo / ".worktrees" / f"{slug}-{cid}").as_posix()
+
+
+def fanout(data: dict, root: Path, mid: str, no_subagents: bool = False,
+           critical: list[str] | None = None) -> list[str]:
+    """The fan-out test: PARALLEL lines, or exactly one SEQUENTIAL line with the first reason."""
+    chunks = data["chunks"].get(mid, [])
+    if not chunks:
+        raise DcError(f"milestone {mid} has no chunks")
+    by_id = {c["id"]: c for c in chunks}
+    for cid in critical or []:
+        if cid not in by_id:
+            raise DcError(f"--critical: unknown chunk {cid}")
+    if no_subagents:
+        return ["SEQUENTIAL: host has no subagents"]
+    done = {c["id"] for c in chunks if c.get("done")}
+    open_chunks = [c for c in chunks if not c.get("done")]
+    ready = [c for c in open_chunks if all(d in done for d in c.get("deps", []))]
+    if len(ready) < 2:
+        for c in open_chunks:
+            waits = [d for d in c.get("deps", []) if d not in done]
+            if waits:
+                return [f"SEQUENTIAL: {c['id']} needs {waits[0]}"]
+        return [f"SEQUENTIAL: {len(ready)} ready chunk(s), need 2"]
+    for c in ready:
+        crit = c.get("critical") or ("critical" if c["id"] in (critical or []) else "")
+        if crit:
+            kind = "" if crit == "critical" else f" ({crit})"
+            return [f"SEQUENTIAL: {c['id']} is critical{kind}"]
+        if c.get("size") not in ("medium", "large"):
+            return [f"SEQUENTIAL: {c['id']} is {c['size']}" if c.get("size")
+                    else f"SEQUENTIAL: {c['id']} has no size (needs medium+)"]
+        if c.get("parallel", "no") == "no":
+            return [f"SEQUENTIAL: {c['id']} is marked parallel no"]
+    for i, x in enumerate(ready):
+        for y in ready[i + 1:]:
+            shared = sorted(_chunk_files(x) & _chunk_files(y))
+            if shared:
+                return [f"SEQUENTIAL: {x['id']} and {y['id']} share {shared[0]}"]
+    pick = ready[:MAX_BUILDERS]
+    lines = [f"PARALLEL: {', '.join(c['id'] for c in pick)} (independent, medium+)"]
+    for c in pick:
+        branch, tree = chunk_branch(root, c["id"])
+        lines.append(f"  {c['id']} -> branch {branch}  worktree {tree}")
+    return lines
+
+
+def default_verify(root: Path) -> str:
+    """The milestone-tier DC:VERIFY runner as a command line, or a pointer to the conductor."""
+    text = _dcio.read_text(root / _dcio.AGENT_DIR_NAME / _dcio.STATE_NAME)
+    try:
+        entries = dc_state.validate_verify_block(
+            dc_state.State.parse(text).sections["VERIFY"]) if text else []
+    except DcError:
+        entries = []
+    for e in entries:
+        if e["tier"] == "milestone":
+            return " ".join(e["argv"])
+    return "(no DC:VERIFY milestone runner: ask the conductor)"
+
+
+def brief(data: dict, root: Path, mid: str, cid: str, budget: int = 40000,
+          verify: str | None = None) -> list[str]:
+    """Builder brief, at most 30 lines."""
+    chunks = data["chunks"].get(mid, [])
+    c = _find(chunks, cid, f"chunk in {mid}")
+    contract = next((x for x in chunks if x["goal"].lower().startswith("contract:")
+                     and x["id"] != cid and x.get("done")), None)
+    branch, tree = chunk_branch(root, cid)
+    files = c.get("targets") or []
+    lines = [f"BUILDER BRIEF {mid}/{cid}",
+             f"Goal: {_clip(c['goal'])}",
+             "Files allowed (edit nothing else):"]
+    lines += [f"  {t}" for t in files[:8]] or ["  (none listed: ask the conductor)"]
+    if len(files) > 8:
+        lines.append(f"  (+{len(files) - 8} more in the sidecar)")
+    if contract:
+        note = _clip(contract.get("note") or "") or "(no note; read its goal)"
+        lines.append(f"Contract ({contract['id']}): {_clip(contract['goal'])} -- {note}")
+    else:
+        lines.append("Contract: none")
+    lines += [f"Verify: {verify or default_verify(root)}",
+              f"Branch: {branch}",
+              f"Worktree: {tree}",
+              f"Token budget: {budget}",
+              "Over budget: stop at the last green commit and report, never grind.",
+              "Commits stay local on the dc/* branch; never push.",
+              "Report: commit hashes, verify result, anything left."]
+    return lines[:30]
+
+
+def merge_order(data: dict, root: Path, mid: str, ids: list[str] | None = None) -> list[str]:
+    """Chunks in dependency order (ties by id), one `<id> <branch>` per line."""
+    chunks = data["chunks"].get(mid, [])
+    by_id = {c["id"]: c for c in chunks}
+    want = ids or [c["id"] for c in chunks]
+    for cid in want:
+        if cid not in by_id:
+            raise DcError(f"unknown chunk {cid} in {mid}")
+    pending = set(want)
+    out: list[str] = []
+    while pending:
+        # only deps inside the requested set order the merge; others merged earlier
+        ready = sorted(x for x in pending
+                       if not any(d in pending for d in by_id[x].get("deps", [])))
+        if not ready:
+            raise DcError("dependency cycle among: " + ", ".join(sorted(pending)))
+        out.append(ready[0])
+        pending.discard(ready[0])
+    return [f"{cid} {chunk_branch(root, cid)[0]}" for cid in out]
 
 
 # -- lifecycle: create from a charter, complete, reopen ------------------------
@@ -743,6 +905,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--goal", required=True)
     a.add_argument("--targets", help="semicolon-separated path or path::symbol")
     a.add_argument("--est", type=int, help="estimated minutes (aim for <=25)")
+    a.add_argument("--deps", help="comma-separated chunk ids (same milestone) done first")
+    a.add_argument("--size", choices=SIZES)
+    a.add_argument("--parallel", choices=("yes", "no"), help="needs --why")
+    a.add_argument("--why", help="one line: why parallel yes or no")
+    a.add_argument("--critical", metavar="KIND",
+                   help="always sequential: deploy, payroll, migration, destructive, release")
     d = ch.add_parser("done")
     d.add_argument("--milestone", required=True)
     d.add_argument("--id", required=True)
@@ -752,6 +920,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="model-observed: context is over ~50%% of the window")
     ls = ch.add_parser("list")
     ls.add_argument("--milestone")
+
+    fo = sub.add_parser("fanout", help="Gate 4 fan-out test: PARALLEL or SEQUENTIAL")
+    fo.add_argument("--milestone", required=True)
+    fo.add_argument("--no-subagents", action="store_true", help="host cannot run subagents")
+    fo.add_argument("--critical", default="", help="comma-separated chunk ids that are critical")
+    br = sub.add_parser("brief", help="builder brief for one chunk (<= 30 lines)")
+    br.add_argument("--milestone", required=True)
+    br.add_argument("--chunk", required=True)
+    br.add_argument("--budget", type=int, default=40000)
+    br.add_argument("--verify", default=None)
+    mo = sub.add_parser("merge-order", help="chunks in dependency order with branch names")
+    mo.add_argument("--milestone", required=True)
+    mo.add_argument("--chunks", default="")
 
     er = sub.add_parser("error").add_subparsers(dest="op", required=True)
     a = er.add_parser("add")
@@ -831,6 +1012,19 @@ def main() -> int:
         return _dcio.EXIT_OK
     if args.cmd == "charter":
         print("\n".join(charter_view(load_charter(agent))))
+        return _dcio.EXIT_OK
+
+    if args.cmd == "fanout":
+        crit = [x.strip() for x in args.critical.split(",") if x.strip()]
+        print("\n".join(fanout(load(agent), root, args.milestone, args.no_subagents, crit)))
+        return _dcio.EXIT_OK
+    if args.cmd == "brief":
+        print("\n".join(brief(load(agent), root, args.milestone, args.chunk,
+                              args.budget, args.verify)))
+        return _dcio.EXIT_OK
+    if args.cmd == "merge-order":
+        ids = [x.strip() for x in args.chunks.split(",") if x.strip()]
+        print("\n".join(merge_order(load(agent), root, args.milestone, ids)))
         return _dcio.EXIT_OK
 
     op = f"{args.cmd}.{args.op}"

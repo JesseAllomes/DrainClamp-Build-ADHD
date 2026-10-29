@@ -141,6 +141,14 @@ dc_project.py chunk add --milestone m2 --goal "one step" --targets "src/load.py:
   targets is allowed, but its boundary verdict is always `unknown`.
 - Chunk only the milestone about to start. Later milestones are chunked when they become active,
   because their targets depend on what the earlier ones actually changed.
+- Flags for the conductor build (Gate 4 `fanout`), all optional on `chunk add`:
+  `--deps c1,c2` (same milestone; unknown id = error), `--size small|medium|large`,
+  `--parallel yes|no` with `--why "<one line>"` (required with it), `--critical <kind>`
+  (deploy, payroll write, migration, destructive, release: always sequential).
+  Unflagged chunks count as size unknown, parallel no.
+- Shared interfaces (signatures, schemas, file formats) go in a first sequential chunk whose goal
+  starts `contract:`. Put the agreed interface in its done note; `dc_project.py brief` hands it
+  to every builder.
 - Skip chunking when the milestone is one step. `dc_project.py next` still works with no chunks.
 
 ## Gate 2 output

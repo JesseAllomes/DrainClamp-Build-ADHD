@@ -82,3 +82,19 @@ unchanged diff context — the full log is already at `.agent/verify.log`.
 
 A failure here emits **no** Gate 5 terminator and does not mark the milestone `done`. It also cannot
 retroactively unsay Gate 2's success sentence: that gate reported what it did at the time.
+
+## Conductor build
+
+Independent chunks build in parallel on their own worktrees. You plan, brief, merge, review.
+
+1. Before dispatch: `dc_project.py fanout --milestone <m>` (`--no-subagents` on a host without them).
+2. Go parallel only on `PARALLEL:`. A `SEQUENTIAL: <reason>` line means build in order, as before.
+3. At most 4 builders. Brief each with `dc_project.py brief --milestone <m> --chunk <c>`.
+4. Use host subagents with worktree isolation. A repo outside the host folder: make
+   `<repo>/.worktrees/<project>-<chunk>` by hand and remove it after merge.
+5. Builder commits stay local on `dc/*`; the push gate refuses them. Over budget: stop, report.
+6. Merge in `dc_project.py merge-order` order. Run the full `DC:VERIFY` once on the merged
+   result, then one Gate 6 review of the combined diff.
+7. Fix tickets go back to the same builder. After merge, remove the worktrees and `dc/*` branches.
+8. No subagents: `SEQUENTIAL: host has no subagents`; build in order.
+9. The Workflow tool only when the user explicitly asks.
