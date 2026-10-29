@@ -123,9 +123,11 @@ it is `STALE`, and it refuses while findings block or a round is open.
     and each verify record; a record a real `dc_verify.py` run wrote for the current tree passes, so
     scope can be re-run after the tests.
 12. **Re-check.** Register `recheck`, spawn `dca-refuter` with
-    `Re-check mode. Tickets: .agent/review/R1/tickets.md. Ids: r1 r3.` Then for each id:
-    `RESOLVED` → `dc_review.py resolve --id r1 --fixed --note "<what changed>"`;
-    `NOT-RESOLVED` / `REGRESSION` → `resolve --id r1 --reopen --note "<why>"`, back to step 7.
+    `Re-check mode. Tickets: .agent/review/R1/tickets.md. Ids: r1 r3.` Then feed its JSON lines in
+    as they are: `dc_review.py resolve --round R1 --from-transcript <agent id>` (or `--file -`).
+    `RESOLVED` → fixed; `NOT-RESOLVED` / `REGRESSION` → reopened, back to step 7. The subagent's own
+    note is stored verbatim and the reopened ids are printed. One id by hand still works:
+    `resolve --id r1 --fixed|--reopen --note "<why>"`.
 13. **Finish.** `dc_review.py finish --round R1` stamps the reviewed files and prints the verdict.
     `REVIEW-PASS` → close the milestone (Gate 4 log line, roadmap `done`, Gate 5).
     `FINDINGS n` → the milestone stays open, and `dc_project.py next` shows it as waiting on the user.
@@ -159,8 +161,8 @@ orchestrator built the code, which is exactly the bias the advisor exists to avo
 ## Output contract
 
 Each step prints one script line; relay only verdicts and the step-7 table. The user sees one
-question per round unless a breach or a regression needs a second. After a gap, `dc_review.py
-status` plus `dc_project.py next` is the whole resume: everything else is in the sidecar.
+question per round unless a breach or a regression needs a second. After a gap, `dc_session.py --resume`
+(plus `dc_review.py status` when review is on) is the whole resume: everything else is in the sidecar.
 
 ## Never
 

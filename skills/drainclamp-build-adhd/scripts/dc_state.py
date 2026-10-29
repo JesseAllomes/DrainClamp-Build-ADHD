@@ -841,12 +841,57 @@ def register(root: Path) -> None:
         pass
 
 
+def parse_marks(specs: list[str], closes: list[str]) -> dict[str, str]:
+    """`--mark m1=done,m2=active` and `--close m3` -> {id: status}. Bad input writes nothing."""
+    marks: dict[str, str] = {}
+    for spec in specs:
+        for part in spec.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            mid, sep, status = part.partition("=")
+            mid, status = mid.strip(), status.strip().lower()
+            if not sep or not mid or status not in ROADMAP_STATUSES:
+                raise DcError(f"--mark expects <id>=<{'|'.join(sorted(ROADMAP_STATUSES))}>, got {part!r}")
+            marks[mid] = status
+    for mid in closes:
+        if mid.strip():
+            marks[mid.strip()] = "done"
+    return marks
+
+
+def mark_rows(raw: str, marks: dict[str, str]) -> str:
+    """The roadmap with only the status cell of each marked row changed.
+
+    Every other cell, row and line is kept byte for byte, so the edit is the
+    status flip and nothing else. An id with no row is an error, not a no-op.
+    """
+    unknown = [m for m in marks if m not in {r["id"] for r in parse_roadmap(raw)}]
+    if unknown:
+        raise DcError("no DC:ROADMAP row with id " + ", ".join(unknown))
+    out = []
+    for line in raw.split("\n"):
+        cells = line.split("|")
+        # `| id | goal | files | status | ...` splits to ['', id, goal, files, status, ...]
+        if line.strip().startswith("|") and len(cells) >= 6 and cells[1].strip() in marks \
+                and cells[1].strip().lower() != "id":
+            cells[4] = f" {marks[cells[1].strip()]} "
+            line = "|".join(cells)
+        out.append(line)
+    return "\n".join(out)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="dc_state.py", description=__doc__)
     parser.add_argument("--root", default=None)
     parser.add_argument("--set", dest="section", choices=SECTIONS)
     parser.add_argument("--file", dest="source")
     parser.add_argument("--append-log", dest="log_entry")
+    parser.add_argument("--mark", action="append", default=[], metavar="ID=STATUS",
+                        help="set roadmap row status (pending|active|done); repeatable or comma-separated")
+    parser.add_argument("--close", action="append", default=[], metavar="ID",
+                        help="shorthand for --mark ID=done, then the purge check")
+    parser.add_argument("--log", dest="mark_log", help="log sentence appended with --mark/--close")
     parser.add_argument("--expect-generation", dest="expect", type=int, default=None,
                         help="refuse the write if the file has moved past this "
                              "generation since you read it")
@@ -865,7 +910,7 @@ def main() -> int:
 
     root = _dcio.project_root(args.root)
     if args.resume_view:
-        if args.section or args.source or args.log_entry or args.promote_to_agents or args.purge_check or args.show or args.confirm:
+        if args.section or args.source or args.log_entry or args.mark or args.close or args.promote_to_agents or args.purge_check or args.show or args.confirm:
             parser.error("--resume-view cannot be combined with another action")
         path = root / ".agent" / _dcio.STATE_NAME
         raw = _dcio.read_text(path)
@@ -877,8 +922,48 @@ def main() -> int:
     agent = _dcio.agent_dir(root)
     state_path = agent / _dcio.STATE_NAME
     warn_unignored(root, agent)
-    if args.section or args.log_entry:
+    if args.mark_log and not (args.mark or args.close):
+        raise DcError("--log goes with --mark or --close; use --append-log on its own")
+    if args.mark or args.close:
+        if args.section or args.log_entry:
+            raise DcError("--mark/--close cannot be combined with --set or --append-log")
+        marks = parse_marks(args.mark, args.close)
+        if not marks:
+            raise DcError("--mark/--close named no milestone")
+    if args.section or args.log_entry or args.mark or args.close:
         _dcio.ensure_project_marker(root)  # Gate 2: group repos only
+
+    if args.mark or args.close:
+        when = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        entry = (args.mark_log or "").strip()
+        new_id = log_id(entry, when) if entry else None
+        moved = {"count": 0}
+
+        def apply_mark(state: State) -> None:
+            new_raw = mark_rows(state.sections["ROADMAP"], marks)
+            # Same guard `--set ROADMAP` runs, same exit codes.
+            import dc_review  # lazy: dc_review -> dc_project -> dc_state
+            dc_review.guard_roadmap(root, parse_roadmap(state.sections["ROADMAP"]),
+                                    parse_roadmap(new_raw))
+            state.sections["ROADMAP"] = new_raw
+            if entry:
+                existing = log_lines(state.sections["LOG"])
+                existing.append(f"- {when} {new_id} {entry}")
+                before = len(existing)
+                existing = apply_log_cap(agent, existing)
+                moved["count"] = max(0, before - len(existing))
+                state.sections["LOG"] = "\n".join(existing)
+
+        gen = mutate(state_path, agent, apply_mark, expect=args.expect)
+        register(root)
+        shown = ", ".join(f"{m}={v}" for m, v in marks.items())
+        note = f"; LOG += {new_id}" + (f", {moved['count']} archived" if moved["count"] else "") if entry else ""
+        print(f"DC:ROADMAP marked {shown} (generation {gen}{note})")
+        if args.close:
+            verdict, human = purge_check(load(state_path), root, args.context_high)
+            print(verdict)
+            print(human)
+        return _dcio.EXIT_OK
 
     if args.section:
         if not args.source:

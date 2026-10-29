@@ -66,6 +66,45 @@ check("resume capsule emitted", capsule.exists())
 check("resume capsule is bounded", capsule.stat().st_size < 512)
 check("resume capsule carries generation", "Generation: 3" in capsule.read_text(encoding="utf-8"))
 
+# --- --mark / --close ------------------------------------------------------
+mk = newrepo()
+run(mk, "--set", "ROADMAP", "--file", str(roadmap(mk, [("m1", "first", "a.py", "pending"),
+                                                       ("m2", "second", "b.py", "pending"),
+                                                       ("m3", "third", "c.py", "pending")])))
+state_file = mk / ".agent" / "drainclamp-state.md"
+before = state_file.read_text(encoding="utf-8")
+r = run(mk, "--mark", "m1=active")
+after = state_file.read_text(encoding="utf-8")
+check("--mark flips one status cell", r.returncode == 0 and "| m1 | first | a.py | active |" in after, r.stdout + r.stderr)
+check("--mark changes nothing but that cell",
+      before.replace("| m1 | first | a.py | pending |", "| m1 | first | a.py | active |")
+      == after.replace("generation=3", "generation=2"), after)
+r = run(mk, "--mark", "m1=done,m2=active", "--log", "m1 done by mark")
+after = state_file.read_text(encoding="utf-8")
+check("--mark takes a comma list and appends --log",
+      r.returncode == 0 and "| m1 | first | a.py | done |" in after and "| m2 | second | b.py | active |" in after
+      and "m1 done by mark" in after and "LOG +=" in r.stdout, r.stdout + r.stderr)
+r = run(mk, "--mark", "m3=pending", "--mark", "m2=done")
+check("--mark is repeatable", r.returncode == 0 and "| m2 | second | b.py | done |" in
+      state_file.read_text(encoding="utf-8"), r.stdout + r.stderr)
+snap = state_file.read_text(encoding="utf-8")
+r = run(mk, "--mark", "m3=active", "--mark", "m9=done")
+check("an unknown id is an error and writes nothing",
+      r.returncode != 0 and "m9" in r.stderr and state_file.read_text(encoding="utf-8") == snap, r.stdout + r.stderr)
+r = run(mk, "--mark", "m3=bogus")
+check("a bad status is refused and writes nothing",
+      r.returncode != 0 and state_file.read_text(encoding="utf-8") == snap, r.stdout + r.stderr)
+r = run(mk, "--mark", "m3=active", "--expect-generation", "1")
+check("--mark honours --expect-generation", r.returncode != 0 and state_file.read_text(encoding="utf-8") == snap,
+      r.stdout + r.stderr)
+r = run(mk, "--log", "stray")
+check("--log alone is refused", r.returncode != 0 and state_file.read_text(encoding="utf-8") == snap, r.stdout + r.stderr)
+r = run(mk, "--close", "m3", "--log", "closed the last one")
+check("--close marks done, logs, and prints the purge verdict",
+      r.returncode == 0 and "| m3 | third | c.py | done |" in state_file.read_text(encoding="utf-8")
+      and ("COMPLETE" in r.stdout or "PURGE" in r.stdout or "HOLD" in r.stdout)
+      and "DRAINCLAMP:" in r.stdout, r.stdout + r.stderr)
+
 # --- schema conformance ---------------------------------------------------
 def parse_fails(text, fragment):
     try:

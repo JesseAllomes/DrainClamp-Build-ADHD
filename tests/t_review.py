@@ -118,6 +118,11 @@ check("max agents above 6 refused", rc != 0 and "1..6" in out, out)
 # -- guard before any review ---------------------------------------------------------------------
 rc, out = set_roadmap(root, "done")
 check("mode milestone: closing an unreviewed milestone refused NOT-RUN", rc == 6 and "NOT-RUN" in out, out)
+rc, out = st(root, "--close", "m1", "--log", "closed m1")
+check("mode milestone: --close runs the same guard (NOT-RUN, exit 6)", rc == 6 and "NOT-RUN" in out, out)
+check("a refused --close leaves the row and the log alone",
+      "| m1 | add the parser | a.py | active |" in (root / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8")
+      and "closed m1" not in (root / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8"))
 
 # -- packet ----------------------------------------------------------------------------------------
 rc, out = rv(root, "packet", "--milestone", "m1")
@@ -621,6 +626,46 @@ f1 = side(ro)["findings"][0]
 check("resolve --reopen puts the finding back to open",
       rc == 0 and "r1 reopened" in out and f1["status"] == "open" and f1["resolved_at"] is None
       and "NOT-RESOLVED" in f1["refuter_note"], out)
+
+# -- resolve --round --file: the re-checker's JSON lines, straight in -------------------------------
+bt = fixing_repo("batch-resolve", finding("loop stops one item early", "for i in range(len(items) - 1):"),
+                 finding("sum ignores its list", "total += items[i]", line=4))
+ids = [f["id"] for f in side(bt)["findings"]]
+check("batch fixture holds two fixing findings", ids == ["r1", "r2"], ids)
+for fid in ids:
+    rv(bt, "ticket", "--round", "R1", "--id", fid, "--allow", "a.py", "--file", "-", stdin=f"TICKET {fid}\n")
+(bt / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+rc, out = rv(bt, "scope", "--round", "R1")
+check("batch fixture scope ok", rc == 0 and "scope ok" in out, out)
+lines = "\n".join([json.dumps({"id": "r1", "verdict": "RESOLVED", "note": "range now covers every item"}),
+                   json.dumps({"id": "r2", "verdict": "NOT-RESOLVED", "note": "a.py:4 still skips the sum"})])
+rc, out = rv(bt, "resolve", "--round", "R1", "--file", "-", stdin=lines.replace("r2", "r9"))
+check("an unknown id stops the whole batch and writes nothing",
+      rc != 0 and "r9" in out and [f["status"] for f in side(bt)["findings"]] == ["fixing", "fixing"], out)
+rc, out = rv(bt, "resolve", "--round", "R1", "--file", "-", stdin=lines)
+fs = {f["id"]: f for f in side(bt)["findings"]}
+check("batch resolve fixes RESOLVED and reopens NOT-RESOLVED, printing the reopened ids",
+      rc == 0 and fs["r1"]["status"] == "fixed" and fs["r2"]["status"] == "open"
+      and "reopened: r2" in out and "1 fixed, 1 reopened" in out, out)
+check("the re-checker's notes are stored verbatim",
+      fs["r1"]["fix_note"] == "range now covers every item" and fs["r2"]["refuter_note"] == "a.py:4 still skips the sum",
+      fs)
+check("a reopened finding loses its ticket", fs["r2"]["ticket"] == "" and fs["r2"]["ticket_round"] is None)
+rc, out = rv(bt, "resolve", "--round", "R1", "--file", "-", stdin="NO FINDINGS")
+check("an empty re-check is refused", rc != 0 and "nothing recorded" in out, out)
+rc, out = rv(bt, "resolve", "--file", "-", stdin=lines)
+check("--file without --round is refused", rc != 0 and "--round" in out, out)
+rc, out = rv(bt, "resolve", "--id", "r2")
+check("--id alone is refused", rc != 0 and "--fixed or --reopen" in out, out)
+tr_root = fixing_repo("batch-transcript", finding("loop stops one item early", "for i in range(len(items) - 1):"))
+rv(tr_root, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
+(tr_root / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+rv(tr_root, "scope", "--round", "R1")
+rc, out = rv(tr_root, "resolve", "--round", "R1", "--from-transcript",
+             str(transcript("recheck", "dca-refuter", [{"type": "text", "text": json.dumps(
+                 {"id": "r1", "verdict": "RESOLVED", "note": "fixed at a.py:3"})}])))
+check("resolve reads the re-check from a subagent transcript",
+      rc == 0 and side(tr_root)["findings"][0]["status"] == "fixed", out)
 
 # -- brief --anyway: the advisor without a passing review, recorded ------------------------------
 an = make_repo("anyway")

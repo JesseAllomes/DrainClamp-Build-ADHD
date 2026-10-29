@@ -6,9 +6,12 @@ Runs at a **real milestone boundary**. Inside a milestone, the only boundary is 
 ## 1. Write state back first
 
 ```
-dc_state.py --append-log "<one sentence: what the diff did>"
-dc_state.py --set ROADMAP --file <updated roadmap>
+dc_state.py --close <m> --log "<one sentence: what the diff did>"
 ```
+
+`--close` flips only that row's status to `done`, appends the log line, and prints the section 2
+verdict. `--mark <m>=<pending|active|done>` (repeatable) flips others. Both run the roadmap guard
+and honour `--expect-generation`. Never hand-write a roadmap file for `--set ROADMAP`.
 
 State is written before any purge is recommended. A purge with unsaved state loses the work.
 
@@ -48,8 +51,8 @@ You cannot invoke `/clear` or `/compact`. No host exposes them to the model. Gat
 
 | Verdict | Output |
 |---|---|
-| `COMPLETE`, host documents a clear command | script line, then `Run /clear now, then mark the project complete with dc_session.py --complete <n>.` |
-| `COMPLETE`, host support unknown | script line, then `Start a fresh session, then mark the project complete with dc_session.py --complete <n>.` |
+| `COMPLETE`, host documents a clear command | run `dc_project.py --root <root> complete --note "<one line>"` first, while context is loaded; then the script line and `Run /clear now.` |
+| `COMPLETE`, host support unknown | run `dc_project.py --root <root> complete --note "<one line>"` first; then the script line and `Start a fresh session.` |
 | `PURGE`, host documents a compaction command | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.`<br>`Run /compact now, then resume from .agent/drainclamp-state.md.` |
 | `PURGE`, host support unknown | first line, then `Start a fresh session and resume from .agent/drainclamp-state.md.` |
 | `HOLD` | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context retained (overlap NN%).` |

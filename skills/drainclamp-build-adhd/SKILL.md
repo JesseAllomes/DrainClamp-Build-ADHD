@@ -21,7 +21,8 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 | P Push | before every `git push`, compulsory | `phase7-push.md`; `dc_pushgate.py`, `dc_pii.py` |
 
 Gate S runs first, prints its output verbatim, and stops; never choose for the user or resume silently. A `SIBLINGS:` line from `dc_project.py next`
-(group repos) is relayed as printed. Read only the
+(group repos) is relayed as printed. After the user's number, run `dc_session.py --resume <n>` (audit, ROOT, Done/In progress/Next, capsule);
+'a new project' -> `dc_project.py create` (charter) or `dc_session.py --register`; 'mark complete' -> list, then `dc_project.py --root <root> complete`. Read only the
 current gate reference (plus `platform-adapters.md` when host capability is in question). `dc_install.py` installs
 this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests the source checkout.
 

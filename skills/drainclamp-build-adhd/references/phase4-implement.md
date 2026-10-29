@@ -34,8 +34,8 @@ them. Never load a skill the project has not marked.
 7. **Log problems where they happen.** `dc_project.py error add --summary ... --milestone <m>
    --chunk <c>` for a defect found, `error fix` when it is fixed, `todo add` for later work.
 
-Chunk notes stay in the sidecar. `DC:LOG` gets **one** line per milestone, at close:
-`dc_state.py --append-log "<one sentence>"`.
+Chunk notes stay in the sidecar. `DC:LOG` gets **one** line per milestone, at close, with the status flip in one guarded call:
+`dc_state.py --close <m> --log "<one sentence>"` (`--mark <m>=active|pending|done` for other flips).
 
 ## Reading
 

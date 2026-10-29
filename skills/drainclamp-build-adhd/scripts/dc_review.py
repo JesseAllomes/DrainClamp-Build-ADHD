@@ -1382,12 +1382,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("scope", help="did the fixer stay inside its tickets?")
     s.add_argument("--round", required=True)
 
-    v = sub.add_parser("resolve", help="close a finding after the re-check")
-    v.add_argument("--id", required=True)
-    g = v.add_mutually_exclusive_group(required=True)
+    v = sub.add_parser("resolve", help="close a finding after the re-check (one id, or the re-checker's lines)")
+    v.add_argument("--id")
+    g = v.add_mutually_exclusive_group()
     g.add_argument("--fixed", action="store_true")
     g.add_argument("--reopen", action="store_true")
     v.add_argument("--note", default="")
+    v.add_argument("--round", help="with --file/--from-transcript: the round the re-check belongs to")
+    vg = v.add_mutually_exclusive_group()
+    vg.add_argument("--file", help="re-checker JSON lines {id, verdict, note}, or -")
+    vg.add_argument("--from-transcript", help="Claude Code subagent transcript or Codex agent rollout (.jsonl), agent id or Codex thread id, instead of --file")
 
     f = sub.add_parser("finish", help="close a round and stamp the reviewed files")
     f.add_argument("--round", required=True)
@@ -1735,19 +1739,32 @@ def main() -> int:
         return code[0]
 
     if args.cmd == "resolve":
-        def apply_resolve(rv: dict) -> None:
-            f = _finding(rv, args.id)
-            if args.reopen:
-                f["status"] = "open"
-                f["resolved_at"] = None
-                # A reopened finding needs a new ticket, fixer run and scope check: the
-                # failed attempt's ticket must not let `resolve --fixed` pass.
-                f["ticket"] = ""
-                f["ticket_round"] = None
-                f["refuter_note"] = _clip(f"re-check: {args.note}", TEXT_CAP["note"]) if args.note \
-                    else f.get("refuter_note", "")
-                out.append(f"REVIEW {f['id']} reopened")
-                return
+        batch = bool(args.file or args.from_transcript)
+        if batch:
+            if args.id or args.fixed or args.reopen or not args.round:
+                raise DcError("resolve takes --round with --file/--from-transcript, "
+                              "or --id with --fixed/--reopen, not a mix")
+            verdicts, junk = parse_findings(_reply(args, "refuter"))
+            if not verdicts:
+                raise DcError("the re-check held no JSON verdict lines" + (f" ({junk} unparsable)" if junk else "")
+                              + "; nothing recorded")
+            usage = transcript_tokens(args)
+        elif not args.id or not (args.fixed or args.reopen):
+            raise DcError("resolve needs --id with --fixed or --reopen, or --round with --file/--from-transcript")
+        reopened: list[str] = []
+
+        def reopen(f: dict, note: str, prefix: str = "re-check: ") -> None:
+            f["status"] = "open"
+            f["resolved_at"] = None
+            # A reopened finding needs a new ticket, fixer run and scope check: the
+            # failed attempt's ticket must not let `resolve --fixed` pass.
+            f["ticket"] = ""
+            f["ticket_round"] = None
+            f["refuter_note"] = _clip(f"{prefix}{note}", TEXT_CAP["note"]) if note \
+                else f.get("refuter_note", "")
+            reopened.append(f["id"])
+
+        def fix(rv: dict, f: dict, note: str) -> None:
             if f["status"] != "fixing" or not f.get("ticket"):
                 raise DcError(f"{f['id']} is {f['status']} with no ticket; only a ticketed fix resolves")
             rnd = _round(rv, f.get("ticket_round") or f["round"])
@@ -1755,11 +1772,46 @@ def main() -> int:
                 raise DcError(f"round {rnd['id']} has no passing scope check since the fix; "
                               "run dc_review.py scope first")
             f["status"] = "fixed"
-            f["fix_note"] = _clip(args.note, TEXT_CAP["note"])
+            f["fix_note"] = _clip(note, TEXT_CAP["note"])
             f["resolved_at"] = _now()
             out.append(f"REVIEW {f['id']} fixed")
+
+        def apply_resolve(rv: dict) -> None:
+            if not batch:
+                f = _finding(rv, args.id)
+                if args.reopen:
+                    reopen(f, args.note)
+                    out.append(f"REVIEW {f['id']} reopened")
+                else:
+                    fix(rv, f, args.note)
+                return
+            rnd = _round(rv, args.round)
+            if not any(r["role"] in JUDGE_ROLES for r in rnd["runs"]):
+                raise DcError(f"no registered re-check run in {args.round}")
+            _stamp_tokens(rnd["runs"], JUDGE_ROLES, usage)
+            seen: set[str] = set()
+            for v in verdicts:
+                fid, word = str(v.get("id", "")), str(v.get("verdict", "")).upper()
+                f = _finding(rv, fid)  # an unknown id stops the whole batch, nothing written
+                if word not in ("RESOLVED", "NOT-RESOLVED", "REGRESSION"):
+                    raise DcError(f"{fid}: re-check verdict {word!r} is not RESOLVED, NOT-RESOLVED or REGRESSION")
+                if f.get("milestone") != rnd["milestone"] or fid in seen:
+                    raise DcError(f"{fid}: not a finding of {args.round}'s milestone, or given twice")
+                seen.add(fid)
+                note = str(v.get("note", ""))
+                if word == "RESOLVED":
+                    fix(rv, f, note)
+                else:
+                    reopen(f, note, "")  # the re-checker's own words, verbatim
         change(apply_resolve)
-        print(out[0])
+        if batch:
+            fixed = [ln.split()[1] for ln in out]
+            print(f"REVIEW {args.round} re-check: {len(fixed)} fixed, {len(reopened)} reopened"
+                  + (f", {junk} unparsable" if junk else ""))
+            if reopened:
+                print("reopened: " + " ".join(reopened) + " (back to step 7: new ticket, fixer, scope, re-check)")
+        else:
+            print(out[0])
         return _dcio.EXIT_OK
 
     if args.cmd == "finish":

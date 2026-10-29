@@ -258,6 +258,45 @@ try:
 finally:
     tempfile.tempdir = saved_tempdir
 
+# --resume: one command after the Gate S choice
+rsm = make_repo("rsm", "| m1 | first goal | a.py | done |\n| m2 | second goal | b.py | active |\n"
+                       "| m3 | third goal | c.py | pending |")
+rsm_home = tmp / "rsmhome"
+dc_registry.touch(rsm, rsm_home)
+
+
+def run_script(name, *args):
+    proc = subprocess.run([sys.executable, "-B", str(SCRIPTS / name), *args],
+                          capture_output=True, text=True, encoding="utf-8")
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+rc, so, se = run_script("dc_project.py", "--root", str(rsm), "--home", str(rsm_home), "chunk", "add",
+                        "--milestone", "m2", "--goal", "wire it", "--targets", "b.py")
+check("resume fixture chunk added", rc == 0, so + se)
+before = dc_registry.find(dc_registry.load(rsm_home), rsm)["last"]
+rc, so, se = run_script("dc_session.py", "--home", str(rsm_home), "--resume", "1")
+out = so + se
+posix = str(rsm.resolve()).replace("\\", "/")
+check("resume succeeds", rc == 0, out)
+check("resume prints ROOT and the pass-root line",
+      f"ROOT: {posix}" in out and f"Pass --root {posix} to every DrainClamp script this session." in out, out)
+check("resume prints the audit freshness line", "AUDIT:" in out or "CACHE:" in out, out)
+check("resume prints Done/In progress/Next",
+      "Done: m1" in out and "In progress: m2: second goal" in out and "Next: m2/" in out
+      and "wire it" in out, out)
+check("resume prints the next capsule", "DRAINCLAMP NEXT:" in out, out)
+sidecar = rsm / ".agent" / "drainclamp-project.json"
+side = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else None
+check("resume touches build time",
+      side is not None and any(t.get("source") == "auto" for t in side["time"]), side)
+check("resume touches registry last", dc_registry.find(dc_registry.load(rsm_home), rsm)["last"] >= before)
+rc, so, se = run_script("dc_session.py", "--home", str(rsm_home), "--resume", str(rsm))
+check("resume accepts a path", rc == 0 and f"ROOT: {posix}" in so, so + se)
+for bad in ("7", str(tmp / "nope")):
+    rc, so, se = run_script("dc_session.py", "--home", str(rsm_home), "--resume", bad)
+    check(f"resume refuses {bad[-6:]}", rc != 0 and "ERROR" in se and "ROOT:" not in so, so + se)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
