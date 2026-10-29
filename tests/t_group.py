@@ -263,5 +263,37 @@ rc, out = run("dc_project.py", "--root", str(single), "--home", HOME, "next")
 check("G4 single-project repo prints no SIBLINGS line", rc == 0 and "SIBLINGS" not in out, out)
 check("G4 sibling_changes is None outside a group", dc_project.sibling_changes(single) is None)
 
+# ---- G5: group overview ----------------------------------------------------------
+home5 = tempfile.mkdtemp(prefix="dcreg5-")
+os.environ["DRAINCLAMP_HOME"] = home5
+g5 = make_group("g5")
+a5, b5 = g5 / "a", g5 / "b"
+road = tmp / "road5.md"
+road.write_text("| id | goal | files | status |\n|---|---|---|---|\n"
+                "| m1 | parse | a.py | done |\n| m2 | use | b.py | pending |\n", encoding="utf-8")
+rc, out = run("dc_state.py", "--root", str(a5), "--set", "ROADMAP", "--file", str(road))
+check("G5 roadmap written for a", rc == 0, out.strip())
+log(a5, "a work")
+log(b5, "b work")
+overview = g5 / ".agent" / "drainclamp-group.md"
+check("G5 no overview before Gate S runs", not overview.exists())
+rc, out = run("dc_session.py")
+check("G5 menu still prints", rc == 0 and "[g5]" in out, out)
+text = overview.read_text(encoding="utf-8") if overview.exists() else ""
+proj_lines = [ln for ln in text.splitlines() if ln.startswith("- ")]
+check("G5 overview has one line per project", len(proj_lines) == 2, text)
+check("G5 line carries name, status, milestones, last log date",
+      any(ln.startswith("- g5 \u203a a | active | 1/2 | last log 20") for ln in proj_lines)
+      and any(ln.startswith("- g5 \u203a b | active | 0/0 | last log 20") for ln in proj_lines), text)
+stamp = overview.stat().st_mtime_ns
+rc, out = run("dc_session.py")
+check("G5 unchanged overview is not rewritten", overview.stat().st_mtime_ns == stamp)
+rc, out = run("dc_project.py", "--root", str(b5), "--home", home5, "complete")
+rc, out = run("dc_session.py")
+check("G5 rebuilt on the next Gate S", "| complete |" in overview.read_text(encoding="utf-8"), overview.read_text(encoding="utf-8"))
+check("G5 overview never written for single-project repos",
+      not (single / ".agent" / "drainclamp-group.md").exists())
+check("G5 overview holds no project state schema fields", "<!-- DC:" not in overview.read_text(encoding="utf-8"))
+
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

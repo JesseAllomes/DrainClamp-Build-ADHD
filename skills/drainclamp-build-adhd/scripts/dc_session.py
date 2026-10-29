@@ -8,12 +8,16 @@ agent's work without ever saying so. This script makes that a question.
 It prints a menu and exits. It selects nothing, runs no gate, and writes
 nothing unless asked to change a project's status -- the choice is the user's,
 and a script that guessed it would reintroduce the bug it exists to fix.
+
+One exception, a cache: for a group repo it rebuilds `.agent/drainclamp-group.md` at the git
+top level (one line per project) so a cold start can read one file.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -83,9 +87,63 @@ def print_rows(rows: list[dict]) -> None:
         print("  " + ("  " if group else "") + row(i, entry))
 
 
+GROUP_FILE = "drainclamp-group.md"
+
+
+def project_line(entry: dict) -> str:
+    """`name | status | done/total | last log day` from the project's own state."""
+    root = entry["root"]
+    done = total = 0
+    last = "none"
+    try:
+        text = _dcio.read_text(dc_registry.state_file(root))
+        if text is not None:
+            state = dc_state.State.parse(text)
+            rows = dc_state.parse_roadmap(state.sections["ROADMAP"])
+            done, total = sum(1 for r in rows if r.get("status") == "done"), len(rows)
+            logs = dc_state.log_lines(state.sections["LOG"])
+            if logs:
+                found = re.match(r"-\s+(\d{4}-\d{2}-\d{2})", logs[-1].strip())
+                last = found.group(1) if found else "unknown"
+    except (OSError, DcError, KeyError, ValueError):
+        pass  # a cache line is a hint; an unreadable state shows as empty
+    return f"- {entry.get('name') or root} | {entry.get('status', 'active')} | {done}/{total} | last log {last}"
+
+
+def write_group_overviews(entries: list[dict]) -> list[Path]:
+    """Rebuild `<top level>/.agent/drainclamp-group.md` for each group repo in `entries`.
+
+    One line per registered project, so a cold start reads one file instead of every
+    project's state. Read-only cache, never an authority; rewritten only when the
+    text changes, and a repo that cannot be written is skipped.
+    """
+    by_top: dict[Path, list[dict]] = {}
+    for entry in entries:
+        if entry.get("group"):
+            by_top.setdefault(_dcio.repo_root(entry["root"]), []).append(entry)
+    written: list[Path] = []
+    for top, rows in sorted(by_top.items(), key=lambda kv: str(kv[0])):
+        lines = ["# DrainClamp group overview",
+                 "Cache rebuilt on Gate S from each project's state; the state files are the authority.",
+                 ""]
+        lines += [project_line(e) for e in sorted(rows, key=lambda e: e.get("name") or "")]
+        text = "\n".join(lines) + "\n"
+        path = top / _dcio.AGENT_DIR_NAME / GROUP_FILE
+        try:
+            if _dcio.read_text(path) == text:
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _dcio.atomic_write(path, text)
+            written.append(path)
+        except OSError:
+            continue
+    return written
+
+
 def menu(home: str | None) -> int:
     active = dc_registry.listing("active", home)
     complete = dc_registry.listing("complete", home)
+    write_group_overviews(active + complete)
 
     # Every active project is listed: a capped menu made the user re-run with
     # --all to reach a project the cap hid, which is a second question.
