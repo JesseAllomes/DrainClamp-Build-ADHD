@@ -73,8 +73,8 @@ key = J("sk-", "ant-api03-", "abcdefghijklmnopqrstuvwxyz0123456789")
 sec = J("ANTHROPIC_API_KEY=", key, "; refresh_", "token: \"rt_9f8e7d6c5b4a3210zz\"; const token = request.headers.token")
 check("secrets, and a code reference left alone", kinds(sec) == ["SECRET", "SECRET"], kinds(sec))
 check("a reserved test domain is not an email", kinds(J("a", "@b.example.invalid")) == [])
-check("a no-reply mailbox is no person's address", kinds(J("Co-Authored-By: C <no", "reply@anthropic.com>"))
-      == [] and kinds(J("1+u@users.no", "reply.github.com")) == [])
+check("a no-reply mailbox is no person's address", kinds(J("Co-Authored-By: C <noreply", "@anthropic.com>"))
+      == [] and kinds(J("1+u@users", ".noreply.github.com")) == [])
 check("a Luhn-valid run not starting 2-6 is not a card", kinds(J("1761", "234567890", "12")) == []
       and kinds(J("4111 1111", " 1111 1111")) == ["CARD"])
 
