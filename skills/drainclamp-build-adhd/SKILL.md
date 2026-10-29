@@ -18,6 +18,7 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 | 4 Implement | always | `phase4-implement.md`; `dc_project.py`, `dc_map.py`, `dc_chunk.py`, `dc_skills.py` |
 | 5 Reset | milestone or chunk boundary | `phase5-reset.md`; `dc_state.py --purge-check` |
 | 6 Review | review mode on (`dc_review.py config`) at milestone close, after Gate 3, before Gate 5; or on request. Advisor after a pass | `phase6-review.md`; `dc_review.py` |
+| P Push | before every `git push`, compulsory | `phase7-push.md`; `dc_pushgate.py`, `dc_pii.py` |
 
 Gate S runs first, prints its output verbatim, and stops; never choose for the user or resume silently. Read only the
 current gate reference (plus `platform-adapters.md` when host capability is in question). `dc_install.py` installs
@@ -30,6 +31,7 @@ this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests 
 - Reuse existing helpers. Keep bulk in `.agent/`, never auto-load the log archive, and trim failures to first-party evidence.
 - Gate 2 success is exactly `Master state and optimizations saved to .agent/drainclamp-state.md. Continuing pipeline.`
 - Never impersonate the host or claim an unobserved purge/reset. Use `DRAINCLAMP:` for purge/hold messages.
+- Push only after `dc_pushgate.py check` passes; never `--no-verify`, never print a flagged value. Nothing on a remote may hold PII.
 - Every cap declares `SHOWING`, `TRUNCATED`, or `COVERAGE: partial`; a skipped gate is not a passed gate.
 - `dc_verify.py --tier` requires Gate 2 state with a roadmap row and non-empty decisions; only `--allow-no-state` bypasses it.
 - After a gap, run `dc_audit.py`, read `dc_state.py --resume-view`, then `dc_project.py next`; read only the chunk targets it names and
