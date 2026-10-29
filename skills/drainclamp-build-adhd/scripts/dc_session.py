@@ -218,7 +218,8 @@ def three_lines(root: Path, data: dict) -> list[str]:
             f"Next: {nxt_text}"]
 
 
-def resume(home: str | None, choice: str) -> int:
+def resume(home: str | None, choice: str, host: str | None = None,
+           session: str | None = None, force: bool = False) -> int:
     """Gate S choice -> one command: audit freshness, ROOT line, 3 lines, capsule, time, registry."""
     import dc_project
     entry = resolve(dc_registry.listing("active", home), choice, "active")
@@ -228,6 +229,10 @@ def resume(home: str | None, choice: str) -> int:
     for line in gate0_lines(str(root)):
         print(line)
     print(f"ROOT: {entry['root']}")
+    if host and session:
+        busy = dc_registry.claim_presence(root, host, session, force)
+        if busy:
+            print(busy)
     print(f"Pass --root {entry['root']} to every DrainClamp script this session.")
     agent = root / _dcio.AGENT_DIR_NAME
     data = dc_project.load(agent)
@@ -235,6 +240,28 @@ def resume(home: str | None, choice: str) -> int:
     print("\n".join(dc_project.capsule(root, data, home) + dc_project.sibling_lines(root)))
     dc_project.mutate(agent, dc_project.touch_time)
     dc_registry.touch(root, home)
+    return _dcio.EXIT_OK
+
+
+def presence_cli(args) -> int:
+    """`--presence` and `--handoff`, both against one project's sidecar."""
+    import dc_project
+    if not args.root:
+        raise DcError("--presence and --handoff need --root")
+    root = Path(args.root).expanduser().resolve()
+    if args.handoff:
+        if not args.file or not args.what:
+            raise DcError("--handoff needs --file and --what")
+        print(dc_registry.handoff_line(root, args.file, args.what, args.session))
+        return _dcio.EXIT_OK
+    if args.host and args.session:
+        busy = dc_registry.claim_presence(root, args.host, args.session, args.force)
+        print(busy or f"PRESENCE: {args.session} ({args.host.lower()}) recorded")
+        return _dcio.EXIT_OK
+    if args.host or args.session:
+        raise DcError("--host and --session go together")
+    entry = dc_registry.live_presence(dc_project.load(root / _dcio.AGENT_DIR_NAME))
+    print(dc_registry.in_use_line(entry) if entry else "PRESENCE: none (no live session)")
     return _dcio.EXIT_OK
 
 
@@ -248,10 +275,27 @@ def main() -> int:
                         help="numbered list of completed projects")
     parser.add_argument("--register", help="add a repository to the registry")
     parser.add_argument("--forget", help="menu number or path to drop from the index")
+    parser.add_argument("--presence", action="store_true",
+                        help="with --root: record --host/--session as the live session "
+                             "(prints IN USE when another live session holds the project); "
+                             "without them, only report")
+    parser.add_argument("--handoff", action="store_true",
+                        help="with --root --file --what: one HANDOFF line for the live session")
+    parser.add_argument("--root", default=None, help="project root for --presence / --handoff")
+    parser.add_argument("--host", default=None, help="claude, codex, ... (with --session)")
+    parser.add_argument("--session", default=None,
+                        help="the session name the host shows (Claude Code: the SendMessage name)")
+    parser.add_argument("--force", action="store_true",
+                        help="with --presence: take the project over from another live session")
+    parser.add_argument("--file", default=None, help="hand-off: the file written")
+    parser.add_argument("--what", default=None, help="hand-off: what changed, one line")
     parser.add_argument("--all", action="store_true",
                         help="accepted for old callers; every project is always listed")
     parser.add_argument("--json", action="store_true", help="machine-readable listing")
     args = parser.parse_args()
+
+    if args.presence or args.handoff:
+        return presence_cli(args)
 
     if args.register:
         target = Path(args.register).expanduser()
@@ -270,7 +314,7 @@ def main() -> int:
         return _dcio.EXIT_OK
 
     if args.resume:
-        return resume(args.home, args.resume)
+        return resume(args.home, args.resume, args.host, args.session, args.force)
 
     if args.complete:
         entry = resolve(dc_registry.listing("active", args.home), args.complete, "active")

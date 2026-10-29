@@ -450,7 +450,9 @@ def mutate(state_path: Path, lock_dir: Path, apply_fn, expect: int | None = None
         committed = observed + 1
         _dcio.atomic_write(state_path, state.render(committed))
         write_resume_capsule(lock_dir, state, committed)
-        return committed
+    # Outside the state lock; best effort, never fails the write.
+    dc_registry.heartbeat(lock_dir)
+    return committed
 
 
 # --------------------------------------------------------------------------

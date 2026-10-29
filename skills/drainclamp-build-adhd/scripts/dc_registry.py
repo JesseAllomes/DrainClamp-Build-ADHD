@@ -257,3 +257,125 @@ def cluster_groups(rows: list[dict]) -> list[dict]:
             placed.add(group)
             out.extend(e for e in rows if e.get("group") == group)
     return out
+
+
+# --------------------------------------------------------------------------
+# Session presence (G11)
+#
+# Which session is working in a project, kept in the project's sidecar under the
+# additive key "presence": {host, session, since, heartbeat}. Nothing else is
+# stored: no tokens, no user identity beyond the session name the host shows.
+# --------------------------------------------------------------------------
+
+PRESENCE_KEY = "presence"
+PRESENCE_STALE_MINUTES = 120
+# Hosts that can message another session directly. Others get a paste line.
+DIRECT_HOSTS = {"claude": "SendMessage"}
+
+
+def _presence_now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _presence_iso(when: datetime) -> str:
+    return when.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _presence_age(entry, now: datetime | None = None) -> float | None:
+    """Minutes since the heartbeat, or None when the entry is unusable."""
+    if not isinstance(entry, dict) or not entry.get("session"):
+        return None
+    try:
+        beat = datetime.fromisoformat(str(entry.get("heartbeat")))
+    except ValueError:
+        return None
+    if beat.tzinfo is None:
+        beat = beat.replace(tzinfo=timezone.utc)
+    return max(0.0, ((now or _presence_now()) - beat).total_seconds() / 60)
+
+
+def live_presence(data: dict, now: datetime | None = None) -> dict | None:
+    """The recorded session if its heartbeat is under two hours old, else None."""
+    entry = data.get(PRESENCE_KEY)
+    age = _presence_age(entry, now)
+    if age is None or age > PRESENCE_STALE_MINUTES:
+        return None
+    return entry
+
+
+def in_use_line(entry: dict, now: datetime | None = None) -> str:
+    return f"IN USE: {entry['session']} (last active {int(_presence_age(entry, now))} min ago)"
+
+
+def _clean_name(text: str, label: str) -> str:
+    text = " ".join(str(text or "").split())
+    if not text or len(text) > 80:
+        raise DcError(f"{label} must be 1-80 characters")
+    return text
+
+
+def claim_presence(root: Path | str, host: str, session: str, force: bool = False,
+                   now: datetime | None = None) -> str | None:
+    """Record this session unless another live one holds the project.
+
+    Returns the IN USE line when another session is live (and nothing is
+    written, unless `force`), else None. The same session just refreshes.
+    """
+    import dc_project  # deferred: dc_project imports this module
+    host = _clean_name(host, "host").lower()
+    session = _clean_name(session, "session")
+    when = now or _presence_now()
+    agent = Path(root) / _dcio.AGENT_DIR_NAME
+    seen: dict = {}
+
+    def apply(data: dict) -> dict:
+        cur = live_presence(data, when)
+        if cur is not None and cur.get("session") != session and not force:
+            seen["line"] = in_use_line(cur, when)
+            data["rev"] -= 1  # nothing changed; mutate adds one back
+            return data
+        same = cur is not None and cur.get("session") == session and cur.get("host") == host
+        data[PRESENCE_KEY] = {"host": host, "session": session,
+                              "since": cur.get("since") if same and cur.get("since") else _presence_iso(when),
+                              "heartbeat": _presence_iso(when)}
+        return data
+
+    dc_project.mutate(agent, apply)
+    return seen.get("line")
+
+
+def heartbeat(agent: Path | str) -> None:
+    """Refresh an existing presence entry. Best effort: never raises."""
+    try:
+        import dc_project
+        agent = Path(agent)
+        if not dc_project.sidecar_path(agent).is_file():
+            return
+        stamp = _presence_iso(_presence_now())
+
+        def apply(data: dict) -> dict:
+            entry = data.get(PRESENCE_KEY)
+            if isinstance(entry, dict) and entry.get("session"):
+                entry["heartbeat"] = stamp
+            else:
+                data["rev"] -= 1
+            return data
+
+        dc_project.mutate(agent, apply)
+    except Exception:  # noqa: BLE001 - a heartbeat must never fail a state write
+        pass
+
+
+def handoff_line(root: Path | str, file: str, what: str, me: str | None = None,
+                 now: datetime | None = None) -> str:
+    """One line telling the agent how to pass a note to the live session."""
+    import dc_project
+    data = dc_project.load(Path(root) / _dcio.AGENT_DIR_NAME)
+    entry = live_presence(data, now)
+    if entry is None or (me and entry.get("session") == me):
+        return "HANDOFF: none (no live session)"
+    message = f"{file} -- {' '.join(str(what).split())}"
+    session = entry["session"]
+    if DIRECT_HOSTS.get(entry.get("host")):
+        return f"HANDOFF: {DIRECT_HOSTS[entry['host']]} to {session}: {message}"
+    return f"HANDOFF: paste to {session}: {message}"
