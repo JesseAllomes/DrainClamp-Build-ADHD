@@ -126,8 +126,18 @@ r6 = make_repo("many")
 for n in range(6):
     add(r6, f"p{n}", "--targets", f"f{n}.py", "--size", "medium", "--parallel", "yes", "--why", "x")
 rc, out = fan(r6)
-check("at most four builders", out.splitlines()[0].startswith("PARALLEL: c1, c2, c3, c4 ")
-      and len(out.splitlines()) == 5, out)
+check("at most four builders, the rest after the merge",
+      out.splitlines()[0].startswith("PARALLEL: c1, c2, c3, c4 ") and len(out.splitlines()) == 6
+      and out.splitlines()[-1] == "  then in order after the merge: c5, c6", out)
+
+r8 = make_repo("mixed")
+add(r8, "one", "--targets", "a.py", "--size", "medium", "--parallel", "yes", "--why", "x")
+add(r8, "tiny", "--targets", "c.py", "--size", "small", "--parallel", "yes", "--why", "x")
+add(r8, "two", "--targets", "b.py", "--size", "large", "--parallel", "yes", "--why", "x")
+rc, out = fan(r8)
+check("qualifying chunks fan out past a small one, which waits",
+      out.splitlines()[0] == "PARALLEL: c1, c3 (independent, medium+)"
+      and out.splitlines()[-1] == "  then in order after the merge: c2", out)
 
 # merge order: dependency order, ties by id, cycle is an error
 r7 = make_repo("order")

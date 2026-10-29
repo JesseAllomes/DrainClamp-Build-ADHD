@@ -89,6 +89,7 @@ Independent chunks build in parallel on their own worktrees. You plan, brief, me
 
 1. Before dispatch: `dc_project.py fanout --milestone <m>` (`--no-subagents` on a host without them).
 2. Go parallel only on `PARALLEL:`. A `SEQUENTIAL: <reason>` line means build in order, as before.
+   Chunks under `then in order after the merge:` wait and are built in order once the batch is merged.
 3. At most 4 builders. Brief each with `dc_project.py brief --milestone <m> --chunk <c>`.
 4. Use host subagents with worktree isolation. A repo outside the host folder: make
    `<repo>/.worktrees/<project>-<chunk>` by hand and remove it after merge.

@@ -553,24 +553,41 @@ def fanout(data: dict, root: Path, mid: str, no_subagents: bool = False,
         return [f"SEQUENTIAL: {len(ready)} ready chunk(s), need 2"]
     for c in ready:
         crit = c.get("critical") or ("critical" if c["id"] in (critical or []) else "")
-        if crit:
+        if crit:  # deploys, live writes, migrations, releases: never beside a builder
             kind = "" if crit == "critical" else f" ({crit})"
             return [f"SEQUENTIAL: {c['id']} is critical{kind}"]
+    # Qualifying chunks fan out even when other ready chunks do not qualify; those wait
+    # and run in order after the merge. The first reason is kept for the sequential line.
+    pick: list[dict] = []
+    later: list[dict] = []
+    reason = ""
+    for c in ready:
+        why = ""
         if c.get("size") not in ("medium", "large"):
-            return [f"SEQUENTIAL: {c['id']} is {c['size']}" if c.get("size")
-                    else f"SEQUENTIAL: {c['id']} has no size (needs medium+)"]
-        if c.get("parallel", "no") == "no":
-            return [f"SEQUENTIAL: {c['id']} is marked parallel no"]
-    for i, x in enumerate(ready):
-        for y in ready[i + 1:]:
-            shared = sorted(_chunk_files(x) & _chunk_files(y))
-            if shared:
-                return [f"SEQUENTIAL: {x['id']} and {y['id']} share {shared[0]}"]
-    pick = ready[:MAX_BUILDERS]
+            why = f"{c['id']} is {c['size']}" if c.get("size") else \
+                f"{c['id']} has no size (needs medium+)"
+        elif c.get("parallel", "no") == "no":
+            why = f"{c['id']} is marked parallel no"
+        else:
+            clash = next((x for x in pick if _chunk_files(x) & _chunk_files(c)), None)
+            if clash:
+                shared = sorted(_chunk_files(clash) & _chunk_files(c))[0]
+                why = f"{clash['id']} and {c['id']} share {shared}"
+            elif len(pick) >= MAX_BUILDERS:
+                why = f"{c['id']} waits (at most {MAX_BUILDERS} builders)"
+        if why:
+            reason = reason or why
+            later.append(c)
+        else:
+            pick.append(c)
+    if len(pick) < 2:
+        return [f"SEQUENTIAL: {reason}"]
     lines = [f"PARALLEL: {', '.join(c['id'] for c in pick)} (independent, medium+)"]
     for c in pick:
         branch, tree = chunk_branch(root, c["id"])
         lines.append(f"  {c['id']} -> branch {branch}  worktree {tree}")
+    if later:
+        lines.append(f"  then in order after the merge: {', '.join(c['id'] for c in later)}")
     return lines
 
 
