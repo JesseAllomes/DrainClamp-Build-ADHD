@@ -138,6 +138,10 @@ _PRIVATE_IP = re.compile(r"^(?:10\.|127\.|0\.|169\.254\.|192\.168\.|172\.(?:1[6-
 _DUMMY_EMAIL = re.compile(r"@(?:example\.(?:com|org|net)|localhost|test|invalid|email\.com|"
                           r"domain\.com|acme\.test|(?:[A-Za-z0-9-]+\.)+(?:example|invalid|"
                           r"localhost|test))$", re.I | F)
+# Gate deviations: a no-reply mailbox (commit trailers, GitHub's noreply addresses) is no
+# person's address, and a card number starts with an issuer digit 2-6 (an epoch-ms timestamp or
+# a token count in JSON starts with 1 and only passes Luhn by chance).
+_ROBOT_EMAIL = re.compile(r"(?:^no-?reply@|@users\.noreply\.github\.com$)", re.I | F)
 _STREET = ("Street|St|Road|Rd|Avenue|Ave|Av|Drive|Dr|Court|Ct|Crescent|Cres|Cr|Place|Pl|Lane|Ln|"
            "Way|Parade|Pde|Highway|Hwy|Terrace|Tce|Close|Cl|Boulevard|Blvd|Bvd|Circuit|Cct|"
            "Esplanade|Esp|Grove|Gr|Rise|Square|Sq|Track|Trk|Walk|Mews|Loop|Row|Vista|View|Chase|"
@@ -158,11 +162,11 @@ def _d(kind, pattern, flags=0, group=None, keep=None, replace=None):
 DETECTORS = [
     _d("EMAIL", r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
                 r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,24}",
-       keep=lambda v, t, i: not _DUMMY_EMAIL.search(v)
+       keep=lambda v, t, i: not _DUMMY_EMAIL.search(v) and not _ROBOT_EMAIL.search(v)
        and not re.search(r"://[^\s/:@]+:$", t[max(0, i - 80):i], F)),
     _d("CARD", r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])",
        keep=lambda v, t, i: 13 <= len(_digits(v)) <= 19 and not _all_same(_digits(v))
-       and _luhn(_digits(v))),
+       and _digits(v)[0] in "23456" and _luhn(_digits(v))),
     _d("DOB", r"\b(?:DOB|D\.O\.B\.?|date of birth|birth ?date|born(?: on)?)\s*[:=-]?\s*"
               r"(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?\s+"
               r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{4})",
