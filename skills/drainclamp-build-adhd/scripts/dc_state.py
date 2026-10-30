@@ -873,9 +873,9 @@ def mark_rows(raw: str, marks: dict[str, str]) -> str:
     for line in raw.split("\n"):
         cells = line.split("|")
         # `| id | goal | files | status | ...` splits to ['', id, goal, files, status, ...]
-        if line.strip().startswith("|") and len(cells) >= 6 and cells[1].strip() in marks \
+        if line.strip().startswith("|") and len(cells) >= 5 and cells[1].strip() in marks \
                 and cells[1].strip().lower() != "id":
-            cells[4] = f" {marks[cells[1].strip()]} "
+            cells[4] = f" {marks[cells[1].strip()]}" + (" " if len(cells) > 5 else "")
             line = "|".join(cells)
         out.append(line)
     return "\n".join(out)

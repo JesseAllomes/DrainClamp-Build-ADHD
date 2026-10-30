@@ -341,6 +341,29 @@ check("every concurrent append survives the race",
       all(f"concurrent {n}" in log for n in range(3)),
       f"{log.count('concurrent ')} of 3 present")
 
+# --- r86: --mark with --append-log is refused ------------------------------
+cmb = newrepo()
+run(cmb, "--set", "ROADMAP", "--file", str(roadmap(cmb, [("m1", "first", "a.py", "pending")])))
+cmb_file = cmb / ".agent" / "drainclamp-state.md"
+cmb_before = cmb_file.read_text(encoding="utf-8")
+r = run(cmb, "--mark", "m1=done", "--append-log", "x")
+check("--mark with --append-log is refused and writes nothing",
+      r.returncode != 0 and "cannot be combined" in (r.stdout + r.stderr)
+      and "| m1 | first | a.py | pending |" in cmb_file.read_text(encoding="utf-8")
+      and cmb_file.read_text(encoding="utf-8") == cmb_before, r.stdout + r.stderr)
+
+# --- r87: a roadmap row without a closing pipe is marked --------------------
+npp = newrepo()
+npp_rm = npp / "rm.md"
+npp_rm.write_text("| id | goal | files | status |\n|---|---|---|---|\n| m1 | goal | a.py | active",
+                  encoding="utf-8")
+run(npp, "--set", "ROADMAP", "--file", str(npp_rm))
+npp_file = npp / ".agent" / "drainclamp-state.md"
+r = run(npp, "--mark", "m1=done")
+m1_rows = [ln for ln in npp_file.read_text(encoding="utf-8").splitlines() if ln.startswith("| m1 |")]
+check("--mark changes a row that has no closing pipe",
+      r.returncode == 0 and m1_rows == ["| m1 | goal | a.py | done"], repr((r.stdout + r.stderr, m1_rows)))
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

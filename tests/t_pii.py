@@ -17,6 +17,9 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
 REPO = SCRIPTS.parent.parent.parent
 os.environ.setdefault("DRAINCLAMP_HOME", tempfile.mkdtemp(prefix="dcreg-"))  # never the real config
+# never the machine-wide pre-push hook: its scanner would refuse the fixtures pushed here
+os.environ["GIT_CONFIG_GLOBAL"] = str(Path(tempfile.mkdtemp(prefix="dcgit-")) / "gitconfig")
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
 sys.path.insert(0, str(SCRIPTS))
 import dc_pii  # noqa: E402
 

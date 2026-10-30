@@ -716,8 +716,15 @@ lines = "\n".join([json.dumps({"id": "r1", "verdict": "RESOLVED", "note": "range
 rc, out = rv(bt, "resolve", "--round", "R1", "--file", "-", stdin=lines.replace("r2", "r9"))
 check("an unknown id stops the whole batch and writes nothing",
       rc != 0 and "r9" in out and [f["status"] for f in side(bt)["findings"]] == ["fixing", "fixing"], out)
+rc, out = rv(bt, "resolve", "--round", "R1", "--file", "-", stdin=lines.replace('"NOT-RESOLVED"', '"MAYBE"'))
+check("a bad re-check verdict word stops the whole batch and writes nothing",
+      rc != 0 and "MAYBE" in out and [f["status"] for f in side(bt)["findings"]] == ["fixing", "fixing"], out)
+twice = "\n".join([json.dumps({"id": "r1", "verdict": "RESOLVED", "note": "x"})] * 2)
+rc, out = rv(bt, "resolve", "--round", "R1", "--file", "-", stdin=twice)
+check("an id given twice stops the whole batch and writes nothing",
+      rc != 0 and "given twice" in out and [f["status"] for f in side(bt)["findings"]] == ["fixing", "fixing"], out)
 rc, out = rv(bt, "resolve", "--round", "R1", "--file", "-", stdin=lines)
-fs = {f["id"]: f for f in side(bt)["findings"]}
+fs ={f["id"]: f for f in side(bt)["findings"]}
 check("batch resolve fixes RESOLVED and reopens NOT-RESOLVED, printing the reopened ids",
       rc == 0 and fs["r1"]["status"] == "fixed" and fs["r2"]["status"] == "open"
       and "reopened: r2" in out and "1 fixed, 1 reopened" in out, out)
@@ -825,6 +832,20 @@ check("finish closes a round whose ticket was reopened, still blocking",
 green(rf)
 rc, out = rv(rf, "packet", "--milestone", "m1", "--only", "a.py")
 check("a fix-diff round starts once the capped round is finished", rc == 0 and "REVIEW R2" in out, out)
+
+# -- findings decided between the first ticket and the fixer are the orchestrator's, not a breach --
+gp = fixing_repo("guardpin", finding("loop stops one item early", "for i in range(len(items) - 1):"),
+                 finding("returns the wrong total", "    total = 0", line=2))
+rv(gp, "decide", "--set", "r2=open")
+rv(gp, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1" + chr(10))
+rv(gp, "decide", "--set", "r2=dismiss:not a defect")
+rv(gp, "run", "--round", "R1", "--role", "fixer", "--model", "sonnet")
+(gp / "a.py").write_text(A_PY.replace("range(len(items) - 1)", "range(len(items))"), encoding="utf-8")
+rc, out = rv(gp, "scope", "--round", "R1")
+check("a decision made after the first ticket but before the fixer is no breach", rc == 0 and "scope ok" in out, out)
+rv(gp, "decide", "--set", "r2=open")
+rc, out = rv(gp, "scope", "--round", "R1")
+check("a decision changed after the fixer was registered is still a breach", rc == 4 and ".agent/" in out, out)
 
 # -- the fixer may not touch .agent/ ---------------------------------------------------------------
 gd = fixing_repo("guard", finding("loop stops one item early", "for i in range(len(items) - 1):"))
@@ -1297,6 +1318,25 @@ try:
     rc, out = rv(cxu, "finish", "--round", "R1")
     check("the round finishes without Codex after an unreadable reply, with no nag",
           rc == 0 and "NOTE: Codex" not in out, out)
+    # r81: codex refuses when the round has no packet
+    np = make_repo("codex-nopacket")
+    rv(np, "config", "--mode", "milestone")
+    green(np)
+    rv(np, "packet", "--milestone", "m1")
+    (np / ".agent" / "review" / "R1" / "packet.md").unlink()
+    rc, out = rv(np, "codex", "--round", "R1")
+    check("codex refuses a round with no packet", rc != 0 and "no packet for R1" in out, out)
+    # r82: codex refuses a finished round
+    rc, out = rv(root, "codex", "--round", "R1")
+    check("codex refuses a finished round", rc != 0 and "closed" in out, out)
+    # r83: a second hand-registered critic-codex run is refused
+    dr = make_repo("codex-run-twice")
+    rv(dr, "config", "--mode", "milestone")
+    green(dr)
+    rv(dr, "packet", "--milestone", "m1")
+    rv(dr, "run", "--round", "R1", "--role", "critic-codex", "--model", "codex")
+    rc, out = rv(dr, "run", "--round", "R1", "--role", "critic-codex", "--model", "codex")
+    check("a second critic-codex run is refused", rc != 0 and "already has a critic-codex run" in out, out)
 finally:
     os.environ["PATH"] = saved_env_path
     if saved_off is not None:

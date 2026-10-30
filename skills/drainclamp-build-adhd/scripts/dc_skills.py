@@ -103,7 +103,8 @@ def available(home: str | None, do_fetch: bool = False) -> tuple[list[dict], lis
         if do_fetch and (w := fetch(src)):
             warns.append(w)
         try:
-            names = _git(src["repo"], "ls-tree", "-r", "--name-only", src["ref"]).splitlines()
+            names = [p for p in _git(src["repo"], "ls-tree", "-r", "-z", "--name-only",
+                                     src["ref"]).split("\0") if p]
         except DcError as exc:
             warns.append(f"WARN: skipped source {src['repo']}: {exc}")
             continue

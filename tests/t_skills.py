@@ -171,6 +171,41 @@ check("frontmatter strips matching quotes only", fm == {"name": "x-y",
       "description": 'Quoted "inner" text'}, fm)
 check("no frontmatter gives nothing", dc_skills.frontmatter("# just text") == {})
 
+# r84: a malformed or non-object config.json gives no sources
+for bad_cfg in ("{not json", "[1, 2]"):
+    (home / "config.json").write_text(bad_cfg, encoding="utf-8")
+    check(f"sources() is empty for config {bad_cfg!r}", dc_skills.sources(str(home)) == [],
+          dc_skills.sources(str(home)))
+write_config({"skill_sources": [{"repo": str(clone)}]})
+
+# r85: git launch failures and timeouts become DcError
+real_run = dc_skills.subprocess.run
+for exc in (OSError("no git"), subprocess.TimeoutExpired(cmd="git", timeout=1)):
+    def boom(*a, _exc=exc, **k):
+        raise _exc
+    dc_skills.subprocess.run = boom
+    msg = ""
+    try:
+        dc_skills._git(Path("."), "status")
+    except dc_skills.DcError as err:
+        msg = str(err)
+    finally:
+        dc_skills.subprocess.run = real_run
+    check(f"_git turns {type(exc).__name__} into a DcError", "git status failed in" in msg, msg)
+
+# r90: a non-ASCII skill folder is listed
+cafe = tmp / "cafe-src"
+cafe.mkdir()
+subprocess.run(["git", "init", "-q", str(cafe)], check=True)
+(cafe / "café-skill").mkdir()
+(cafe / "café-skill" / "SKILL.md").write_text(skill_md("cafe-skill", "Cafe skill."), encoding="utf-8")
+git(cafe, "add", "-A")
+git(cafe, "commit", "-q", "-m", "cafe")
+write_config({"skill_sources": [{"repo": str(cafe), "ref": "HEAD"}]})
+rc, out = run("dc_skills.py", repo, "list")
+check("a non-ASCII skill folder is listed", rc == 0 and "cafe-skill" in out, out)
+write_config({"skill_sources": [{"repo": str(clone)}]})
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

@@ -1576,6 +1576,14 @@ def main() -> int:
                 raise DcError(f"REVIEW CAP: round {args.round} has used {cap}/{cap} agent runs. "
                               "Finish it and start a fix-diff round after the user says go.",
                               _dcio.EXIT_CHECK_FAILED)
+            fix = rnd.get("fix")
+            if (args.role == "fixer" and fix and fix.get("guard") and isinstance(fix.get("runs_at"), int)
+                    and not any(r["role"] == "fixer" for r in rnd["runs"][fix["runs_at"]:])):
+                # Until the first fixer of a batch runs, every .agent write is the orchestrator's
+                # (more findings ingested and decided between tickets): pin the guard here.
+                fix["guard"] = guard_digest(root, rv, records=False)
+                fix["records"] = record_pins(root)
+                fix["records_at"] = dc_verify.load_records(agent)
             rnd["runs"].append({"role": args.role, "model": _clip(args.model, 40), "at": _now(),
                                 "found": None})
             used = sum(1 for r in rnd["runs"] if r["role"] not in UNCAPPED_ROLES)
@@ -1766,6 +1774,7 @@ def main() -> int:
                 fix["guard"] = guard_digest(root, rv, records=False)
                 fix["records"] = record_pins(root)
                 fix["records_at"] = dc_verify.load_records(agent)
+                fix["runs_at"] = len(rnd["runs"])
             out.append(f"REVIEW ticket {args.id} stored | fixer may change: {', '.join(allow)} | "
                        f"snapshot {len(fix['files'])} file(s)")
         hand = write_handoff(agent, review_of(change(apply_ticket)), args.round)
