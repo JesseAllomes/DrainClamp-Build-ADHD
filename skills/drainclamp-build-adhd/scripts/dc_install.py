@@ -809,6 +809,102 @@ def check_one(target: Target, home: Path, source: Path, args=None) -> tuple[bool
 
 
 # --------------------------------------------------------------------------
+# Compact reminder: an opt-in Claude Code Notification hook (idle prompt)
+# --------------------------------------------------------------------------
+
+HOOK_MARK = "--compact-hook"
+# Claude Code hooks reference: idle_prompt fires about 60 seconds after Claude finishes
+# responding if the user has not typed; no setting or env var for that delay is documented.
+IDLE_DELAY_NOTE = ("Claude Code sends the idle notification about 60 seconds after a reply "
+                   "(fixed by the host, not configurable; the 3 minute target cannot be set)")
+
+
+def claude_settings_path(home: Path, explicit_home: bool) -> Path:
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    if cfg and not explicit_home:
+        return Path(cfg).expanduser() / "settings.json"
+    return home / ".claude" / "settings.json"
+
+
+def _ours(group) -> bool:
+    return isinstance(group, dict) and any(
+        isinstance(h, dict) and HOOK_MARK in str(h.get("command", ""))
+        for h in group.get("hooks") or [])
+
+
+def hook_command() -> str:
+    exe = Path(sys.executable).as_posix()
+    return f'"{exe}" "{Path(__file__).resolve().as_posix()}" {HOOK_MARK}'
+
+
+def compact_reminder(path: Path, on: bool) -> tuple[str, str]:
+    """Add or remove our Notification hook. Idempotent; every other key is preserved."""
+    raw = _dcio.read_text(path)
+    try:
+        data = json.loads(raw) if raw and raw.strip() else {}
+    except ValueError as exc:
+        raise DcError(f"{path} is not valid JSON ({exc}); left untouched")
+    if not isinstance(data, dict):
+        raise DcError(f"{path} is not a JSON object; left untouched")
+    hooks = data.get("hooks")
+    if hooks is None:
+        hooks = {}
+    if not isinstance(hooks, dict):
+        raise DcError(f"{path} `hooks` is not an object; left untouched")
+    groups = hooks.get("Notification")
+    if groups is None:
+        groups = []
+    if not isinstance(groups, list):
+        raise DcError(f"{path} `hooks.Notification` is not a list; left untouched")
+    others = [g for g in groups if not _ours(g)]
+    ours = [g for g in groups if _ours(g)]
+    if on:
+        entry = {"matcher": "idle_prompt",
+                 "hooks": [{"type": "command", "command": hook_command()}]}
+        if ours == [entry]:
+            return "OK", f"compact reminder already on in {path}. {IDLE_DELAY_NOTE}"
+        hooks["Notification"] = others + [entry]
+        data["hooks"] = hooks
+        message = f"compact reminder on in {path}. {IDLE_DELAY_NOTE}"
+    else:
+        if not ours:
+            return "OK", f"compact reminder already off in {path}"
+        if others:
+            hooks["Notification"] = others
+        else:
+            hooks.pop("Notification", None)
+        if hooks:
+            data["hooks"] = hooks
+        else:
+            data.pop("hooks", None)
+        message = f"compact reminder off in {path}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _dcio.atomic_write(path, json.dumps(data, indent=2) + chr(10))
+    return "OK", message
+
+
+def compact_hook() -> int:
+    """Hook body: run --compact-check for the session's project; when safe, notify. Never compacts."""
+    root = os.environ.get("CLAUDE_PROJECT_DIR")
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        root = root or payload.get("cwd")
+    except ValueError:
+        pass
+    if not root:
+        return _dcio.EXIT_OK
+    try:
+        import dc_state
+        safe, _ = dc_state.compact_check(_dcio.project_root(root))
+    except Exception:
+        return _dcio.EXIT_OK
+    if safe:
+        seq = chr(27) + "]777;notify;DrainClamp;safe to compact" + chr(7)
+        print(json.dumps({"terminalSequence": seq}))
+    return _dcio.EXIT_OK
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
@@ -840,7 +936,24 @@ def main() -> int:
                              "(for a skill installed as a plugin)")
     parser.add_argument("--project", default=None,
                         help="take Codex agent models from this project's review config")
+    parser.add_argument("--compact-reminder", nargs="?", const="on", choices=("on", "off"),
+                        help="opt-in: install (on) or remove (off) a Claude Code idle-prompt "
+                             "Notification hook that says 'DrainClamp: safe to compact'")
+    parser.add_argument(HOOK_MARK, dest="compact_hook", action="store_true",
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.compact_hook:
+        return compact_hook()
+    if args.compact_reminder:
+        home = Path(args.home).expanduser().resolve() if args.home else Path.home()
+        path = claude_settings_path(home, bool(args.home))
+        if args.dry_run:
+            print(f"DRY-RUN: would turn compact reminder {args.compact_reminder} in {path}")
+            return _dcio.EXIT_OK
+        status, message = compact_reminder(path, args.compact_reminder == "on")
+        print(f"{status}: {message}")
+        return _dcio.EXIT_OK
 
     if args.check and args.uninstall:
         raise DcError("--check and --uninstall are mutually exclusive",
