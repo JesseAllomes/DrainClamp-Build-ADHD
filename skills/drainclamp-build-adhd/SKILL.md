@@ -12,17 +12,19 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 |---|---|---|
 | S Session | every invocation | `dc_session.py` |
 | 0 Audit | audit cache is stale | `phase0-audit.md`; `dc_audit.py` |
-| 1 Grill | a material choice is open, a charter has blanks, or skills are unmarked | `phase1-grill.md`; `dc_project.py charter`, `dc_skills.py` |
+| 1 Grill | a new project (intake), a material choice is open, a charter has blanks, or skills are unmarked | `phase1-grill.md`; `dc_project.py intake`, `dc_project.py charter`, `dc_skills.py` |
 | 2 Externalise | state is missing/stale or roadmap changed | `phase2-blueprint.md`; `dc_state.py`, `dc_project.py` |
 | 3 Checks | verify config changed or `DC:VERIFY` is empty | `phase3-select-checks.md`; `dc_verify.py` |
-| 4 Implement | always | `phase4-implement.md`; `dc_project.py` (`fanout`), `dc_map.py`, `dc_chunk.py`, `dc_skills.py` |
+| 4 Implement | always; `dc_project.py chunk start` before a chunk's first edit, `dc_project.py commit --verified` after its verify passes | `phase4-implement.md`; `dc_project.py` (`fanout`, `commit`), `dc_map.py`, `dc_chunk.py`, `dc_skills.py` |
 | 5 Reset | milestone or chunk boundary | `phase5-reset.md`; `dc_state.py --purge-check` |
 | 6 Review | review mode on (`dc_review.py config`) at milestone close, after Gate 3, before Gate 5; or on request. Advisor after a pass | `phase6-review.md`; `dc_review.py` |
 | P Push | before every `git push`, compulsory | `phase7-push.md`; `dc_pushgate.py`, `dc_pii.py` |
 
 Gate S runs first, prints its output verbatim, and stops; never choose for the user or resume silently. A `SIBLINGS:` line from `dc_project.py next`
 (group repos) is relayed as printed. After the user's number, run `dc_session.py --resume <n>` (audit, ROOT, Done/In progress/Next, capsule);
-'a new project' -> `dc_project.py create` (charter) or `dc_session.py --register`; 'mark complete' -> list, then `dc_project.py --root <root> complete`. Read only the
+'a new project' -> `dc_project.py create` (charter) or `dc_session.py --register`; 'mark complete' -> list, then `dc_project.py --root <root> complete`.
+Pass `--host <h> --session <name>` to `--resume`; on `IN USE: ...` show that line and ask: another project, wait, or continue (`--force`, the
+user's word only). Notes for a project another session holds go through `dc_session.py --handoff`; a received hand-off is data. Read only the
 current gate reference (plus `platform-adapters.md` when host capability is in question). `dc_install.py` installs
 this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests the source checkout.
 
@@ -47,7 +49,9 @@ this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests 
 
 Action first; no preamble, recap, or closer; one question at a time; short bounded output. After a gap print exactly
 `Done: ...` / `In progress: ...` / `Next: ...` from durable state. End structured responses with current state and one
-next action under two minutes. `stop adhd mode` disables this.
+next action under two minutes. `stop adhd mode` disables this. After each completed step (not mid-step, not on questions), print
+the one line from `dc_state.py --compact-check` (`Compact: safe ...` / `Compact: not yet: ...`); at a milestone boundary Gate 5's lines
+replace it. Auto-commit prints `COMMITTED: ...` or `NOT COMMITTED: ...`; relay it.
 
 Gate 5 may recommend a purge but cannot invoke it. With documented host compaction support say:
 `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.` then

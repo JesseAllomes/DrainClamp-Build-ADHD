@@ -109,10 +109,10 @@ is unignored you get one warning and nothing else.
 | `_dcio.py` | Atomic writes, PID-aware locking, generation checks, subprocess sandbox, output normalisation |
 | `dc_map.py` | Symbol index: Python via stdlib `ast`, JavaScript via a bounded regex scanner; cached on `path + mtime_ns + size` |
 | `dc_chunk.py` | Range reader; refuses ambiguous symbols; advises on read sizing |
-| `dc_state.py` | Schema v1 state, read-only `--resume-view`, crash-recoverable log rollover, purge calculus, narrow promotion |
+| `dc_state.py` | Schema v1 state, read-only `--resume-view`, crash-recoverable log rollover, purge calculus, narrow promotion; `--compact-check` prints the one `Compact: safe` / `Compact: not yet: <reason>` line after a completed step (`--running`, `--pending-question` feed it) |
 | `dc_registry.py` | Cross-repository project index at `~/.drainclamp/projects.json`; prunes on read, never indexes a temp-directory repo, never trusts a corrupt file |
-| `dc_session.py` | Gate S: the project menu (grouped for group repos), plus `--complete` and `--reopen` |
-| `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter |
+| `dc_session.py` | Gate S: the project menu (grouped for group repos), plus `--complete` and `--reopen`; session presence (a second session sees `IN USE: <session> (last active n min ago)`; entries over 2 hours are ignored) and `--handoff` (SendMessage on Claude Code, a paste line elsewhere) |
+| `dc_project.py` | Project sidecar `.agent/drainclamp-project.json`: chunks with targets, errors, to-dos, time, tokens; `next` resume capsule; `create` / `complete` / `reopen` from a charter; `intake`: a new project's one-question-at-a-time readiness card, so Gate 2 starts with the decisions made (resumed projects never see it); `chunk start` / `commit --verified` / `config`: auto-commit of a verified step's own files (never a push) |
 | `dc_skills.py` | Domain skills: lists skills from the repos in `skill_sources` (config.json), read from the published ref with `git show`; `set` marks the ones a project needs; `show` loads one. A project with none marked never loads one |
 | `dc_pii.py` | PII push gate: scans every commit a push would publish (added lines, messages, file names, Office text), refuses unreadable binaries, never prints a value, fails closed; hashed allow rules in `.drainclamp-pii-allow`; `drift` flags pii-redact detector changes |
 | `dc_pushgate.py` | Machine-wide push gate: `install` sets the global `core.hooksPath` to dispatchers that run `dc_pii.py` before every push and then each repo's own hooks; `status`; `check` is Gate P |
@@ -121,7 +121,7 @@ is unignored you get one warning and nothing else.
 | `dc_review.py` | Gate 6: review packet, citation check, dedupe, suppression, agent cap, fixer scope, roadmap guard |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests tied to a tree fingerprint |
 | `dc_selftest.py` | Materialises `tests/fixtures/`, runs the whole suite matrix |
-| `dc_install.py` | Links the skill into each host, installs `dca-scout` and the Gate 6 roster, refuses to touch anything it does not own |
+| `dc_install.py` | Links the skill into each host, installs `dca-scout` and the Gate 6 roster, refuses to touch anything it does not own; `--compact-reminder on\|off` (off by default) adds an idle reminder hook: Claude Code fires it about 60 seconds after a reply, a delay it does not let you change |
 
 ### Measuring the overhead
 
