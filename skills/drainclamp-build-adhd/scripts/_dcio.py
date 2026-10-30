@@ -10,12 +10,15 @@ repo-root and project-root resolution, the subprocess sandbox, and output normal
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -717,6 +720,303 @@ def run_sandboxed(argv: list[str], root: Path, cwd: str | Path | None = None,
 
 
 # --------------------------------------------------------------------------
+# Auto-commit at a completed step (G9)
+# --------------------------------------------------------------------------
+# Repos may auto-push on commit, so a commit here can be a publish. Every guard
+# below exists for that: only the step's own paths, never a pre-dirty file, never
+# another session's staged file, never on a failed check, a PII hit or an odd repo
+# state. Returns plain lines; the first is COMMITTED or NOT COMMITTED.
+
+AUTOCOMMIT_MAX_BYTES = 5 * 1024 * 1024
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbe93904"
+GIT_STATE_MARKERS = (("MERGE_HEAD", "a merge"), ("rebase-merge", "a rebase"),
+                     ("rebase-apply", "a rebase"), ("CHERRY_PICK_HEAD", "a cherry-pick"),
+                     ("REVERT_HEAD", "a revert"), ("BISECT_LOG", "a bisect"))
+CODEOWNERS_PLACES = ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS")
+CLEAN_TREE_TIMEOUT = 600
+
+
+def _git(top: Path, *args: str, env: dict | None = None,
+         binary: bool = False) -> tuple[int, str, str]:
+    """(rc, stdout, stderr) of git run at `top`, literal pathspecs, never prompting."""
+    full = dict(os.environ)
+    full.pop("GIT_INDEX_FILE", None)
+    full["GIT_TERMINAL_PROMPT"] = "0"
+    full.update(env or {})
+    try:
+        proc = subprocess.run(["git", "-C", str(top), "--literal-pathspecs",
+                               "-c", "core.quotepath=false", *args],
+                              capture_output=True, env=full, timeout=300,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, "", str(exc)
+    out = proc.stdout if binary else proc.stdout.decode("utf-8", "replace")
+    return proc.returncode, out, proc.stderr.decode("utf-8", "replace").strip()
+
+
+def _file_hash(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "gone"
+
+
+def _in_agent_dir(rel: str, prefix: str) -> bool:
+    return rel.startswith(prefix + AGENT_DIR_NAME + "/")
+
+
+def dirty_files(root: Path) -> dict[str, str]:
+    """{repo-relative path: porcelain status} for the project's own folder, minus `.agent/`."""
+    top, prefix = repo_root(root), git_prefix(root)
+    args = ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+    if prefix:
+        args += ["--", prefix.rstrip("/")]
+    rc, out, err = _git(top, *args)
+    if rc != 0:
+        raise DcError(f"git status failed: {collapse(err)}")
+    parts, found, i = out.split("\0"), {}, 0
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        code, rel = entry[:2], entry[3:]
+        if code[0] in "RC":
+            i += 1  # the old name follows
+        if not _in_agent_dir(rel, prefix):
+            found[rel] = code
+    return found
+
+
+def dirty_snapshot(root: Path) -> dict:
+    """What is already edited before a step starts: {head, files: {path: sha256}}."""
+    top = repo_root(root)
+    rc, head, _ = _git(top, "rev-parse", "--verify", "-q", "HEAD")
+    return {"head": head.strip() if rc == 0 else "",
+            "files": {rel: _file_hash(top / rel) for rel in dirty_files(root)}}
+
+
+def _under(rel: str, targets: list[str]) -> bool:
+    return any(rel == t or rel.startswith(t.rstrip("/") + "/") for t in targets)
+
+
+def step_candidates(root: Path, snapshot: dict, targets: list[str] | None = None
+                    ) -> tuple[list[str], int, list[str]]:
+    """(paths to commit, pre-dirty files still dirty, new-dirty paths outside the targets).
+
+    A path dirty at the snapshot is never a candidate, changed since or not: it may hold
+    the user's or another session's hunks. `targets` are project-relative paths or folders.
+    """
+    prefix = git_prefix(root)
+    before = set(snapshot.get("files", {}))
+    now = dirty_files(root)
+    wanted = [prefix + t.replace("\\", "/").lstrip("./") for t in (targets or [])]
+    keep, outside = [], []
+    for rel in sorted(now):
+        if rel in before:
+            continue
+        (keep if not wanted or _under(rel, wanted) else outside).append(rel)
+    return keep, sum(1 for rel in now if rel in before), outside
+
+
+def _review_required(top: Path, forced: bool | None) -> bool:
+    return bool(forced) or any((top / p).is_file() for p in CODEOWNERS_PLACES)
+
+
+def _default_branch(top: Path) -> set[str]:
+    rc, out, _ = _git(top, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
+    names = {"main", "master"}
+    if rc == 0 and out.strip():
+        names.add(out.strip().split("/", 1)[-1])
+    return names
+
+
+def _rmtree(path: Path) -> None:
+    def onerror(func, p, _exc):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, onerror=onerror)
+
+
+def _clean_tree(top: Path, prefix: str, commit: str, argv: list[str], scratch: Path) -> str | None:
+    """Run `argv` in a temporary worktree at `commit`. None on pass, else the reason."""
+    check_repo_argv(argv)
+    hooks = scratch / "nohooks"
+    hooks.mkdir()
+    wt = scratch / "wt"
+    rc, _, err = _git(top, "-c", f"core.hooksPath={hooks}", "worktree", "add", "--detach",
+                      "-q", str(wt), commit)
+    if rc != 0:
+        return f"clean-tree worktree failed: {collapse(err)}"
+    try:
+        cwd = wt / prefix if prefix else wt
+        try:
+            proc = subprocess.run(argv, cwd=str(cwd), capture_output=True,
+                                  timeout=CLEAN_TREE_TIMEOUT, stdin=subprocess.DEVNULL)
+        except FileNotFoundError:
+            return f"clean-tree command not found: {argv[0]}"
+        except subprocess.TimeoutExpired:
+            return "clean-tree check timed out"
+        if proc.returncode != 0:
+            text = (proc.stdout + b"\n" + proc.stderr).decode("utf-8", "replace")
+            why = first_failure_line(text) or f"exit {proc.returncode}"
+            return f"clean-tree check failed at the new commit: {why}"
+        return None
+    finally:
+        _git(top, "worktree", "remove", "--force", str(wt))
+        if wt.exists():
+            _rmtree(wt)
+        _git(top, "worktree", "prune")
+
+
+def _pii_hits(top: Path, paths: list[str], env: dict, message: str,
+              home: str | None) -> list[dict]:
+    """Scan the exact staged diff (temp index vs HEAD), file names and message."""
+    import dc_pii  # lazy: dc_pii imports this module
+    opts = dc_pii.options(dc_pii.config(home))
+    allow = dc_pii.parse_allow(read_text(top / dc_pii.ALLOW_FILE))
+    hits: list[dict] = []
+    rc, head, _ = _git(top, "rev-parse", "--verify", "-q", "HEAD")
+    base = head.strip() if rc == 0 else EMPTY_TREE
+    rc, diff, err = _git(top, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff",
+                         "--no-textconv", "-M", base, env=env)
+    if rc != 0:
+        raise DcError(f"git diff failed: {collapse(err)}")
+    files, binaries = dc_pii.added_by_file(diff)
+    for path, rows in files.items():
+        if not dc_pii._path_allowed(path, allow):
+            dc_pii.scan_text(hits, opts, allow, "staged", path, rows)
+    for path in binaries:
+        blob = (top / path).read_bytes() if (top / path).is_file() else b""
+        dc_pii.scan_blob(top, hits, opts, allow, "staged", path, blob=blob)
+    for path in paths:
+        dc_pii.scan_text(hits, opts, allow, "staged", f"{path} (file name)",
+                         [(0, re.sub(r"[/\\_.]+", " ", path))])
+    dc_pii.scan_text(hits, opts, allow, "staged", "(commit message)",
+                     list(enumerate(message.split("\n"), 1)))
+    return hits
+
+
+def auto_commit(root: Path, paths: list[str], subject: str, trailers: list[str] | None = None,
+                branch: str = "", review_required: bool | None = None,
+                clean_argv: list[str] | None = None, home: str | None = None) -> list[str]:
+    """Commit exactly `paths` (repo-relative). See the block comment above for the guards."""
+    def no(reason: str) -> list[str]:
+        return [f"NOT COMMITTED: {reason}"]
+
+    top = repo_root(root)
+    if not paths:
+        return no("no files changed by this step")
+    rc, gitdir, err = _git(top, "rev-parse", "--absolute-git-dir")
+    if rc != 0:
+        return no(f"not a git repository ({collapse(err)})")
+    gitdir_path = Path(gitdir.strip())
+    for marker, what in GIT_STATE_MARKERS:
+        if (gitdir_path / marker).exists():
+            return no(f"{what} is in progress; finish it first")
+    rc, ref, _ = _git(top, "symbolic-ref", "-q", "HEAD")
+    if rc != 0:
+        return no("HEAD is detached; switch to a branch first")
+    current = ref.strip().removeprefix("refs/heads/")
+    for _try in range(2):
+        if not (gitdir_path / "index.lock").exists():
+            break
+        time.sleep(1.5)
+    else:
+        return no("the git index is locked (another git process or a stale index.lock)")
+    rc, head, _ = _git(top, "rev-parse", "--verify", "-q", "HEAD")
+    has_head = rc == 0
+
+    message = subject.strip().splitlines()[0][:100] if subject.strip() else "Complete step"
+    trailer_block = "\n".join(t.strip() for t in (trailers or []) if t.strip())
+    full_message = message + ("\n\n" + trailer_block if trailer_block else "")
+
+    new_paths = []
+    for rel in paths:
+        fp = top / rel
+        tracked = has_head and _git(top, "cat-file", "-e", f"HEAD:{rel}")[0] == 0
+        if fp.is_file():
+            if fp.stat().st_size > AUTOCOMMIT_MAX_BYTES:
+                return no(f"{rel} is over 5 MB; needs your go")
+            if not tracked:
+                with open(fp, "rb") as handle:
+                    if b"\0" in handle.read(8000):
+                        return no(f"{rel} is a new binary file; needs your go")
+        if not tracked:
+            new_paths.append(rel)
+
+    scratch = Path(tempfile.mkdtemp(prefix="dc-autocommit-"))
+    try:
+        env = {"GIT_INDEX_FILE": str(scratch / "index")}
+        rc, _, err = _git(top, "read-tree", "HEAD" if has_head else "--empty", env=env)
+        if rc == 0:
+            rc, _, err = _git(top, "add", "--", *paths, env=env)
+        if rc != 0:
+            return no(f"could not stage the step's files: {collapse(err)}")
+        if has_head and _git(top, "diff", "--cached", "--quiet", env=env)[0] == 0:
+            return no("the step's files have no net change")
+
+        hits = _pii_hits(top, paths, env, full_message, home)
+        if hits:
+            kinds = sorted({h["kind"] for h in hits})
+            where = sorted({h["where"] for h in hits})
+            shown = ", ".join(where[:5]) + (f" (+{len(where) - 5} more)" if len(where) > 5 else "")
+            return no(f"PII/secret scan hit ({', '.join(kinds)}) in {shown}; values not shown. "
+                      "Remove the data, or allow it with dc_pii.py allow")
+
+        lines: list[str] = []
+        target = current
+        if branch and _review_required(top, review_required) and current in _default_branch(top):
+            target = branch
+        if clean_argv:
+            rc, tree, err = _git(top, "write-tree", env=env)
+            cmt = ""
+            if rc == 0:
+                cargs = ["commit-tree", tree.strip(), "-m", full_message]
+                if has_head:
+                    cargs[2:2] = ["-p", head.strip()]
+                rc, cmt, err = _git(top, *cargs)
+            if rc != 0:
+                return no(f"could not build the candidate commit: {collapse(err)}")
+            why = _clean_tree(top, git_prefix(root), cmt.strip(), clean_argv, scratch)
+            if why:
+                return no(why)
+        if target != current:
+            exists = _git(top, "rev-parse", "--verify", "-q", f"refs/heads/{target}")[0] == 0
+            rc, _, err = _git(top, "checkout", *([] if exists else ["-b"]), target)
+            if rc != 0:
+                return no(f"could not switch to work branch {target}: {collapse(err)}")
+            lines.append(f"PR needed: review-required repo, committed to {target}, not {current}")
+
+        for attempt in range(2):
+            rc, err = 0, ""
+            if new_paths:
+                rc, _, err = _git(top, "add", "--", *new_paths)
+            if rc == 0:
+                margs = ["-m", message] + (["-m", trailer_block] if trailer_block else [])
+                rc, _, err = _git(top, "commit", "--only", *margs, "--", *paths)
+            if rc == 0:
+                break
+            if attempt == 0 and "index.lock" in err:
+                time.sleep(1.5)
+                continue
+            if new_paths:  # leave nothing of ours staged
+                _git(top, "restore", "--staged", "--", *new_paths)
+            return no(f"git commit refused: {collapse(err) or 'no reason given'}")
+        _, short, _ = _git(top, "rev-parse", "--short", "HEAD")
+        _, names, _ = _git(top, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                           "--root", "HEAD")
+        count = len([n for n in names.splitlines() if n.strip()])
+        return [f"COMMITTED: {short.strip()} {message} ({count} file(s))"] + lines
+    except DcError as exc:
+        return no(str(exc))
+    finally:
+        _rmtree(scratch)
+
+
 # CLI helpers
 # --------------------------------------------------------------------------
 

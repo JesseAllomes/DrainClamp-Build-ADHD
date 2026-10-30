@@ -37,6 +37,32 @@ them. Never load a skill the project has not marked.
 Chunk notes stay in the sidecar. `DC:LOG` gets **one** line per milestone, at close, with the status flip in one guarded call:
 `dc_state.py --close <m> --log "<one sentence>"` (`--mark <m>=active|pending|done` for other flips).
 
+## Auto-commit
+
+Each completed step is committed on its own, so work is never lost and never mixed.
+
+```
+dc_project.py chunk start  --milestone <m> --id <c>   # before the first edit: snapshots files already edited
+dc_project.py commit --milestone <m> --chunk <c> --verified [--paths "x;y"] [--trailer "<line>"]
+dc_project.py config [--autocommit on|off] [--clean-tree on|off] [--verify-cmd "<cmd>"] [--review-required on|off]
+```
+
+Order at the end of a step: **verify** (the `DC:VERIFY` tier; pass `--verified` only if it passed),
+**scan** (PII/secrets on the exact staged diff, built in), **commit**, **log** the printed hash in the
+chunk note or `DC:LOG`, then the compact line. Output is one `COMMITTED: <hash> <subject> (<n> file(s))`
+or `NOT COMMITTED: <reason>`.
+
+- Committed: files changed since `chunk start` inside the chunk's targets (plus `--paths`). A file
+  already edited at `chunk start` is never committed; another session's staged files never ride along.
+- Not committed, with a one-line reason: verify failed or skipped, PII hit (kinds and paths only),
+  merge, rebase, cherry-pick or bisect in progress, detached HEAD, locked index, a file over 5 MB or a
+  new binary (needs the user's go), opt-out (`--autocommit off`), no `chunk start` snapshot.
+- CODEOWNERS (root, `.github/`, `docs/`) or `--review-required on`, on the default branch: the commit
+  goes to `dc/<project>-<milestone>` and the output says `PR needed`.
+- `--clean-tree on`: the fast check runs in a temporary worktree at the candidate commit first, so a
+  pass cannot depend on an uncommitted file.
+- Never pushes, tags, deploys, resets or skips hooks. A hook refusal is reported as is. Undo is `git revert`.
+
 ## Reading
 
 Rules 1 and 3 of `SKILL.md` in one line: index, then read the one range you need. A chunk's
