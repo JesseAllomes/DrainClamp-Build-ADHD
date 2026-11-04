@@ -35,7 +35,7 @@ state = dc_state.template_text().replace(
     "<!-- DC:ROADMAP -->\n| id | goal | files | status |\n|---|---|---|---|\n| m1 | g | a.py | active |\n")
 (root / ".agent" / "drainclamp-state.md").write_text(state, encoding="utf-8")
 (root / "a.py").write_text("def f(x):\n    return x + 1\n", encoding="utf-8")
-dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", "tier", "pass",
+dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", dc_verify.verify_digest(root), "pass",
                       "verify.log", dc_verify.tree_fingerprint(root))
 
 

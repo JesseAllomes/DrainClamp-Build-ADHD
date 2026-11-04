@@ -1747,8 +1747,13 @@ def main() -> int:
         if lines[0].startswith("COMMITTED"):
             short = lines[0].split()[1]
             fields["note"] = f"{short}: {args.note}" if args.note else short
+        elif lines[0] in ("NOT COMMITTED: no files changed by this step",
+                          "NOT COMMITTED: the step's files have no net change"):
+            pass  # nothing to commit: the step is still done
         elif autocommit_cfg(load(agent))["enabled"]:
-            print(f"DRAINCLAMP: chunk {args.milestone}/{args.id} not ticked: fix the reason above, then rerun")
+            print(f"DRAINCLAMP: chunk {args.milestone}/{args.id} not ticked: fix the reason above "
+                  f"and rerun, or tick it without a commit: chunk done --milestone {args.milestone} "
+                  f"--id {args.id}")
             return _dcio.EXIT_OK
     result = []
 

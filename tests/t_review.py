@@ -76,7 +76,7 @@ def st(root, *args):
 
 def green(root):
     """A passing Gate 3 record for the current tree, as dc_verify writes it."""
-    dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", "tier", "pass",
+    dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", dc_verify.verify_digest(root), "pass",
                           "verify.log", dc_verify.tree_fingerprint(root))
 
 
@@ -867,14 +867,14 @@ rv(vr, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-"
 rc, out = rv(vr, "scope", "--round", "R1")
 check("scope ok after the fix", rc == 0 and "scope ok" in out, out)
 for tier in ("fast", "milestone"):
-    dc_verify.save_record(vr / ".agent", dc_verify.TIER_RECORD_PREFIX + tier, "tier", "pass", "verify.log",
+    dc_verify.save_record(vr / ".agent", dc_verify.TIER_RECORD_PREFIX + tier, dc_verify.verify_digest(vr), "pass", "verify.log",
                           dc_verify.tree_fingerprint(vr))
 dc_verify.save_record(vr / ".agent", "selftest", "sha256:abc", "pass", "s.log", dc_verify.tree_fingerprint(vr))
 rc, out = rv(vr, "scope", "--round", "R1")
 check("a second scope after real dc_verify runs is not a breach (t3)", rc == 0 and "scope ok" in out, out)
 
 fr = fixing_repo("records-forged", finding("loop stops one item early", "for i in range(len(items) - 1):"))
-dc_verify.save_record(fr / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", "tier", "fail", "verify.log",
+dc_verify.save_record(fr / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", dc_verify.verify_digest(fr), "fail", "verify.log",
                       dc_verify.tree_fingerprint(fr))
 rv(fr, "ticket", "--round", "R1", "--id", "r1", "--allow", "a.py", "--file", "-", stdin="TICKET r1\n")
 recs = json.loads((fr / ".agent" / dc_verify.RECORDS_NAME).read_text(encoding="utf-8"))

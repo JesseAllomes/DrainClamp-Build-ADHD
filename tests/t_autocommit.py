@@ -526,7 +526,7 @@ import dc_verify  # noqa: E402
 
 
 def record(root, status, tier="fast"):
-    dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + tier, "tier", status,
+    dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + tier, dc_verify.verify_digest(root), status,
                           "verify.log", dc_verify.tree_fingerprint(root))
 
 
@@ -587,6 +587,36 @@ proj(r14b, "config", "--autocommit", "off")
 rc, out = proj(r14b, "chunk", "done", "--milestone", "m1", "--id", "c1", "--commit")
 check("(i14) auto-commit off: reported, chunk still ticked",
       "auto-commit is off" in out and "DRAINCLAMP: chunk m1/c1 done" in out, out)
+
+# -- r112: a step with nothing to commit still ticks; a refusal names the way out
+r112 = make_repo("ac-r112")
+add_chunk(r112)
+start(r112)
+rc, out = proj(r112, "chunk", "done", "--milestone", "m1", "--id", "c1", "--commit", "--verified")
+check("(r112) nothing to commit: reported and ticked",
+      "no files changed by this step" in out and "DRAINCLAMP: chunk m1/c1 done" in out, out)
+r112b = make_repo("ac-r112b")
+add_chunk(r112b)
+start(r112b)
+write(r112b, "a.py", "x = 2\n")
+rc, out = proj(r112b, "chunk", "done", "--milestone", "m1", "--id", "c1", "--commit")
+check("(r112) refusal names plain chunk done", "not ticked" in out
+      and "tick it without a commit: chunk done --milestone m1 --id c1" in out, out)
+
+# -- r113: a pass is for the DC:VERIFY config it ran, not a later one
+r113 = make_repo("ac-r113")
+add_chunk(r113)
+start(r113)
+write(r113, "a.py", "x = 2\n")
+h113 = head(r113)
+record(r113, "pass", tier="milestone")
+set_verify(r113, [{"id": "q", "argv": [PY, "-c", "print(1)"], "cwd": ".", "tier": "fast"}])
+rc, out = commit(r113)
+check("(r113) DC:VERIFY edited after the pass: not committed",
+      "not verified: DC:VERIFY changed since the check" in out and head(r113) == h113, out)
+record(r113, "pass", tier="milestone")
+rc, out = commit(r113)
+check("(r113) pass recorded under the new config: committed", out.startswith("COMMITTED:"), out)
 
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

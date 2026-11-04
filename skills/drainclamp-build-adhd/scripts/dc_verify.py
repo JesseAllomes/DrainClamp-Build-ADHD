@@ -614,6 +614,16 @@ def stored_entries(root: Path) -> list[dict]:
     return dc_state.validate_verify_block(state.sections["VERIFY"])
 
 
+def verify_digest(root: Path) -> str:
+    """Digest of the stored DC:VERIFY entries: a tier record vouches for this config only."""
+    try:
+        entries = stored_entries(root)
+    except DcError:
+        return "verify:invalid"
+    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    return "verify:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 NO_STATE = "NO-STATE"
 
 
@@ -759,7 +769,7 @@ def main() -> int:
         print_approval(rows)
     rc = exit_code_for(rows)
     if args.base is None:
-        save_record(agent, TIER_RECORD_PREFIX + args.tier, "tier",
+        save_record(agent, TIER_RECORD_PREFIX + args.tier, verify_digest(root),
                     "pass" if rc == _dcio.EXIT_OK else "fail", "verify.log", tree_fingerprint(root))
     return rc
 

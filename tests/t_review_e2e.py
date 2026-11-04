@@ -169,7 +169,7 @@ state = state.replace("<!-- DC:DECISIONS -->\n", "<!-- DC:DECISIONS -->\n"
 
 
 def green():
-    dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", "tier", "pass",
+    dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + "milestone", dc_verify.verify_digest(root), "pass",
                           "verify.log", dc_verify.tree_fingerprint(root))
 
 

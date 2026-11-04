@@ -771,6 +771,7 @@ def tier_record(root: Path, tiers: tuple[str, ...] = ("final", "milestone", "fas
     agent = root / _dcio.AGENT_DIR_NAME
     records = dc_verify.load_records(agent)
     tree = dc_verify.tree_fingerprint(root)
+    cfg = dc_verify.verify_digest(root)
     seen: set[str] = set()
     for tier in tiers:
         rec = records.get(dc_verify.TIER_RECORD_PREFIX + tier)
@@ -778,13 +779,17 @@ def tier_record(root: Path, tiers: tuple[str, ...] = ("final", "milestone", "fas
             continue
         if not tree or rec.get("tree") != tree:
             seen.add("changed")
+        elif rec.get("digest") != cfg:
+            seen.add("config")
         elif rec.get("status") == "pass":
             return f"{tier} PASS {tree}", ""
         else:
             seen.add("failed")
     if "failed" in seen:
         return None, "it failed"
-    return None, "files changed since the check" if seen else "no record"
+    if "changed" in seen:
+        return None, "files changed since the check"
+    return None, "DC:VERIFY changed since the check" if seen else "no record"
 
 
 def gate3_status(root: Path) -> str | None:

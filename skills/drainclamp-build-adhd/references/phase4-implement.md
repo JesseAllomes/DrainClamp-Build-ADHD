@@ -53,8 +53,9 @@ current files counts, and `--verified` is the override when the check ran outsid
 line. `chunk done --commit [--verified] [--paths/--trailer/--subject]` does all of it in one call and
 prints, in order: `COMMITTED: <hash> <subject> (<n> file(s))` or `NOT COMMITTED: <reason>`, the tick
 (the hash is prefixed to `--note`), the boundary lines, then the `Compact:` line, left out when the
-boundary already said PURGE or closed the milestone. A refused commit leaves the chunk unticked; fix
-the reason and rerun. With auto-commit off it reports that and still ticks. `commit` alone stays for
+boundary already said PURGE or closed the milestone. A refused commit leaves the chunk unticked:
+fix the reason and rerun, or tick it with plain `chunk done`. A step with nothing to commit is
+ticked. With auto-commit off it reports that and still ticks. `commit` alone stays for
 a milestone with no chunks.
 
 - Committed: files changed since `chunk start` inside the chunk's targets (plus `--paths`). A file
