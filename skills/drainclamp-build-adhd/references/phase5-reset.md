@@ -10,7 +10,9 @@ dc_state.py --close <m> --log "<one sentence: what the diff did>"
 ```
 
 `--close` flips only that row's status to `done`, appends the log line, and prints the section 2
-verdict. `--mark <m>=<pending|active|done>` (repeatable) flips others. Both run the roadmap guard
+verdict. It also ticks every open to-do the row's goal names (`t<n>`) and lists the to-dos still
+open: tick any whose work is done now (`dc_project.py todo done --id <t>`), even if an earlier
+milestone did it; the rest may wait. `--mark <m>=<pending|active|done>` (repeatable) flips others. Both run the roadmap guard
 and honour `--expect-generation`. Never hand-write a roadmap file for `--set ROADMAP`.
 
 State is written before any purge is recommended. A purge with unsaved state loses the work.

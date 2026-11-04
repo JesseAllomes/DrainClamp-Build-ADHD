@@ -424,6 +424,25 @@ check("r116: a path with spaces is quoted in the resume line",
       r.stdout.splitlines()[-1] == f'Run /compact now, then resume with dc_session.py --resume "{sp_posix}".',
       r.stdout + r.stderr)
 
+# --- t23/i20: --close ticks the to-dos the row names, lists the rest ----------
+import dc_project  # noqa: E402
+td = newrepo()
+run(td, "--set", "ROADMAP", "--file", str(roadmap(td, [
+    ("m1", "build it (t1, t3) and t2/i9", "a.py", "active"), ("m2", "later t4 and t7", "b.py", "pending")])))
+for text in ("one", "two", "three", "four"):
+    dc_project.mutate(td / ".agent", lambda d, t=text: (dc_project.apply_op(d, td, "todo.add", {"text": t}), d)[1])
+dc_project.mutate(td / ".agent", lambda d: (dc_project.apply_op(d, td, "todo.done", {"id": "t3"}), d)[1])
+r = run(td, "--close", "m1")
+todos = {t["id"]: t["done"] for t in dc_project.load(td / ".agent")["todos"]}
+check("t23: --close ticks the open to-dos the row names, skips one already done",
+      r.returncode == 0 and "TODOS ticked: t1, t2" in r.stdout and todos == {"t1": True, "t2": True, "t3": True, "t4": False},
+      r.stdout + r.stderr)
+check("t23: --close lists the to-dos still open for a done check",
+      "TODOS still open: SHOWING 1/1" in r.stdout and "  t4: four" in r.stdout, r.stdout)
+r = run(td, "--close", "m2")
+check("t23: a named id with no sidecar to-do is reported, the close still lands",
+      r.returncode == 0 and "TODOS ticked: t4" in r.stdout and "TODOS named but not in the sidecar: t7" in r.stdout and "DC:ROADMAP marked m2=done" in r.stdout, r.stdout + r.stderr)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

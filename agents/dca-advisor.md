@@ -53,3 +53,14 @@ At most **5**, best first, or exactly `NO IDEAS`.
 ```
 
 Without a code location, leave `file` empty and quote the brief line in `evidence`.
+
+## Open to-dos already done
+
+If an open to-do's work is already in the code (built under another milestone, or as a side
+effect), add one extra line per such to-do. These do not count toward the five ideas:
+
+```
+{"todo": "t7", "file": "scripts/menu.py", "line": 42, "evidence": "print(row['path'])"}
+```
+
+Cite the code that does the work, quoted exactly. Flag only what you checked; the user ticks it.

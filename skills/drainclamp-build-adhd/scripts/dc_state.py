@@ -878,6 +878,55 @@ def parse_marks(specs: list[str], closes: list[str]) -> dict[str, str]:
     return marks
 
 
+TODO_REF = re.compile(r"\bt(\d+)\b")
+OPEN_TODOS_SHOWN = 10
+
+
+def close_todos(root: Path, agent: Path, state: "State", closes: list[str]) -> list[str]:
+    """Tick the sidecar to-dos a closed row's goal names (t<n>); list the rest for a done check.
+
+    Runs after the state write, so a sidecar problem never undoes the close: it is reported.
+    """
+    import dc_project  # lazy: dc_project imports dc_state
+    rows = {r["id"]: r for r in parse_roadmap(state.sections["ROADMAP"])}
+    named: list[str] = []
+    for mid in closes:
+        for n in TODO_REF.findall(rows.get(mid.strip(), {}).get("goal", "")):
+            if f"t{n}" not in named:
+                named.append(f"t{n}")
+    result: dict = {"ticked": [], "missing": [], "open": []}
+
+    def apply(data: dict) -> dict:
+        todos = {t.get("id"): t for t in data.get("todos") or [] if isinstance(t, dict)}
+        for tid in named:
+            if tid not in todos:
+                result["missing"].append(tid)
+            elif not todos[tid].get("done"):
+                dc_project.apply_op(data, root, "todo.done", {"id": tid})
+                result["ticked"].append(tid)
+        result["open"] = [t for t in data.get("todos") or [] if isinstance(t, dict) and not t.get("done")]
+        return data
+
+    try:
+        if named:
+            dc_project.mutate(agent, apply)
+        else:
+            apply(dc_project.load(agent))
+    except DcError as exc:
+        return [f"TODOS: not ticked ({exc}); tick by hand: dc_project.py todo done --id <t>"]
+    out = []
+    if result["ticked"]:
+        out.append("TODOS ticked: " + ", ".join(result["ticked"]))
+    if result["missing"]:
+        out.append("TODOS named but not in the sidecar: " + ", ".join(result["missing"]))
+    opened = result["open"]
+    if opened:
+        out.append(f"TODOS still open: SHOWING {min(len(opened), OPEN_TODOS_SHOWN)}/{len(opened)}"
+                   " - tick any whose work is done (dc_project.py todo done --id <t>); the rest may wait")
+        out.extend(f"  {t.get('id')}: {str(t.get('text') or '')[:120]}" for t in opened[:OPEN_TODOS_SHOWN])
+    return out
+
+
 def mark_rows(raw: str, marks: dict[str, str]) -> str:
     """The roadmap with only the status cell of each marked row changed.
 
@@ -1159,6 +1208,8 @@ def main() -> int:
         note = f"; LOG += {new_id}" + (f", {moved['count']} archived" if moved["count"] else "") if entry else ""
         print(f"DC:ROADMAP marked {shown} (generation {gen}{note})")
         if args.close:
+            for line in close_todos(root, agent, load(state_path), args.close):
+                print(line)
             verdict, human = purge_check(load(state_path), root, args.context_high)
             print(verdict)
             print(human)

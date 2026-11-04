@@ -150,11 +150,16 @@ cap: one `dca-advisor` run (Opus, high) per brief.
 
 1. `dc_review.py brief [--milestone m]`. It refuses until the review passes. The brief holds the
    purpose lines (charter first, then project summary, then README), architecture, roadmap,
-   decisions, log, to-dos, handled defects, and ideas already decided or shelved.
+   decisions, log, to-dos, handled defects, and ideas already decided or shelved. Decisions are
+   every standing one, no count cap; superseded ones are left out and the rest keep their D
+   numbers (`SHOWING standing/all`). The review packet lists decisions the same way.
 2. Spawn once: `Advisor brief: .agent/review/A1/brief.md. Output JSON lines only.` Then
    `dc_review.py suggest --advice A1 --model <m> --file -`. The script keeps at most 5. It
    rejects an idea that names no purpose line or whose evidence is not in a file or the brief,
-   drops ones already accepted or denied, and brings a shelved one back under its old id.
+   drops ones already accepted or denied, and brings a shelved one back under its old id. The
+   advisor may also flag open to-dos whose work is already done (`{"todo": "t<n>", ...}` lines,
+   outside the cap). The script prints `DONE? t<n>`; check the cited code, then tick it with
+   `dc_project.py todo done --id t<n>`. The script never ticks one itself.
 3. **One table, one question:** `Reply per id: accept | deny: <reason> | shelve`. Then
    `dc_review.py triage --set i1=accept --set "i2=deny:<reason>" --set i3=shelve`.
    Accepting an `S` idea adds a to-do. Accepting an `M` or `L` idea needs a roadmap row: run Gate 2

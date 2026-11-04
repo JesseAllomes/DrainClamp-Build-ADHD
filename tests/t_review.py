@@ -456,6 +456,45 @@ check("a shelved idea comes back with its id; a denied one never does",
 code, out = rv(adv, "status", "--milestone", "m1")
 check("status shows the advisor's ideas", "advisor final: ideas" in out and "proposed" in out, out)
 
+# t23/i20: the advisor flags open to-dos already done; never ticked by the ingest
+rc, out = rv(adv, "brief", "--milestone", "m1")
+brief3 = (adv / ".agent/review/A3/brief.md").read_text(encoding="utf-8")
+check("the brief asks the advisor to flag done to-dos", "flag any whose work is already done" in brief3, brief3[-800:])
+done_lines = "\n".join([
+    json.dumps({"todo": "t1", "file": "a.py", "line": 1, "evidence": "def parse(items):"}),
+    json.dumps({"todo": "t9", "file": "a.py", "line": 1, "evidence": "def parse(items):"}),
+    json.dumps({"todo": "t1", "file": "a.py", "line": 1, "evidence": "not in the file anywhere"}),
+])
+rc, out = rv(adv, "suggest", "--advice", "A3", "--model", "opus/high", "--file", "-", stdin=done_lines)
+check("a grounded done-check prints DONE? with the tick command",
+      rc == 0 and "DONE? t1 looks done already (a.py:1)" in out and "todo done --id t1" in out, out)
+check("a done-check for a to-do not open in the brief is rejected", "t9 done-check" in out, out)
+check("a done-check needs exact evidence", "t1 done-check" in out, out)
+check("done-checks are not ideas and never tick the to-do",
+      "0 new" in out and not next(t for t in dc_project.load(adv / ".agent")["todos"] if t["id"] == "t1")["done"], out)
+
+# t22/i19: every standing decision, superseded ones left out, D numbers kept
+many = [f"- decision {n} -> keep rule {n} (user)" for n in range(1, 46)]
+many[1] += " [superseded by D45]"
+blk = dc_review.decision_block([d.lstrip("- ") for d in many])
+check("decision block: no count cap, header SHOWING standing/all",
+      blk[0] == "SHOWING 44/45 decisions (1 superseded, left out; D numbers kept)" and len(blk) == 45
+      and blk[-1].startswith("D45: ") and not any(b.startswith("D2: ") for b in blk), blk[:3])
+check("by_design ignores a superseded decision named by a finder",
+      dc_review.by_design("x", [d.lstrip("- ") for d in many], "D2") == [], "")
+dec = make_repo("decisions")
+text = (dec / ".agent/drainclamp-state.md").read_text(encoding="utf-8")
+(dec / ".agent/drainclamp-state.md").write_text(
+    text.replace("<!-- DC:DECISIONS -->\n", "<!-- DC:DECISIONS -->\n" + "\n".join(many) + "\n"), encoding="utf-8")
+(dec / "a.py").write_text(A_PY + "\nY = 2\n", encoding="utf-8", newline="\n")
+rv(dec, "config", "--mode", "milestone")
+green(dec)
+rc, out = rv(dec, "packet", "--milestone", "m1")
+pk = next((dec / ".agent/review").glob("R*/packet.md")).read_text(encoding="utf-8")
+check("packet shows all 45 standing decisions and drops the superseded one",
+      "SHOWING 45/46 decisions (1 superseded" in pk and "D46: - Parser totals" in pk
+      and "TRUNCATED decisions" not in pk and "decision 2 ->" not in pk, out + pk[:400])
+
 # -- dc_verify writes the tier record Gate 6 reads ------------------------------------------------
 ver = make_repo("verify")
 blk = tmp / "verify.json"
