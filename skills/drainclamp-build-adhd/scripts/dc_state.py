@@ -667,7 +667,8 @@ def purge_resume_line(root: Path, host: str | None = None) -> str:
     (Claude Code: --host claude, or its CLAUDECODE=1 shell); elsewhere a fresh session."""
     if host is None:
         host = "claude" if os.environ.get("CLAUDECODE") == "1" else ""
-    target = "dc_session.py --resume " + str(root.resolve()).replace("\\", "/")
+    path = str(root.resolve()).replace("\\", "/")
+    target = "dc_session.py --resume " + (f'"{path}"' if " " in path else path)
     if host.lower() == "claude":
         return f"Run /compact now, then resume with {target}."
     return f"Start a fresh session and resume with {target}."

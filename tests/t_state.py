@@ -411,6 +411,18 @@ run(pg, "--set", "ROADMAP", "--file", str(roadmap(pg, [("m1", "one", "a.py", "do
 r = run(pg, "--purge-check", "--host", "claude")
 check("t21: HOLD prints no resume line", r.stdout.splitlines()[0].startswith("HOLD")
       and len(r.stdout.splitlines()) == 2, r.stdout)
+sp_root = newrepo() / "with space"
+sp_root.mkdir()
+subprocess.run(["git", "init", "-q"], cwd=sp_root, capture_output=True)
+(sp_root / "a.py").write_text("a\n", encoding="utf-8")
+(sp_root / "b.py").write_text("b\n", encoding="utf-8")
+run(sp_root, "--set", "ROADMAP", "--file",
+    str(roadmap(sp_root, [("m1", "one", "a.py", "done"), ("m2", "two", "b.py", "active")])))
+r = run(sp_root, "--purge-check", "--host", "claude")
+sp_posix = str(sp_root.resolve()).replace("\\", "/")
+check("r116: a path with spaces is quoted in the resume line",
+      r.stdout.splitlines()[-1] == f'Run /compact now, then resume with dc_session.py --resume "{sp_posix}".',
+      r.stdout + r.stderr)
 
 print()
 print("FAILURES:", fails if fails else "none")

@@ -95,7 +95,7 @@ chunk in the milestone. It compares their **targets** by path, so two symbols of
 
 | Output | Say |
 |---|---|
-| `PURGE (chunk overlap NN%)` or `PURGE (chunk context-high; ...)` | its `DRAINCLAMP:` line, then `Run /compact now, then resume with dc_project.py next.` (host support unknown: `Start a fresh session and resume with dc_project.py next.`) |
+| `PURGE (chunk overlap NN%)` or `PURGE (chunk context-high; ...)` | its `DRAINCLAMP:` line and the resume line after it, as printed (`--host <h>` picks `/compact` or a fresh session) |
 | `HOLD (chunk ...)` | its `DRAINCLAMP:` line; continue with the next chunk |
 | `all chunks done` | close the milestone: section 1, then `--purge-check`. When the line names Gate 6, run Gate 3 milestone tier and Gate 6 first |
 
