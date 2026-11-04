@@ -74,7 +74,8 @@ DRAINCLAMP: Resumed from .agent/drainclamp-state.md. Context reset confirmed.
 This requires host evidence or an explicit fresh-session signal — never self-assertion in the same
 session that recommended the purge.
 
-Resume runs `dc_state.py --resume-view`, then `dc_project.py next` for the current chunk.
+Resume is one call, `dc_session.py --resume <root>`: audit freshness, Done/In progress/Next, the
+`dc_project.py next` capsule, then the `dc_state.py --resume-view` view.
 The view keeps ARCH, the standing DECISIONS and VERIFY, all open roadmap rows and the last done row
 (with files and dependencies), done ids, and the last five log lines; `SHOWING n/N` declares omissions.
 When a new decision replaces an old one, mark it in the same step:

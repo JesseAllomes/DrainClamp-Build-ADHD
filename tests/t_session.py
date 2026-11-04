@@ -293,6 +293,8 @@ check("resume touches build time",
 check("resume touches registry last", dc_registry.find(dc_registry.load(rsm_home), rsm)["last"] >= before)
 rc, so, se = run_script("dc_session.py", "--home", str(rsm_home), "--resume", str(rsm))
 check("resume accepts a path", rc == 0 and f"ROOT: {posix}" in so, so + se)
+check("t20: resume ends with the bounded state view", "# DrainClamp resume view" in so
+      and "ROADMAP: SHOWING" in so and so.index("DRAINCLAMP NEXT:") < so.index("# DrainClamp resume view"), so)
 for bad in ("7", str(tmp / "nope")):
     rc, so, se = run_script("dc_session.py", "--home", str(rsm_home), "--resume", bad)
     check(f"resume refuses {bad[-6:]}", rc != 0 and "ERROR" in se and "ROOT:" not in so, so + se)

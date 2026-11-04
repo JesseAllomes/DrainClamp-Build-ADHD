@@ -166,7 +166,7 @@ orchestrator built the code, which is exactly the bias the advisor exists to avo
 ## Output contract
 
 Each step prints one script line; relay only verdicts and the step-7 table. The user sees one
-question per round unless a breach or a regression needs a second. After a gap, `dc_session.py --resume`
+question per round unless a breach or a regression needs a second. After a gap, `dc_session.py --resume <root>`
 (plus `dc_review.py status` when review is on) is the whole resume: everything else is in the sidecar.
 
 ## Never
