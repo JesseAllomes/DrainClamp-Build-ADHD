@@ -883,6 +883,28 @@ def mark_rows(raw: str, marks: dict[str, str]) -> str:
     return "\n".join(out)
 
 
+SUPERSEDED = re.compile(r"\s\[superseded by D(\d+)\]$")
+
+
+def supersede_decision(raw: str, n: int, by: int) -> str:
+    """DC:DECISIONS with decision n marked as replaced by decision by; nothing else changes.
+
+    Decisions are numbered as Gate 6 numbers them (D1, D2, ...): non-blank lines in order.
+    """
+    lines = raw.split("\n")
+    idx = [i for i, ln in enumerate(lines) if ln.strip()]
+    if not (1 <= n <= len(idx) and 1 <= by <= len(idx)):
+        raise DcError(f"--supersede and --by take decision numbers 1-{len(idx)}")
+    if n == by:
+        raise DcError("a decision cannot supersede itself")
+    if SUPERSEDED.search(lines[idx[n - 1]].rstrip()):
+        raise DcError(f"D{n} is already superseded")
+    if SUPERSEDED.search(lines[idx[by - 1]].rstrip()):
+        raise DcError(f"D{by} is itself superseded; name the decision that stands")
+    lines[idx[n - 1]] = lines[idx[n - 1]].rstrip() + f" [superseded by D{by}]"
+    return "\n".join(lines)
+
+
 COMPACT_NAME = "drainclamp-compact.json"
 LOG_STAMP = re.compile(r"^-\s+(\d{4}-\d{2}-\d{2}T\S+)")
 
@@ -1015,6 +1037,9 @@ def main() -> int:
     parser.add_argument("--close", action="append", default=[], metavar="ID",
                         help="shorthand for --mark ID=done, then the purge check")
     parser.add_argument("--log", dest="mark_log", help="log sentence appended with --mark/--close")
+    parser.add_argument("--supersede", type=int, metavar="N",
+                        help="mark decision D<N> replaced (with --by); the resume view leaves it out")
+    parser.add_argument("--by", type=int, metavar="M", help="the decision D<M> that replaces it")
     parser.add_argument("--expect-generation", dest="expect", type=int, default=None,
                         help="refuse the write if the file has moved past this "
                              "generation since you read it")
@@ -1065,6 +1090,21 @@ def main() -> int:
     warn_unignored(root, agent)
     if args.mark_log and not (args.mark or args.close):
         raise DcError("--log goes with --mark or --close; use --append-log on its own")
+    if (args.supersede is None) != (args.by is None):
+        raise DcError("--supersede and --by go together")
+    if args.supersede is not None:
+        if args.section or args.log_entry or args.mark or args.close:
+            raise DcError("--supersede cannot be combined with another write")
+        _dcio.ensure_project_marker(root)
+
+        def apply_supersede(state: State) -> None:
+            state.sections["DECISIONS"] = supersede_decision(state.sections["DECISIONS"],
+                                                             args.supersede, args.by)
+
+        gen = mutate(state_path, agent, apply_supersede, expect=args.expect)
+        register(root)
+        print(f"DC:DECISIONS D{args.supersede} superseded by D{args.by} (generation {gen})")
+        return _dcio.EXIT_OK
     if args.mark or args.close:
         if args.section or args.log_entry:
             raise DcError("--mark/--close cannot be combined with --set or --append-log")

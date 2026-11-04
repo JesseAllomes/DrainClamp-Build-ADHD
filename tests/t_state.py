@@ -364,6 +364,27 @@ m1_rows = [ln for ln in npp_file.read_text(encoding="utf-8").splitlines() if ln.
 check("--mark changes a row that has no closing pipe",
       r.returncode == 0 and m1_rows == ["| m1 | goal | a.py | done"], repr((r.stdout + r.stderr, m1_rows)))
 
+# --- i16a: --supersede marks a decision replaced, one guarded edit ------------
+sup = newrepo()
+sup_dec = sup / "dec.md"
+sup_dec.write_text("- Host? -> board (user)\n\n- Rate? -> 90 (user)\n- Host? -> none, board dropped (user)\n",
+                   encoding="utf-8")
+run(sup, "--set", "DECISIONS", "--file", str(sup_dec))
+sup_file = sup / ".agent" / "drainclamp-state.md"
+gen = dc_state.State.parse(sup_file.read_text(encoding="utf-8")).generation
+r = run(sup, "--supersede", "1", "--by", "3", "--expect-generation", str(gen))
+body = dc_state.State.parse(sup_file.read_text(encoding="utf-8")).sections["DECISIONS"]
+check("--supersede marks D1 by D3 (blank lines not counted)",
+      r.returncode == 0 and "- Host? -> board (user) [superseded by D3]" in body
+      and body.count("superseded") == 1 and "D1 superseded by D3" in r.stdout, r.stdout + r.stderr + body)
+check("--supersede refuses a stale generation",
+      run(sup, "--supersede", "2", "--by", "3", "--expect-generation", str(gen)).returncode != 0)
+check("--supersede refuses twice", run(sup, "--supersede", "1", "--by", "2").returncode != 0)
+check("--supersede refuses itself", run(sup, "--supersede", "2", "--by", "2").returncode != 0)
+check("--supersede refuses a number out of range", run(sup, "--supersede", "4", "--by", "2").returncode != 0)
+check("--supersede refuses a superseded replacement", run(sup, "--supersede", "2", "--by", "1").returncode != 0)
+check("--by needs --supersede", run(sup, "--by", "2").returncode != 0)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
