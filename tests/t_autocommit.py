@@ -575,6 +575,9 @@ check("(i14) trailer passes through", "Co-Authored-By: Example" in git(r14, "log
 check("(i14) boundary printed", any(ln.startswith("Next chunk: c2") for ln in lines14), out)
 check("(i14) same targets: HOLD, then the compact line last",
       any(ln.startswith("HOLD") for ln in lines14) and lines14[-1].startswith("Compact: "), out)
+check("(i14) a safe compact line under HOLD says not required yet, with the chunk reason",
+      not lines14[-1].startswith("Compact: Safe")
+      or lines14[-1].startswith("Compact: Safe - Not required yet (chunk "), lines14[-1])
 proj(r14, "chunk", "start", "--milestone", "m1", "--id", "c2")
 write(r14, "new.py", "z = 1\n")
 rc, out = proj(r14, "chunk", "done", "--milestone", "m1", "--id", "c2", "--commit", "--verified")

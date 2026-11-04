@@ -51,7 +51,21 @@ check("no state file: not safe", rc != 0 and out == "Compact: not yet: state fil
 
 st(repo, "--append-log", "first step done")
 rc, out = verdict(repo)
-check("saved state, clean tree: safe", rc == 0 and out == "Compact: safe (state saved)", out)
+check("saved state, clean tree: safe, not required yet",
+      rc == 0 and out == "Compact: Safe - Not required yet (overlap unknown: no next milestone)", out)
+r = st(repo, "--compact-check", "--context-high")
+check("context high: safe, recommended",
+      r.returncode == 0 and r.stdout.strip() == "Compact: Safe - Recommended (context high)", r.stdout)
+sys.path.insert(0, str(SCRIPTS))
+import dc_state  # noqa: E402
+check("PURGE verdict: recommended", dc_state.advice_of("PURGE (overlap 12%)") == (True, "overlap 12%"))
+check("COMPLETE verdict: recommended",
+      dc_state.advice_of("COMPLETE (3/3 milestones done)") == (True, "3/3 milestones done"))
+check("HOLD verdict: not required yet",
+      dc_state.compact_line(True, "", dc_state.advice_of("HOLD (chunk overlap 80%)"))
+      == "Compact: Safe - Not required yet (chunk overlap 80%)")
+check("unsafe line ignores advice",
+      dc_state.compact_line(False, "lock held", (True, "x")) == "Compact: not yet: lock held")
 check("output is exactly one line", len(st(repo, "--compact-check").stdout.splitlines()) == 1)
 
 cap = repo / ".agent" / "drainclamp-resume.md"

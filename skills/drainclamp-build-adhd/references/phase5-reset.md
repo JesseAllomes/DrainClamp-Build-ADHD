@@ -119,7 +119,8 @@ correctly reported what it did at the time.
 ## Compact advice
 
 At the end of a **completed step**, print one line after the Done / In progress / Next block:
-`Compact: safe (state saved)` or `Compact: not yet: <reason>`. A completed step is a chunk done, a
+`Compact: Safe - Recommended (<reason>)`, `Compact: Safe - Not required yet (<reason>)` or
+`Compact: not yet: <reason>`. A completed step is a chunk done, a
 milestone closed, a publish, deploy or release finished, or a hand-off written. Never print it
 mid-step, on a question, or on every reply. At a milestone boundary Gate 5's own purge lines
 (section 2 and "Chunk boundaries") count as this line: do not print both.
@@ -130,12 +131,15 @@ Take the verdict from the script, not from memory:
 dc_state.py --root R --compact-check
 ```
 
-It prints `Compact: safe (state saved)` (exit 0) or `Compact: not yet: <first failing check>` (exit 2). Checks, in
+It prints `Compact: Safe - ...` (exit 0) or `Compact: not yet: <first failing check>` (exit 2). A safe line
+also says whether compacting is worth it, from the purge calculus at the current boundary (the last
+done chunk against the next open one, else the milestones): `Recommended` on PURGE, every milestone
+done, or `--context-high`; `Not required yet` on HOLD, with the verdict's reason. Safety checks, in
 order: state file saved at its current generation (no write or lock pending); the last `DC:LOG` entry
 or chunk tick (`chunk done`) is newer than the last edit of any changed file outside `.agent/` (`2 edited files not logged`); no
 open `dc_review.py` round and no uncommitted Gate 6 fix; no background work you started still
 running; no question to the user whose answer is not on disk. Relay the line as printed; never
-reword it or claim `safe` without it.
+reword it or claim `Safe` without it.
 
 The script cannot see host processes or the conversation, so the last two checks read a small record
 you keep in `.agent/drainclamp-compact.json`:

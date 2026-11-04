@@ -1086,9 +1086,63 @@ def compact_check(root: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def compact_line(safe: bool, why: str) -> str:
-    """The compact line exactly as the output contract says it; relay it verbatim."""
-    return "Compact: safe (state saved)" if safe else f"Compact: not yet: {why}"
+VERDICT_WHY = re.compile(r"^(PURGE|HOLD|COMPLETE) \((.*)\)$")
+
+
+def advice_of(verdict: str) -> tuple[bool, str]:
+    """(recommended, reason) from a PURGE/HOLD/COMPLETE verdict line."""
+    m = VERDICT_WHY.match(verdict.strip())
+    if not m:
+        return False, verdict.strip() or "no verdict"
+    return m.group(1) in ("PURGE", "COMPLETE"), m.group(2)
+
+
+def compact_advice(root: Path, context_high: bool = False) -> tuple[bool, str]:
+    """Is compacting worth it now? The purge calculus at the current boundary. Read-only.
+
+    Mid-milestone (a chunk done, one open) it compares those chunks; otherwise the
+    milestones. Missing data answers "not required yet", as the calculus never purges on it.
+    """
+    if context_high:
+        return True, "context high"
+    agent = root / _dcio.AGENT_DIR_NAME
+    try:
+        state = State.parse(_dcio.read_text(agent / _dcio.STATE_NAME) or "")
+    except DcError:
+        return False, "state unreadable"
+    try:
+        data = json.loads(_dcio.read_text(agent / "drainclamp-project.json") or "{}")
+    except ValueError:
+        data = {}
+    chunks = data.get("chunks") if isinstance(data, dict) else None
+    rows = parse_roadmap(state.sections["ROADMAP"])
+    current = next((r for r in rows if r["status"] == "active"), None)
+    mine = chunks.get(current["id"]) if current and isinstance(chunks, dict) else None
+    mine = [c for c in mine if isinstance(c, dict)] if isinstance(mine, list) else []
+    done = [c for c in mine if c.get("done")]
+    nxt = next((c for c in mine if not c.get("done")), None)
+    if done and nxt is not None:
+        def targets(c: dict) -> list[str]:
+            t = c.get("targets", [])
+            return [str(x) for x in t] if isinstance(t, list) else str(t).split(";")
+        verdict, _ = chunk_purge_check(targets(done[-1]), targets(nxt), root, False)
+    else:
+        verdict, _ = purge_check(state, root, False)
+    return advice_of(verdict)
+
+
+def compact_line(safe: bool, why: str, advice: tuple[bool, str] | None = None) -> str:
+    """The compact line exactly as the output contract says it; relay it verbatim.
+
+    A safe line says whether compacting is worth it: `Recommended` when the purge
+    calculus says PURGE (or every milestone is done), `Not required yet` when it holds.
+    """
+    if not safe:
+        return f"Compact: not yet: {why}"
+    if advice is None:
+        return "Compact: Safe (state saved)"
+    recommended, reason = advice
+    return f"Compact: Safe - {'Recommended' if recommended else 'Not required yet'} ({reason})"
 
 
 def main() -> int:
@@ -1116,7 +1170,8 @@ def main() -> int:
     parser.add_argument("--resume-view", action="store_true",
                         help="read saved state with completed rows and older logs omitted")
     parser.add_argument("--compact-check", action="store_true",
-                        help="print 'Compact: safe (state saved)' or 'Compact: not yet: <reason>'; exit 2 if not safe")
+                        help="print 'Compact: Safe - Recommended|Not required yet (<reason>)' or "
+                             "'Compact: not yet: <reason>'; exit 2 if not safe")
     parser.add_argument("--running", nargs=2, metavar=("add|done", "NAME"),
                         help="record background work the session started (or finished)")
     parser.add_argument("--pending-question", choices=("set", "clear"),
@@ -1132,7 +1187,7 @@ def main() -> int:
     root = _dcio.project_root(args.root)
     if args.compact_check:
         safe, why = compact_check(root)
-        print(compact_line(safe, why))
+        print(compact_line(safe, why, compact_advice(root, args.context_high) if safe else None))
         return _dcio.EXIT_OK if safe else _dcio.EXIT_CHECK_FAILED
     if args.running or args.pending_question:
         if args.running and args.running[0] not in ("add", "done"):

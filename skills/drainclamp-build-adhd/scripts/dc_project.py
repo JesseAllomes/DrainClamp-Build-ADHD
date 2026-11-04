@@ -1822,7 +1822,10 @@ def main() -> int:
         print("\n".join(verdict))
         # A PURGE or close verdict already answers the compact question; never print both.
         if committed and not any(v.startswith(("PURGE", "Milestone ")) for v in verdict):
-            print(dc_state.compact_line(*dc_state.compact_check(root)))
+            held = next((v for v in verdict if v.startswith("HOLD")), "")
+            advice = (dc_state.advice_of(held) if held
+                      else dc_state.compact_advice(root, args.context_high))
+            print(dc_state.compact_line(*dc_state.compact_check(root), advice))
     return _dcio.EXIT_OK
 
 
