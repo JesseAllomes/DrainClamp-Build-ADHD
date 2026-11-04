@@ -75,8 +75,11 @@ This requires host evidence or an explicit fresh-session signal — never self-a
 session that recommended the purge.
 
 Resume runs `dc_state.py --resume-view`, then `dc_project.py next` for the current chunk.
-The view keeps ARCH, DECISIONS and VERIFY, all open roadmap rows and the last done row (with
-files and dependencies), done ids, and the last five log lines; `SHOWING n/N` declares omissions.
+The view keeps ARCH, the standing DECISIONS and VERIFY, all open roadmap rows and the last done row
+(with files and dependencies), done ids, and the last five log lines; `SHOWING n/N` declares omissions.
+When a new decision replaces an old one, mark it in the same step:
+`dc_state.py --supersede <n> --by <m> --expect-generation <g>` (Gate 6 numbering, D1 = first line).
+The full file keeps the line; the view leaves it out and counts it as superseded.
 Read the full `.agent/drainclamp-state.md` when preparing Gate 2 edits; the view is not a state
 replacement. Never auto-load `.agent/drainclamp-log-archive.md` or earlier chunk notes; they exist for
 human forensics, not for context.

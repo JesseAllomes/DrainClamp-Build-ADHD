@@ -385,6 +385,15 @@ check("--supersede refuses a number out of range", run(sup, "--supersede", "4", 
 check("--supersede refuses a superseded replacement", run(sup, "--supersede", "2", "--by", "1").returncode != 0)
 check("--by needs --supersede", run(sup, "--by", "2").returncode != 0)
 
+# --- i16b: the resume view leaves superseded decisions out, and says so -------
+rv = run(sup, "--resume-view")
+check("resume-view drops the superseded decision", rv.returncode == 0
+      and "- Host? -> board (user)" not in rv.stdout and "- Host? -> none, board dropped (user)" in rv.stdout
+      and "- Rate? -> 90 (user)" in rv.stdout, rv.stdout)
+check("resume-view declares decision coverage", "DECISIONS: SHOWING 2/3 (1 superseded)" in rv.stdout, rv.stdout[:300])
+check("the full file keeps the superseded line",
+      "[superseded by D3]" in sup_file.read_text(encoding="utf-8"))
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

@@ -269,11 +269,15 @@ def resume_view(state: "State") -> str:
     last_done = done[-1:]  # Roadmap order, as in the existing purge calculus.
     selected = [row for row in rows if row["status"] != "done" or row in last_done]
     logs = log_lines(state.sections["LOG"])
+    decisions = [ln for ln in state.sections["DECISIONS"].split("\n") if ln.strip()]
+    standing = [ln for ln in decisions if not SUPERSEDED.search(ln.rstrip())]
     lines = [f"# DrainClamp resume view (schema={state.schema} generation={state.generation})",
-             f"ROADMAP: SHOWING {len(selected)}/{len(rows)} rows; LOG: SHOWING {min(5, len(logs))}/{len(logs)} lines",
+             f"ROADMAP: SHOWING {len(selected)}/{len(rows)} rows; LOG: SHOWING {min(5, len(logs))}/{len(logs)} lines; "
+             f"DECISIONS: SHOWING {len(standing)}/{len(decisions)} ({len(decisions) - len(standing)} superseded)",
              "Done: " + (", ".join(row["id"] for row in done) or "none")]
     for section in ("ARCH", "DECISIONS", "VERIFY"):
-        lines.extend([f"<!-- DC:{section} -->", state.sections[section], f"<!-- /DC:{section} -->"])
+        body = "\n".join(standing) if section == "DECISIONS" else state.sections[section]
+        lines.extend([f"<!-- DC:{section} -->", body, f"<!-- /DC:{section} -->"])
     lines.extend(["<!-- DC:ROADMAP -->", "| id | goal | files | status | deps |",
                   "|---|---|---|---|---|"])
     for row in selected:
