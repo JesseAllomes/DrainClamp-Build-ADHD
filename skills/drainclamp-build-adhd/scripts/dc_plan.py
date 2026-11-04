@@ -62,13 +62,35 @@ def picked(verdict: list[str]) -> list[str]:
     return [x.strip() for x in ids.split(",") if x.strip()]
 
 
+def parallel_stages(data: dict, root: Path, mid: str) -> list[list[str]]:
+    """Every batch the fan-out test would pick, walking the chunks in dependency order."""
+    import copy
+    sim = copy.deepcopy(data)
+    chunks = _chunks(sim, mid)
+    stages: list[list[str]] = []
+    for _ in range(len(chunks)):
+        open_chunks = [c for c in chunks if not c.get("done")]
+        if not open_chunks:
+            break
+        pick = picked(_fanout(sim, root, mid))
+        if pick:
+            stages.append(pick)
+        done = {c["id"] for c in chunks if c.get("done")}
+        ready = [c for c in open_chunks if all(d in done for d in c.get("deps", []))]
+        if not ready:
+            break
+        for c in ready:
+            c["done"] = True
+    return stages
+
+
 def need(data: dict, root: Path, mid: str) -> tuple[list[str], list[str]]:
     """(reasons a plan is required, fan-out verdict). No reasons: the plan is optional."""
     chunks = _chunks(data, mid)
     verdict = _fanout(data, root, mid) if chunks else ["SEQUENTIAL: no chunks"]
     reasons = []
-    if picked(verdict):
-        reasons.append("fan-out PARALLEL " + ", ".join(picked(verdict)))
+    for stage in (parallel_stages(data, root, mid) if chunks else []):
+        reasons.append("fan-out PARALLEL " + ", ".join(stage))
     large = [c["id"] for c in chunks if c.get("size") == "large"]
     if large:
         reasons.append("large chunk " + ", ".join(large))
@@ -136,7 +158,7 @@ def init(data: dict, root: Path, mid: str, goal: str) -> list[str]:
     if not chunks:
         raise DcError(f"milestone {mid} has no chunks: add them first (chunk add)")
     reasons, verdict = need(data, root, mid)
-    par = bool(picked(verdict))
+    par = bool(parallel_stages(data, root, mid))
     lines = [f"# Plan {mid}: {goal}", "",
              f"Required: {'; '.join(reasons) if reasons else 'no (optional plan)'}",
              f"Fan-out: {verdict[0]}", "",
@@ -175,8 +197,8 @@ def check(data: dict, root: Path, mid: str) -> list[str]:
     n = sum(1 for ln in text.split("\n") if PLACEHOLDER in ln)
     if n:
         gaps.append(f"{n} '{PLACEHOLDER}' line(s) left")
-    _, verdict = need(data, root, mid)
-    par = picked(verdict)
+    stages = parallel_stages(data, root, mid)
+    par = [cid for stage in stages for cid in stage]
     inter = (secs.get("Interfaces") or "").strip().lower()
     if par and (not inter or inter.startswith("none")):
         gaps.append("fan-out is PARALLEL: Interfaces must state the contract between the builders")
@@ -199,22 +221,28 @@ def check(data: dict, root: Path, mid: str) -> list[str]:
             if p and p not in owned and not any(p.startswith(o.rstrip("/") + "/") for o in owned):
                 gaps.append(f"{c['id']} target {p} is not in its Files")
     import dc_project
-    for i, a in enumerate(par):
-        for b in par[i + 1:]:
-            if a in entries and b in entries:
-                shared = dc_project._overlap(set(entries[a]["files"]), set(entries[b]["files"]))
-                if shared:
-                    gaps.append(f"parallel chunks {a} and {b} both own {shared}")
+    for stage in stages:
+        for i, a in enumerate(stage):
+            for b in stage[i + 1:]:
+                if a in entries and b in entries:
+                    shared = dc_project._overlap(set(entries[a]["files"]), set(entries[b]["files"]))
+                    if shared:
+                        gaps.append(f"parallel chunks {a} and {b} both own {shared}")
     return gaps
 
 
 def planned_tests(root: Path, mid: str) -> list[str]:
-    """`c1: <test>` per chunk from the plan, for the builder brief and the Gate 6 packet."""
-    text = _dcio.read_text(plan_path(root, mid))
-    if text is None:
+    """`c1: <test>` per chunk from the approved plan, for the builder brief and the Gate 6 packet.
+
+    A draft, stale or waived plan gives nothing: its Test lines were never agreed.
+    """
+    import dc_project  # imports this module lazily
+    if status(dc_project.load(root / _dcio.AGENT_DIR_NAME), root, mid) != "approved":
         return []
+    text = _dcio.read_text(plan_path(root, mid)) or ""
     entries = chunk_entries(sections(text).get("Chunks") or "")
-    return [f"{cid}: {e['test']}" for cid, e in entries.items() if e["test"]][:TESTS_SHOWN]
+    return [f"{cid}: {e['test']}" for cid, e in entries.items()
+            if e["test"] and PLACEHOLDER not in e["test"]][:TESTS_SHOWN]
 
 
 def record(data: dict, root: Path, mid: str, op: str, reason: str = "") -> str:

@@ -104,6 +104,8 @@ check("check without a plan points at init", rc == 2 and "plan init" in out, out
 rc, out = plan(par, "init")
 path = par / ".agent" / "plans" / "m1.md"
 skel = path.read_text(encoding="utf-8")
+import dc_plan  # noqa: E402
+check("r121: a draft plan gives no planned tests", dc_plan.planned_tests(par, "m1") == [], dc_plan.planned_tests(par, "m1"))
 check("init pre-fills chunks with their files",
       rc == 0 and "### c1 - parser" in skel and "Files: a.py" in skel and "Files: b.py" in skel, skel)
 rc, out = plan(par, "init")
@@ -167,6 +169,31 @@ block = dc_review._planned_block(par, "m1")
 check("the Gate 6 packet lists the planned tests for the checker",
       block[:1] == ["## Planned tests (from the approved plan; a missing one is a checker finding)"]
       and "c1: tests/test_parse.py proves rows parse" in block and dc_review._planned_block(small, "m1") == [], block)
+
+# -- r118: contract-first: the later parallel stage requires the plan before c1 starts
+cf = make_repo("contract-first")
+add(cf, "contract: row format", "--targets", "api.py", "--size", "small", "--est", "10")
+add(cf, "parser", "--targets", "a.py", "--size", "medium", "--est", "20", "--deps", "c1",
+    "--parallel", "yes", "--why", "own file")
+add(cf, "writer", "--targets", "b.py", "--size", "medium", "--est", "20", "--deps", "c1",
+    "--parallel", "yes", "--why", "own file")
+rc, out = plan(cf, "need")
+check("r118: a later parallel stage makes the plan required",
+      "PLAN REQUIRED m1: fan-out PARALLEL c2, c3" in out and "fan-out: SEQUENTIAL: c2 needs c1" in out, out)
+rc, out = start(cf, "c1")
+check("r118: the contract chunk cannot start before the plan", rc != 0 and "PLAN REQUIRED m1" in out, out)
+plan(cf, "init")
+cf_plan = cf / ".agent" / "plans" / "m1.md"
+check("r118: init asks for the builders' contract when a later stage fans out",
+      "the contract between parallel chunks" in cf_plan.read_text(encoding="utf-8"))
+cf_plan.write_text("\n".join(
+    "none" if ln.startswith("TODO: the contract") else
+    ln.replace("TODO: test file and what it proves", "tests/t.py proves it") if ln.startswith("Test:") else
+    "filled" if ln.startswith("TODO:") else ln
+    for ln in cf_plan.read_text(encoding="utf-8").split("\n")), encoding="utf-8")
+rc, out = plan(cf, "check")
+check("r118: check asks for Interfaces when a later stage fans out",
+      rc == 2 and "Interfaces must state the contract" in out and "TODO" not in out, out)
 
 # -- large chunk or long estimate: required; waive needs a reason; a begun milestone is not stalled
 big = make_repo("big")
