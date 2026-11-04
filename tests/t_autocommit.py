@@ -549,5 +549,44 @@ record(r18, "pass", tier="milestone")
 rc, out = commit(r18)
 check("(t18) pass for the current tree: committed without --verified", out.startswith("COMMITTED:"), out)
 
+# -- i14: one end-of-step call, chunk done --commit
+r14 = make_repo("ac-i14")
+add_chunk(r14)
+proj(r14, "chunk", "add", "--milestone", "m1", "--goal", "second step", "--targets", "a.py;new.py")
+start(r14)
+write(r14, "a.py", "x = 2\n")
+h14 = head(r14)
+rc, out = proj(r14, "chunk", "done", "--milestone", "m1", "--id", "c1", "--commit", "--note", "parser")
+side14 = json.loads((r14 / ".agent" / "drainclamp-project.json").read_text(encoding="utf-8"))
+c14 = side14["chunks"]["m1"][0]
+check("(i14) refused commit: chunk not ticked, reason shown",
+      out.startswith("NOT COMMITTED: the step's DC:VERIFY tier is not verified")
+      and "not ticked" in out and not c14.get("done") and head(r14) == h14, out)
+rc, out = proj(r14, "chunk", "done", "--milestone", "m1", "--id", "c1", "--commit", "--verified",
+               "--note", "parser", "--trailer", "Co-Authored-By: Example <a@example.com>")
+lines14 = out.splitlines()
+side14 = json.loads((r14 / ".agent" / "drainclamp-project.json").read_text(encoding="utf-8"))
+c14 = side14["chunks"]["m1"][0]
+short14 = lines14[0].split()[1] if lines14 and lines14[0].startswith("COMMITTED:") else "?"
+check("(i14) COMMITTED first, then the tick", lines14[0].startswith("COMMITTED:")
+      and lines14[1] == "DRAINCLAMP: chunk m1/c1 done" and c14.get("done"), out)
+check("(i14) hash lands in the chunk note", c14.get("note") == f"{short14}: parser", c14)
+check("(i14) trailer passes through", "Co-Authored-By: Example" in git(r14, "log", "-1", "--format=%B"))
+check("(i14) boundary printed", any(ln.startswith("Next chunk: c2") for ln in lines14), out)
+check("(i14) same targets: HOLD, then the compact line last",
+      any(ln.startswith("HOLD") for ln in lines14) and lines14[-1].startswith("Compact: "), out)
+proj(r14, "chunk", "start", "--milestone", "m1", "--id", "c2")
+write(r14, "new.py", "z = 1\n")
+rc, out = proj(r14, "chunk", "done", "--milestone", "m1", "--id", "c2", "--commit", "--verified")
+check("(i14) last chunk: close verdict, no compact line",
+      out.startswith("COMMITTED:") and "all chunks done" in out and "Compact: " not in out, out)
+r14b = make_repo("ac-i14b")
+add_chunk(r14b)
+start(r14b)
+proj(r14b, "config", "--autocommit", "off")
+rc, out = proj(r14b, "chunk", "done", "--milestone", "m1", "--id", "c1", "--commit")
+check("(i14) auto-commit off: reported, chunk still ticked",
+      "auto-commit is off" in out and "DRAINCLAMP: chunk m1/c1 done" in out, out)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

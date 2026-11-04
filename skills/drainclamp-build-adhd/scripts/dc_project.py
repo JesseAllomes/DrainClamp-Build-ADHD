@@ -1536,6 +1536,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--undo", action="store_true")
     d.add_argument("--context-high", action="store_true",
                    help="model-observed: context is over ~50%% of the window")
+    d.add_argument("--commit", action="store_true",
+                   help="auto-commit the step first (as `commit`), then tick, boundary, compact line")
+    d.add_argument("--verified", action="store_true", help="with --commit: as `commit --verified`")
+    d.add_argument("--trailer", action="append", default=[], help="with --commit: as `commit`")
+    d.add_argument("--subject", default="", help="with --commit: as `commit`")
+    d.add_argument("--paths", default="", help="with --commit: as `commit`")
     st = ch.add_parser("start", help="snapshot already-edited files before a step (auto-commit)")
     st.add_argument("--milestone", required=True)
     st.add_argument("--id", default="", help="chunk id; omit for a milestone with no chunks")
@@ -1730,7 +1736,20 @@ def main() -> int:
         op = op.replace(".done", ".undo")
 
     fields = {k: v for k, v in vars(args).items()
-              if k not in ("cmd", "op", "root", "home", "undo", "context_high")}
+              if k not in ("cmd", "op", "root", "home", "undo", "context_high",
+                           "commit", "verified", "trailer", "subject", "paths")}
+    committed = op == "chunk.done" and args.commit
+    if committed:
+        # One end-of-step call: commit, tick, boundary, compact line (phase4 order).
+        lines = commit_step(root, args.milestone, args.id, args.verified, args.trailer,
+                            args.subject, _targets(args.paths), args.home)
+        print("\n".join(lines))
+        if lines[0].startswith("COMMITTED"):
+            short = lines[0].split()[1]
+            fields["note"] = f"{short}: {args.note}" if args.note else short
+        elif autocommit_cfg(load(agent))["enabled"]:
+            print(f"DRAINCLAMP: chunk {args.milestone}/{args.id} not ticked: fix the reason above, then rerun")
+            return _dcio.EXIT_OK
     result = []
 
     def apply(data: dict) -> dict:
@@ -1740,7 +1759,11 @@ def main() -> int:
     data = mutate(agent, apply)
     print("DRAINCLAMP: " + result[0])
     if op == "chunk.done":
-        print("\n".join(boundary(data, root, args.milestone, args.id, args.context_high)))
+        verdict = boundary(data, root, args.milestone, args.id, args.context_high)
+        print("\n".join(verdict))
+        # A PURGE or close verdict already answers the compact question; never print both.
+        if committed and not any(v.startswith(("PURGE", "Milestone ")) for v in verdict):
+            print(dc_state.compact_line(*dc_state.compact_check(root)))
     return _dcio.EXIT_OK
 
 

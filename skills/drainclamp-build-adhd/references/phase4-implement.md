@@ -28,8 +28,8 @@ them. Never load a skill the project has not marked.
 4. **Green.** Smallest change that passes it.
 5. **Refine.** Mutating formatters belong here, not in Gate 3 — a check-only refiner reports, this
    step rewrites.
-6. **Tick it.** `dc_project.py chunk done --milestone <m> --id <c> --note "<what was done>"`.
-   This extends build time and prints the next chunk plus a chunk-boundary verdict
+6. **Tick it.** `dc_project.py chunk done --milestone <m> --id <c> --commit --note "<what was done>"`.
+   One call: auto-commit (below), tick, then the next chunk plus a chunk-boundary verdict
    (Gate 5, "Chunk boundaries"). Add `--context-high` when you judge context to be over ~50%.
 7. **Log problems where they happen.** `dc_project.py error add --summary ... --milestone <m>
    --chunk <c>` for a defect found, `error fix` when it is fixed, `todo add` for later work.
@@ -49,9 +49,13 @@ dc_project.py config [--autocommit on|off] [--clean-tree on|off] [--verify-cmd "
 
 Order at the end of a step: **verify** (the `DC:VERIFY` tier; a passing `dc_verify.py` record for the
 current files counts, and `--verified` is the override when the check ran outside `dc_verify.py`),
-**scan** (PII/secrets on the exact staged diff, built in), **commit**, **log** the printed hash in the
-chunk note or `DC:LOG`, then the compact line. Output is one `COMMITTED: <hash> <subject> (<n> file(s))`
-or `NOT COMMITTED: <reason>`.
+**scan** (PII/secrets on the exact staged diff, built in), **commit**, **log** the hash, then the compact
+line. `chunk done --commit [--verified] [--paths/--trailer/--subject]` does all of it in one call and
+prints, in order: `COMMITTED: <hash> <subject> (<n> file(s))` or `NOT COMMITTED: <reason>`, the tick
+(the hash is prefixed to `--note`), the boundary lines, then the `Compact:` line, left out when the
+boundary already said PURGE or closed the milestone. A refused commit leaves the chunk unticked; fix
+the reason and rerun. With auto-commit off it reports that and still ticks. `commit` alone stays for
+a milestone with no chunks.
 
 - Committed: files changed since `chunk start` inside the chunk's targets (plus `--paths`). A file
   already edited at `chunk start` is never committed; another session's staged files never ride along.
