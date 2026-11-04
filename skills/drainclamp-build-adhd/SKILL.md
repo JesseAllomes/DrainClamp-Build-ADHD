@@ -53,10 +53,10 @@ next action under two minutes. `stop adhd mode` disables this. After each comple
 the one line `dc_state.py --compact-check` prints, verbatim (`Compact: safe ...` / `Compact: not yet: ...`); at a milestone boundary Gate 5's lines
 replace it. Auto-commit prints `COMMITTED: ...` or `NOT COMMITTED: ...`; relay it.
 
-Gate 5 may recommend a purge but cannot invoke it. With documented host compaction support say:
-`DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.` then
-`Run /compact now, then resume from .agent/drainclamp-state.md.` Otherwise say the same first line followed by
-`Start a fresh session and resume from .agent/drainclamp-state.md.`
+Gate 5 may recommend a purge but cannot invoke it. A PURGE verdict prints its whole message: the
+`DRAINCLAMP: ... Context purge recommended.` line, then `Run /compact now, then resume with dc_session.py --resume <root>.`
+on a host that documents compaction (pass `--host <h>`; Claude Code is detected), else
+`Start a fresh session and resume with dc_session.py --resume <root>.` Relay both lines as printed.
 
 ## Boundaries
 

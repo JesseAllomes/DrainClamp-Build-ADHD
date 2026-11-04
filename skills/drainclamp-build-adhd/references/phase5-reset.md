@@ -53,8 +53,11 @@ You cannot invoke `/clear` or `/compact`. No host exposes them to the model. Gat
 |---|---|
 | `COMPLETE`, host documents a clear command | run `dc_project.py --root <root> complete --note "<one line>"` first, while context is loaded; then the script line and `Run /clear now.` |
 | `COMPLETE`, host support unknown | run `dc_project.py --root <root> complete --note "<one line>"` first; then the script line and `Start a fresh session.` |
-| `PURGE`, host documents a compaction command | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.`<br>`Run /compact now, then resume from .agent/drainclamp-state.md.` |
-| `PURGE`, host support unknown | first line, then `Start a fresh session and resume from .agent/drainclamp-state.md.` |
+| `PURGE`, host documents a compaction command | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.`<br>`Run /compact now, then resume with dc_session.py --resume <root>.` |
+| `PURGE`, host support unknown | first line, then `Start a fresh session and resume with dc_session.py --resume <root>.` |
+
+The script prints both PURGE lines (`--purge-check`, `--close`, and `chunk done` at a chunk boundary);
+relay them as printed. `--host <h>` picks the second line; Claude Code is detected from its shell.
 | `HOLD` | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context retained (overlap NN%).` |
 | `HOLD`, overlap unresolved | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context retained (overlap unknown: <reason>).` |
 

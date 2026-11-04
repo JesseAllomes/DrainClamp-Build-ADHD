@@ -157,9 +157,12 @@ check("symbols of one file overlap by path (1 of 2 = 50%)",
       "HOLD (chunk overlap 50%)" in out and "Context retained" in out, out)
 check("HOLD boundary hands over the next targets",
       "Targets: a.py::g, b.py" in out and "  dc_chunk.py --symbol g --path a.py" in out, out)
-rc, out = proj(bnd, "chunk", "done", "--milestone", "m1", "--id", "c2")
+rc, out = proj(bnd, "chunk", "done", "--milestone", "m1", "--id", "c2", "--host", "other")
 check("disjoint next chunk recommends a purge",
       "PURGE (chunk overlap 0%)" in out and "Context purge recommended." in out, out)
+check("t21: chunk PURGE ends with the resume line",
+      out.splitlines()[-1] == "Start a fresh session and resume with dc_session.py --resume "
+      + str(bnd.resolve()).replace("\\", "/") + ".", out)
 check("PURGE boundary leaves targets to the resume", "Targets:" not in out, out)
 rc, out = proj(bnd, "chunk", "done", "--milestone", "m1", "--id", "c3")
 check("next chunk without targets is unknown, never PURGE",

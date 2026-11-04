@@ -662,6 +662,17 @@ def purge_check(state: State, root: Path, context_high: bool) -> tuple[str, str]
     )
 
 
+def purge_resume_line(root: Path, host: str | None = None) -> str:
+    """The second line of a PURGE message. `/compact` only where the host documents it
+    (Claude Code: --host claude, or its CLAUDECODE=1 shell); elsewhere a fresh session."""
+    if host is None:
+        host = "claude" if os.environ.get("CLAUDECODE") == "1" else ""
+    target = "dc_session.py --resume " + str(root.resolve()).replace("\\", "/")
+    if host.lower() == "claude":
+        return f"Run /compact now, then resume with {target}."
+    return f"Start a fresh session and resume with {target}."
+
+
 def chunk_purge_check(done_targets: list[str], next_targets: list[str], root: Path,
                       context_high: bool) -> tuple[str, str]:
     """The milestone calculus applied at a chunk boundary, over chunk targets.
@@ -1049,6 +1060,8 @@ def main() -> int:
                              "generation since you read it")
     parser.add_argument("--purge-check", action="store_true")
     parser.add_argument("--context-high", action="store_true")
+    parser.add_argument("--host", default=None,
+                        help="claude, codex, ...: picks the PURGE resume line (default: detected)")
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--resume-view", action="store_true",
                         help="read saved state with completed rows and older logs omitted")
@@ -1148,6 +1161,8 @@ def main() -> int:
             verdict, human = purge_check(load(state_path), root, args.context_high)
             print(verdict)
             print(human)
+            if verdict.startswith("PURGE"):
+                print(purge_resume_line(root, args.host))
         return _dcio.EXIT_OK
 
     if args.section:
@@ -1200,6 +1215,8 @@ def main() -> int:
         verdict, human = purge_check(state, root, args.context_high)
         print(verdict)
         print(human)
+        if verdict.startswith("PURGE"):
+            print(purge_resume_line(root, args.host))
         return _dcio.EXIT_OK
 
     if args.promote_to_agents:

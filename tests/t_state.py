@@ -394,6 +394,24 @@ check("resume-view declares decision coverage", "DECISIONS: SHOWING 2/3 (1 super
 check("the full file keeps the superseded line",
       "[superseded by D3]" in sup_file.read_text(encoding="utf-8"))
 
+# --- t21: the purge message is printed whole, by host -----------------------
+pg = newrepo()
+(pg / "a.py").write_text("a\n", encoding="utf-8")
+(pg / "b.py").write_text("b\n", encoding="utf-8")
+run(pg, "--set", "ROADMAP", "--file", str(roadmap(pg, [("m1", "one", "a.py", "done"), ("m2", "two", "b.py", "active")])))
+pg_posix = str(pg.resolve()).replace("\\", "/")
+r = run(pg, "--purge-check", "--host", "claude")
+lines = r.stdout.splitlines()
+check("t21: PURGE prints the /compact line for Claude Code", len(lines) == 3 and lines[0].startswith("PURGE")
+      and lines[2] == f"Run /compact now, then resume with dc_session.py --resume {pg_posix}.", r.stdout + r.stderr)
+r = run(pg, "--purge-check", "--host", "other")
+check("t21: another host gets the fresh-session line",
+      r.stdout.splitlines()[-1] == f"Start a fresh session and resume with dc_session.py --resume {pg_posix}.", r.stdout)
+run(pg, "--set", "ROADMAP", "--file", str(roadmap(pg, [("m1", "one", "a.py", "done"), ("m2", "two", "a.py", "active")])))
+r = run(pg, "--purge-check", "--host", "claude")
+check("t21: HOLD prints no resume line", r.stdout.splitlines()[0].startswith("HOLD")
+      and len(r.stdout.splitlines()) == 2, r.stdout)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

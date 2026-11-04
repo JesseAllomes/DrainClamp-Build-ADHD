@@ -352,7 +352,7 @@ def capsule(root: Path, data: dict, home: str | None = None) -> list[str]:
 
 
 def boundary(data: dict, root: Path, mid: str, cid: str,
-             context_high: bool = False) -> list[str]:
+             context_high: bool = False, host: str | None = None) -> list[str]:
     """Chunk-boundary verdict: purge before the next chunk, or close the milestone."""
     chunks = data["chunks"].get(mid, [])
     done = next(c for c in chunks if c["id"] == cid)
@@ -363,7 +363,9 @@ def boundary(data: dict, root: Path, mid: str, cid: str,
                                                 nxt.get("targets", []), root, context_high)
     lines = [f"Next chunk: {nxt['id']} - {_clip(nxt['goal'])}", verdict, human]
     # HOLD keeps the context, so hand over what to read next; a PURGE resume runs `next` anyway
-    return lines + target_lines(nxt, root) if verdict.startswith("HOLD") else lines
+    if verdict.startswith("HOLD"):
+        return lines + target_lines(nxt, root)
+    return lines + [dc_state.purge_resume_line(root, host)]
 
 
 # -- operations ----------------------------------------------------------------
@@ -1536,6 +1538,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--undo", action="store_true")
     d.add_argument("--context-high", action="store_true",
                    help="model-observed: context is over ~50%% of the window")
+    d.add_argument("--host", default=None,
+                   help="claude, codex, ...: picks the PURGE resume line (default: detected)")
     d.add_argument("--commit", action="store_true",
                    help="auto-commit the step first (as `commit`), then tick, boundary, compact line")
     d.add_argument("--verified", action="store_true", help="with --commit: as `commit --verified`")
@@ -1736,7 +1740,7 @@ def main() -> int:
         op = op.replace(".done", ".undo")
 
     fields = {k: v for k, v in vars(args).items()
-              if k not in ("cmd", "op", "root", "home", "undo", "context_high",
+              if k not in ("cmd", "op", "root", "home", "undo", "context_high", "host",
                            "commit", "verified", "trailer", "subject", "paths")}
     committed = op == "chunk.done" and args.commit
     if committed:
@@ -1764,7 +1768,7 @@ def main() -> int:
     data = mutate(agent, apply)
     print("DRAINCLAMP: " + result[0])
     if op == "chunk.done":
-        verdict = boundary(data, root, args.milestone, args.id, args.context_high)
+        verdict = boundary(data, root, args.milestone, args.id, args.context_high, args.host)
         print("\n".join(verdict))
         # A PURGE or close verdict already answers the compact question; never print both.
         if committed and not any(v.startswith(("PURGE", "Milestone ")) for v in verdict):
