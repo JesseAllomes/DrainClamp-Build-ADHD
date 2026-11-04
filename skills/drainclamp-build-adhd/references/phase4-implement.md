@@ -119,8 +119,11 @@ retroactively unsay Gate 2's success sentence: that gate reported what it did at
 
 Independent chunks build in parallel on their own worktrees. You plan, brief, merge, review.
 
-1. Before dispatch: `dc_project.py fanout --milestone <m>` (`--no-subagents` on a host without them).
-2. Go parallel only on `PARALLEL:`. A `SEQUENTIAL: <reason>` line means build in order, as before.
+1. The fan-out test is mandatory: `chunk start` runs it and prints `FAN-OUT <m>: ...` once per
+   new verdict. `dc_project.py fanout --milestone <m>` shows it on demand.
+2. Go parallel on `PARALLEL:`. `chunk start` refuses a picked chunk until you either build the
+   batch as below, or pass `--sequential "<reason>"` (no subagents, the user said so); the
+   reason is recorded once per milestone. `SEQUENTIAL: <reason>` means build in order.
    Chunks under `then in order after the merge:` wait and are built in order once the batch is merged.
 3. At most 4 builders. Brief each with `dc_project.py brief --milestone <m> --chunk <c>`.
 4. Use host subagents with worktree isolation. A repo outside the host folder: make

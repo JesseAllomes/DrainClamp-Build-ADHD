@@ -329,6 +329,9 @@ def capsule(root: Path, data: dict, home: str | None = None) -> list[str]:
     if ideas:
         lines.append(f"Advisor: {len(ideas)} idea(s) to triage ({' '.join(ideas[:6])}) "
                      "- waiting on you (dc_review.py status)")
+    import dc_plan  # imports this module lazily
+    if plan := dc_plan.capsule_line(data, root, ms["id"]):
+        lines.append(plan)
     nxt = next((c for c in chunks if not c.get("done")), None)
     if not chunks:
         lines.append("No chunks yet: split this milestone with `dc_project.py chunk add`.")
@@ -664,6 +667,12 @@ def brief(data: dict, root: Path, mid: str, cid: str, budget: int = 40000,
         lines.append(f"Contract ({contract['id']}): {_clip(contract['goal'])} -- {note}")
     else:
         lines.append("Contract: none")
+    import dc_plan  # imports this module lazily
+    planned = [t for t in dc_plan.planned_tests(root, mid) if t.startswith(f"{cid}: ")]
+    if planned:
+        rel = dc_plan.plan_path(root, mid).relative_to(root).as_posix()
+        lines += [f"Plan: {rel} (read ## Interfaces and ### {cid})",
+                  f"Test to write or pass: {_clip(planned[0].split(': ', 1)[1])}"]
     lines += [f"Verify: {verify or default_verify(root)}",
               f"Branch: {branch}",
               f"Worktree: {tree}",
@@ -1015,25 +1024,33 @@ def _fast_clean_argv(root: Path, argv: list[str], cwd: str) -> tuple[list[str], 
     return [str(exe)] + list(argv[1:]), ""
 
 
-def start_step(root: Path, mid: str, cid: str = "") -> str:
-    """Record what is already edited, so the step's own edits can be told apart later."""
+def start_step(root: Path, mid: str, cid: str = "", sequential: str = "") -> str:
+    """Record what is already edited, so the step's own edits can be told apart later.
+
+    A chunk start first passes the planning gate and the fan-out rule (dc_plan.start_gate);
+    a refusal writes nothing.
+    """
+    import dc_plan  # imports this module lazily
     agent = root / _dcio.AGENT_DIR_NAME
     if mid not in {r["id"] for r in roadmap(root)}:
         raise DcError(f"milestone {mid} is not in DC:ROADMAP")
     snap = _dcio.dirty_snapshot(root)
     snap["at"] = _iso(_now())
+    gate: list[str] = []
 
     def apply(data: dict) -> dict:
         if cid:
-            _find(data["chunks"].get(mid, []), cid, f"chunk in {mid}")["start"] = snap
+            chunk = _find(data["chunks"].get(mid, []), cid, f"chunk in {mid}")
+            gate.extend(dc_plan.start_gate(data, root, mid, cid, sequential))
+            chunk["start"] = snap
         else:
             data.setdefault("milestone_start", {})[mid] = snap
         return data
 
     mutate(agent, apply)
     label = f"{mid}/{cid}" if cid else mid
-    return (f"step {label} started: {len(snap['files'])} file(s) already edited, "
-            "never auto-committed")
+    return "\n".join([f"step {label} started: {len(snap['files'])} file(s) already edited, "
+                      "never auto-committed", *gate])
 
 
 def commit_step(root: Path, mid: str, cid: str = "", verified: bool = False,
@@ -1549,6 +1566,8 @@ def build_parser() -> argparse.ArgumentParser:
     st = ch.add_parser("start", help="snapshot already-edited files before a step (auto-commit)")
     st.add_argument("--milestone", required=True)
     st.add_argument("--id", default="", help="chunk id; omit for a milestone with no chunks")
+    st.add_argument("--sequential", default="", metavar="REASON",
+                    help="build a chunk the fan-out test picked for parallel in order (reason recorded)")
     ls = ch.add_parser("list")
     ls.add_argument("--milestone")
 
@@ -1561,6 +1580,10 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--chunk", required=True)
     br.add_argument("--budget", type=int, default=40000)
     br.add_argument("--verify", default=None)
+    pl = sub.add_parser("plan", help="Gate 2 planning gate: need, init, check, approve, waive")
+    pl.add_argument("pop", choices=("need", "init", "check", "approve", "waive"))
+    pl.add_argument("--milestone", required=True)
+    pl.add_argument("--reason", default="", help="waive: the user's reason")
     mo = sub.add_parser("merge-order", help="chunks in dependency order with branch names")
     mo.add_argument("--milestone", required=True)
     mo.add_argument("--chunks", default="")
@@ -1714,6 +1737,31 @@ def main() -> int:
         print("\n".join(brief(load(agent), root, args.milestone, args.chunk,
                               args.budget, args.verify)))
         return _dcio.EXIT_OK
+    if args.cmd == "plan":
+        import dc_plan  # imports this module lazily
+        mid = args.milestone
+        row = next((r for r in roadmap(root) if r["id"] == mid), None)
+        if row is None:
+            raise DcError(f"milestone {mid} is not in DC:ROADMAP")
+        if args.pop == "need":
+            print("\n".join(dc_plan.need_lines(load(agent), root, mid)))
+        elif args.pop == "init":
+            print("\n".join(dc_plan.init(load(agent), root, mid, row["goal"])))
+        elif args.pop == "check":
+            gaps = dc_plan.check(load(agent), root, mid)
+            print(f"PLAN {mid}: complete - show it to the user, then plan approve" if not gaps else
+                  f"PLAN {mid}: {len(gaps)} gap(s)\n" + "\n".join(f"  {g}" for g in gaps))
+            return _dcio.EXIT_OK if not gaps else _dcio.EXIT_CHECK_FAILED
+        else:
+            out: list[str] = []
+
+            def plan_op(data: dict) -> dict:
+                out.append(dc_plan.record(data, root, mid, args.pop, args.reason))
+                return data
+
+            mutate(agent, plan_op)
+            print(out[0])
+        return _dcio.EXIT_OK
     if args.cmd == "merge-order":
         ids = [x.strip() for x in args.chunks.split(",") if x.strip()]
         print("\n".join(merge_order(load(agent), root, args.milestone, ids)))
@@ -1721,7 +1769,7 @@ def main() -> int:
 
     op = f"{args.cmd}.{args.op}"
     if op == "chunk.start":
-        print("DRAINCLAMP: " + start_step(root, args.milestone, args.id))
+        print("DRAINCLAMP: " + start_step(root, args.milestone, args.id, args.sequential))
         return _dcio.EXIT_OK
     if op == "chunk.list":
         for mid, cs in load(agent)["chunks"].items():
@@ -1767,6 +1815,8 @@ def main() -> int:
 
     data = mutate(agent, apply)
     print("DRAINCLAMP: " + result[0])
+    if op == "chunk.add" and not getattr(args, "size", None):
+        print("DRAINCLAMP: no --size: the fan-out test treats this chunk as sequential")
     if op == "chunk.done":
         verdict = boundary(data, root, args.milestone, args.id, args.context_high, args.host)
         print("\n".join(verdict))

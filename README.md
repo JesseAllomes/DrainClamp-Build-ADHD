@@ -118,6 +118,7 @@ is unignored you get one warning and nothing else.
 | `dc_pushgate.py` | Machine-wide push gate: `install` sets the global `core.hooksPath` to dispatchers that run `dc_pii.py` before every push and then each repo's own hooks; `status`; `check` is Gate P |
 | `dc_tokens.py` | On-demand report: none / base / adhd across Claude, Codex and Grok; `--project` attributes Claude and Codex tokens to chunks and milestones. Aggregates only, never transcript text |
 | `dc_audit.py` | Gate 0: five-part freshness test, depth-2 rollups, stack, dead-code candidates |
+| `dc_plan.py` | Planning gate and fan-out rule, driven by `dc_project.py plan need/init/check/approve/waive` and `chunk start`: a milestone that fans out, has a large chunk, or runs 90+ min needs an approved `.agent/plans/<m>.md` before its first chunk starts; a chunk the fan-out test picks is not built in order without a recorded reason |
 | `dc_review.py` | Gate 6: review packet, citation check, dedupe, suppression, agent cap, fixer scope, roadmap guard |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests tied to a tree fingerprint |
 | `dc_selftest.py` | Materialises `tests/fixtures/`, runs the whole suite matrix |

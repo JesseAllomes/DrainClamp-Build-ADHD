@@ -13,7 +13,7 @@ and context resets. `SCRIPTS` means `<this skill>/scripts/`; scripts are stdlib-
 | S Session | every invocation | `dc_session.py` |
 | 0 Audit | audit cache is stale | `phase0-audit.md`; `dc_audit.py` |
 | 1 Grill | a new project (intake), a material choice is open, a charter has blanks, or skills are unmarked | `phase1-grill.md`; `dc_project.py intake`, `dc_project.py charter`, `dc_skills.py` |
-| 2 Externalise | state is missing/stale or roadmap changed | `phase2-blueprint.md`; `dc_state.py`, `dc_project.py` |
+| 2 Externalise | state is missing/stale or roadmap changed; a plan the user approves when fan-out is PARALLEL, a chunk is large, or chunks total 90+ min | `phase2-blueprint.md`; `dc_state.py`, `dc_project.py` (`plan`) |
 | 3 Checks | verify config changed or `DC:VERIFY` is empty | `phase3-select-checks.md`; `dc_verify.py` |
 | 4 Implement | always; `dc_project.py chunk start` before a chunk's first edit, `dc_project.py commit` after its verify passes (the tier record counts) | `phase4-implement.md`; `dc_project.py` (`fanout`, `commit`), `dc_map.py`, `dc_chunk.py`, `dc_skills.py` |
 | 5 Reset | milestone or chunk boundary | `phase5-reset.md`; `dc_state.py --purge-check` |

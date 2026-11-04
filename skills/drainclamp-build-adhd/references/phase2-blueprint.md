@@ -145,11 +145,32 @@ dc_project.py chunk add --milestone m2 --goal "one step" --targets "src/load.py:
   `--deps c1,c2` (same milestone; unknown id = error), `--size small|medium|large`,
   `--parallel yes|no` with `--why "<one line>"` (required with it), `--critical <kind>`
   (deploy, payroll write, migration, destructive, release: always sequential).
-  Unflagged chunks count as size unknown, parallel no.
+  Unflagged chunks count as size unknown, parallel no; `chunk add` says so. Size every chunk:
+  an unsized chunk never fans out.
 - Shared interfaces (signatures, schemas, file formats) go in a first sequential chunk whose goal
   starts `contract:`. Put the agreed interface in its done note; `dc_project.py brief` hands it
   to every builder.
 - Skip chunking when the milestone is one step. `dc_project.py next` still works with no chunks.
+
+## Plan (a milestone with several moving parts)
+
+After chunking, run `dc_project.py plan need --milestone <m>`. A plan is **required** when the
+fan-out test says PARALLEL, a chunk is `large`, or the chunk estimates total 90 min or more
+(release and deploy chunks not counted). Otherwise it is optional; skip it.
+
+1. `plan init`: writes `.agent/plans/<m>.md` with every chunk and its Files pre-filled. Replace
+   each `TODO:` line: Approach, Interfaces (the contract between builders; `none` only when
+   nothing crosses a chunk and fan-out is SEQUENTIAL), one `Test:` line per chunk, Edge cases
+   and risks, Out of scope.
+2. `plan check`: lists every gap (TODO left, a chunk with no Files or Test, a target outside
+   its Files, two parallel chunks owning one file). Fix until it prints `complete`.
+3. Show the user the plan. On their yes: `plan approve`. On their reason to skip:
+   `plan waive --reason "<their reason>"`. Never approve or waive for them.
+
+`chunk start` refuses the milestone's first chunk until the plan is approved or waived, and
+refuses any chunk once an approved plan is edited (re-approve). A milestone already under way
+is not stalled. The plan is never auto-loaded: builders read their own `### c<n>` entry (the
+brief points at it), and the Gate 6 packet lists the planned tests for the checker.
 
 ## Gate 2 output
 
