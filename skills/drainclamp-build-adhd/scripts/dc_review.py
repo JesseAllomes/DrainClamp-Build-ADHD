@@ -765,16 +765,31 @@ def build_packet(root: Path, rid: str, ms: dict, depth: str, base: str | None,
                   "symbols": len(symbols), "callers": len(callers), "removed": removed_lines, "left_out": left_out}
 
 
-def gate3_status(root: Path) -> str | None:
-    """The tree fingerprint a passing milestone/final tier vouched for, if current."""
+def tier_record(root: Path, tiers: tuple[str, ...] = ("final", "milestone", "fast")) -> tuple[str | None, str]:
+    """("<tier> PASS <tree>", "") when a passing tier record vouches for the current tree,
+    else (None, why): "no record", "it failed" or "files changed since the check"."""
     agent = root / _dcio.AGENT_DIR_NAME
     records = dc_verify.load_records(agent)
     tree = dc_verify.tree_fingerprint(root)
-    for tier in ("final", "milestone"):
+    seen: set[str] = set()
+    for tier in tiers:
         rec = records.get(dc_verify.TIER_RECORD_PREFIX + tier)
-        if isinstance(rec, dict) and rec.get("status") == "pass" and tree and rec.get("tree") == tree:
-            return f"{tier} PASS {tree}"
-    return None
+        if not isinstance(rec, dict):
+            continue
+        if not tree or rec.get("tree") != tree:
+            seen.add("changed")
+        elif rec.get("status") == "pass":
+            return f"{tier} PASS {tree}", ""
+        else:
+            seen.add("failed")
+    if "failed" in seen:
+        return None, "it failed"
+    return None, "files changed since the check" if seen else "no record"
+
+
+def gate3_status(root: Path) -> str | None:
+    """The tree fingerprint a passing milestone/final tier vouched for, if current."""
+    return tier_record(root, ("final", "milestone"))[0]
 
 
 # -- ingest ----------------------------------------------------------------------

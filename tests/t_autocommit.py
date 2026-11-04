@@ -521,5 +521,33 @@ check("(r101) existing work branch at HEAD is checked out and committed to",
       out.startswith("COMMITTED:") and git(r101, "branch", "--show-current") == "dc/ac-r101-m1"
       and git(r101, "rev-parse", "main") == tip101, out)
 
+# -- t18: a passing tier record for the current tree counts as verified
+import dc_verify  # noqa: E402
+
+
+def record(root, status, tier="fast"):
+    dc_verify.save_record(root / ".agent", dc_verify.TIER_RECORD_PREFIX + tier, "tier", status,
+                          "verify.log", dc_verify.tree_fingerprint(root))
+
+
+r18 = make_repo("ac-t18")
+add_chunk(r18)
+start(r18)
+write(r18, "a.py", "x = 2\n")
+h18 = head(r18)
+rc, out = commit(r18)
+check("(t18) no record: not committed, says so", "not verified: no record" in out and head(r18) == h18, out)
+record(r18, "fail")
+rc, out = commit(r18)
+check("(t18) failed record: not committed, says so", "not verified: it failed" in out and head(r18) == h18, out)
+record(r18, "pass")
+write(r18, "a.py", "x = 3\n")
+rc, out = commit(r18)
+check("(t18) pass for an older tree: not committed, says so",
+      "not verified: files changed since the check" in out and head(r18) == h18, out)
+record(r18, "pass", tier="milestone")
+rc, out = commit(r18)
+check("(t18) pass for the current tree: committed without --verified", out.startswith("COMMITTED:"), out)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

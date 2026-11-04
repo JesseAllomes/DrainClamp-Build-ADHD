@@ -43,18 +43,19 @@ Each completed step is committed on its own, so work is never lost and never mix
 
 ```
 dc_project.py chunk start  --milestone <m> --id <c>   # before the first edit: snapshots files already edited
-dc_project.py commit --milestone <m> --chunk <c> --verified [--paths "x;y"] [--trailer "<line>"]
+dc_project.py commit --milestone <m> --chunk <c> [--verified] [--paths "x;y"] [--trailer "<line>"]
 dc_project.py config [--autocommit on|off] [--clean-tree on|off] [--verify-cmd "<cmd>"] [--review-required on|off]
 ```
 
-Order at the end of a step: **verify** (the `DC:VERIFY` tier; pass `--verified` only if it passed),
+Order at the end of a step: **verify** (the `DC:VERIFY` tier; a passing `dc_verify.py` record for the
+current files counts, and `--verified` is the override when the check ran outside `dc_verify.py`),
 **scan** (PII/secrets on the exact staged diff, built in), **commit**, **log** the printed hash in the
 chunk note or `DC:LOG`, then the compact line. Output is one `COMMITTED: <hash> <subject> (<n> file(s))`
 or `NOT COMMITTED: <reason>`.
 
 - Committed: files changed since `chunk start` inside the chunk's targets (plus `--paths`). A file
   already edited at `chunk start` is never committed; another session's staged files never ride along.
-- Not committed, with a one-line reason: verify failed or skipped, PII hit (kinds and paths only),
+- Not committed, with a one-line reason: not verified (no record, it failed, or files changed since the check), PII hit (kinds and paths only),
   merge, rebase, cherry-pick or bisect in progress, detached HEAD, locked index, a file over 5 MB or a
   new binary (needs the user's go), opt-out (`--autocommit off`), no `chunk start` snapshot, a step file edited after the PII scan.
 - CODEOWNERS (root, `.github/`, `docs/`) or `--review-required on`, on the default branch: the commit

@@ -1045,8 +1045,11 @@ def commit_step(root: Path, mid: str, cid: str = "", verified: bool = False,
         return ["NOT COMMITTED: auto-commit is off for this project "
                 "(dc_project.py config --autocommit on)"]
     if not verified:
-        return ["NOT COMMITTED: the step's DC:VERIFY tier has not passed "
-                "(failed or skipped); pass --verified only after it does"]
+        import dc_review  # deferred: dc_review imports this module
+        vouched, why = dc_review.tier_record(root)
+        if not vouched:
+            return [f"NOT COMMITTED: the step's DC:VERIFY tier is not verified: {why}; "
+                    "run dc_verify.py --tier fast, or pass --verified only after it passes"]
     chunk = _find(data["chunks"].get(mid, []), cid, f"chunk in {mid}") if cid else None
     snap = (chunk or {}).get("start") if cid else (data.get("milestone_start") or {}).get(mid)
     if not isinstance(snap, dict):
@@ -1585,7 +1588,8 @@ def build_parser() -> argparse.ArgumentParser:
     cm.add_argument("--milestone", required=True)
     cm.add_argument("--chunk", default="", help="chunk id; omit for a milestone with no chunks")
     cm.add_argument("--verified", action="store_true",
-                    help="the step's DC:VERIFY tier passed; without it nothing is committed")
+                    help="the step's DC:VERIFY tier passed; without it, a passing tier "
+                         "record for the current tree is needed")
     cm.add_argument("--trailer", action="append", default=[],
                     help="attribution trailer line (repeatable); none by default")
     cm.add_argument("--subject", default="", help="commit subject (default: from the step)")
