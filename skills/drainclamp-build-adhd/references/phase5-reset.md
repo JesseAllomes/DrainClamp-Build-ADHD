@@ -123,7 +123,7 @@ dc_state.py --root R --compact-check
 
 It prints `Compact: safe (state saved)` (exit 0) or `Compact: not yet: <first failing check>` (exit 2). Checks, in
 order: state file saved at its current generation (no write or lock pending); the last `DC:LOG` entry
-is newer than the last edit of any changed file outside `.agent/` (`2 edited files not logged`); no
+or chunk tick (`chunk done`) is newer than the last edit of any changed file outside `.agent/` (`2 edited files not logged`); no
 open `dc_review.py` round and no uncommitted Gate 6 fix; no background work you started still
 running; no question to the user whose answer is not on disk. Relay the line as printed; never
 reword it or claim `safe` without it.

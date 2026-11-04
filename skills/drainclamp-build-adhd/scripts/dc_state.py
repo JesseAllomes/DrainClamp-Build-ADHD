@@ -950,6 +950,21 @@ def compact_check(root: Path) -> tuple[bool, str]:
                 stamp = datetime.fromisoformat(m.group(1))
             except ValueError:
                 pass
+    # The chunk tick is the save mid-milestone (phase5): a chunk done after the edit logs it.
+    try:
+        data = json.loads(_dcio.read_text(agent / "drainclamp-project.json") or "{}")
+    except ValueError:
+        data = {}
+    chunks = data.get("chunks") if isinstance(data, dict) else None
+    for rows in (chunks.values() if isinstance(chunks, dict) else []):
+        for c in rows if isinstance(rows, list) else []:
+            done_at = c.get("done_at") if isinstance(c, dict) and c.get("done") else None
+            try:
+                tick = datetime.fromisoformat(done_at) if isinstance(done_at, str) else None
+            except ValueError:
+                tick = None
+            if tick is not None and tick.tzinfo is not None and (stamp is None or tick > stamp):
+                stamp = tick
     changed = set(_git_names(root, "ls-files", "-m", "-o", "--exclude-standard"))
     changed |= set(_git_names(root, "diff", "--cached", "--name-only", "--relative"))
     if stamp is not None:
@@ -968,10 +983,6 @@ def compact_check(root: Path) -> tuple[bool, str]:
     if unlogged:
         return False, f"{unlogged} edited file{'s' if unlogged != 1 else ''} not logged"
     # Gate 6.
-    try:
-        data = json.loads(_dcio.read_text(agent / "drainclamp-project.json") or "{}")
-    except ValueError:
-        data = {}
     review = data.get("review") if isinstance(data, dict) else None
     if isinstance(review, dict):
         for r in review.get("rounds") or []:

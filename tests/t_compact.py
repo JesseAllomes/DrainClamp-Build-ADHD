@@ -99,6 +99,24 @@ touch_future(repo / "a.txt")
 rc, out = verdict(repo)
 check("committed-since-log edit: not safe", rc != 0 and "not logged" in out, out)
 
+# --- t17: a chunk tick is the save mid-milestone -------------------------------
+from datetime import datetime, timezone  # noqa: E402
+
+repo = newrepo()
+st(repo, "--append-log", "baseline")
+(repo / "a.txt").write_text("x\n", encoding="utf-8")
+touch_future(repo / "a.txt", 5)
+rc, out = verdict(repo)
+check("t17: edit after the log, no tick: not safe", rc != 0 and "not logged" in out, out)
+tick = datetime.fromtimestamp(time.time() + 10, timezone.utc).isoformat(timespec="seconds")
+(repo / ".agent" / "drainclamp-project.json").write_text(json.dumps(
+    {"chunks": {"m1": [{"id": "c1", "done": True, "done_at": tick}]}}), encoding="utf-8")
+rc, out = verdict(repo)
+check("t17: chunk ticked after the edit: safe", rc == 0, out)
+touch_future(repo / "a.txt", 20)
+rc, out = verdict(repo)
+check("t17: edit after the tick: not safe", rc != 0 and "not logged" in out, out)
+
 # --- Gate 6 ------------------------------------------------------------------
 repo = newrepo()
 st(repo, "--append-log", "baseline")
