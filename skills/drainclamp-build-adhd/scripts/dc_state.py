@@ -988,6 +988,11 @@ def compact_check(root: Path) -> tuple[bool, str]:
     return True, ""
 
 
+def compact_line(safe: bool, why: str) -> str:
+    """The compact line exactly as the output contract says it; relay it verbatim."""
+    return "Compact: safe (state saved)" if safe else f"Compact: not yet: {why}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="dc_state.py", description=__doc__)
     parser.add_argument("--root", default=None)
@@ -1008,7 +1013,7 @@ def main() -> int:
     parser.add_argument("--resume-view", action="store_true",
                         help="read saved state with completed rows and older logs omitted")
     parser.add_argument("--compact-check", action="store_true",
-                        help="print 'COMPACT: safe' or 'COMPACT: not safe: <reason>'; exit 2 if not safe")
+                        help="print 'Compact: safe (state saved)' or 'Compact: not yet: <reason>'; exit 2 if not safe")
     parser.add_argument("--running", nargs=2, metavar=("add|done", "NAME"),
                         help="record background work the session started (or finished)")
     parser.add_argument("--pending-question", choices=("set", "clear"),
@@ -1024,7 +1029,7 @@ def main() -> int:
     root = _dcio.project_root(args.root)
     if args.compact_check:
         safe, why = compact_check(root)
-        print("COMPACT: safe" if safe else f"COMPACT: not safe: {why}")
+        print(compact_line(safe, why))
         return _dcio.EXIT_OK if safe else _dcio.EXIT_CHECK_FAILED
     if args.running or args.pending_question:
         if args.running and args.running[0] not in ("add", "done"):

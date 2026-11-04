@@ -47,11 +47,11 @@ def touch_future(path, secs=5):
 # --- state file ------------------------------------------------------------
 repo = newrepo()
 rc, out = verdict(repo)
-check("no state file: not safe", rc != 0 and out == "COMPACT: not safe: state file not saved", out)
+check("no state file: not safe", rc != 0 and out == "Compact: not yet: state file not saved", out)
 
 st(repo, "--append-log", "first step done")
 rc, out = verdict(repo)
-check("saved state, clean tree: safe", rc == 0 and out == "COMPACT: safe", out)
+check("saved state, clean tree: safe", rc == 0 and out == "Compact: safe (state saved)", out)
 check("output is exactly one line", len(st(repo, "--compact-check").stdout.splitlines()) == 1)
 
 cap = repo / ".agent" / "drainclamp-resume.md"
@@ -79,10 +79,10 @@ for n in ("a.txt", "b.txt"):
     touch_future(repo / n)
 rc, out = verdict(repo)
 check("2 untracked edits after log: not safe",
-      rc != 0 and out == "COMPACT: not safe: 2 edited files not logged", out)
+      rc != 0 and out == "Compact: not yet: 2 edited files not logged", out)
 (repo / "b.txt").unlink()
 rc, out = verdict(repo)
-check("1 edit: singular reason", out == "COMPACT: not safe: 1 edited file not logged", out)
+check("1 edit: singular reason", out == "Compact: not yet: 1 edited file not logged", out)
 st(repo, "--append-log", "logged a")
 os.utime(repo / "a.txt", (time.time() - 60, time.time() - 60))
 rc, out = verdict(repo)
@@ -111,7 +111,7 @@ def sidecar(review):
 
 sidecar({"rounds": [{"id": "R1", "milestone": "M1"}], "findings": []})
 rc, out = verdict(repo)
-check("open review round: not safe", rc != 0 and out == "COMPACT: not safe: Gate 6 round open", out)
+check("open review round: not safe", rc != 0 and out == "Compact: not yet: Gate 6 round open", out)
 sidecar({"rounds": [{"id": "R1", "milestone": "M1", "finished": "2026-01-01T00:00:00+00:00"}],
          "findings": [{"id": "F1", "status": "fixing"}]})
 rc, out = verdict(repo)
@@ -127,14 +127,14 @@ r = st(repo, "--running", "add", "build-x")
 check("--running add", r.returncode == 0, r.stderr.strip())
 rc, out = verdict(repo)
 check("background work running: not safe",
-      rc != 0 and out == "COMPACT: not safe: background work running: build-x", out)
+      rc != 0 and out == "Compact: not yet: background work running: build-x", out)
 st(repo, "--running", "add", "build-x")
 st(repo, "--running", "done", "build-x")
 rc, out = verdict(repo)
 check("running done (add twice is idempotent): safe", rc == 0, out)
 st(repo, "--pending-question", "set")
 rc, out = verdict(repo)
-check("pending question: not safe", rc != 0 and out == "COMPACT: not safe: question to the user pending", out)
+check("pending question: not safe", rc != 0 and out == "Compact: not yet: question to the user pending", out)
 st(repo, "--pending-question", "clear")
 rc, out = verdict(repo)
 check("question cleared: safe", rc == 0, out)

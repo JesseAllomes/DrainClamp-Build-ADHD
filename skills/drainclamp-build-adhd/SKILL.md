@@ -50,7 +50,7 @@ this skill, read-only `dca-scout` and the Gate 6 roster; `dc_selftest.py` tests 
 Action first; no preamble, recap, or closer; one question at a time; short bounded output. After a gap print exactly
 `Done: ...` / `In progress: ...` / `Next: ...` from durable state. End structured responses with current state and one
 next action under two minutes. `stop adhd mode` disables this. After each completed step (not mid-step, not on questions), print
-the one line from `dc_state.py --compact-check` (`Compact: safe ...` / `Compact: not yet: ...`); at a milestone boundary Gate 5's lines
+the one line `dc_state.py --compact-check` prints, verbatim (`Compact: safe ...` / `Compact: not yet: ...`); at a milestone boundary Gate 5's lines
 replace it. Auto-commit prints `COMMITTED: ...` or `NOT COMMITTED: ...`; relay it.
 
 Gate 5 may recommend a purge but cannot invoke it. With documented host compaction support say:

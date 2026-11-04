@@ -121,12 +121,12 @@ Take the verdict from the script, not from memory:
 dc_state.py --root R --compact-check
 ```
 
-It prints `COMPACT: safe` (exit 0) or `COMPACT: not safe: <first failing check>` (exit 2). Checks, in
+It prints `Compact: safe (state saved)` (exit 0) or `Compact: not yet: <first failing check>` (exit 2). Checks, in
 order: state file saved at its current generation (no write or lock pending); the last `DC:LOG` entry
 is newer than the last edit of any changed file outside `.agent/` (`2 edited files not logged`); no
 open `dc_review.py` round and no uncommitted Gate 6 fix; no background work you started still
-running; no question to the user whose answer is not on disk. Say `Compact: not yet: <reason>` with
-that reason; say `Compact: safe (state saved)` only on `safe`.
+running; no question to the user whose answer is not on disk. Relay the line as printed; never
+reword it or claim `safe` without it.
 
 The script cannot see host processes or the conversation, so the last two checks read a small record
 you keep in `.agent/drainclamp-compact.json`:
