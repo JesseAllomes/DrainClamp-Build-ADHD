@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -952,7 +953,7 @@ def autocommit_cfg(data: dict) -> dict:
     return cfg
 
 
-def _fast_verify_argv(root: Path) -> list[str]:
+def _fast_verify_argv(root: Path) -> tuple[list[str], str]:
     """First DC:VERIFY entry of the fast tier, or []."""
     text = _dcio.read_text(root / _dcio.AGENT_DIR_NAME / _dcio.STATE_NAME)
     try:
@@ -960,7 +961,56 @@ def _fast_verify_argv(root: Path) -> list[str]:
             dc_state.State.parse(text).sections["VERIFY"]) if text else []
     except DcError:
         entries = []
-    return next((list(e["argv"]) for e in entries if e["tier"] == "fast"), [])
+    for e in entries:
+        if e["tier"] == "fast":
+            return list(e["argv"]), e.get("cwd") or "."
+    return [], "."
+
+
+def split_cmd(cmd: str) -> list[str]:
+    """argv of a --verify-cmd string; Windows keeps backslashes in paths."""
+    if os.name != "nt":
+        return shlex.split(cmd)
+    return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
+            for p in shlex.split(cmd, posix=False)]
+
+
+APPROVED_NAME = "autocommit-approved.json"
+
+
+def _cmd_digest(root: Path, argv: list[str]) -> str:
+    raw = json.dumps({"root": str(root.resolve()), "argv": argv}, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _approved(home) -> list[str]:
+    try:
+        data = json.loads(_dcio.read_text(dc_registry.home_dir(home) / APPROVED_NAME) or "{}")
+    except ValueError:
+        return []
+    got = data.get("approved") if isinstance(data, dict) else None
+    return [d for d in got if isinstance(d, str)] if isinstance(got, list) else []
+
+
+def approve_cmd(root: Path, argv: list[str], home) -> None:
+    keep, dig = _approved(home), _cmd_digest(root, argv)
+    if dig not in keep:
+        path = dc_registry.home_dir(home) / APPROVED_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _dcio.atomic_write(path, json.dumps({"approved": keep + [dig]}, indent=2) + "\n")
+
+
+def _fast_clean_argv(root: Path, argv: list[str], cwd: str) -> tuple[list[str], str]:
+    import dc_verify  # lazy
+    if dc_verify.classify(argv) is None:
+        return [], f"fast-tier check {argv[0]} is not on the runner allowlist; approve one with config --verify-cmd"
+    try:
+        exe = dc_verify._resolved_executable(argv[0], _dcio.resolve_cwd(cwd, root))
+    except DcError as exc:
+        return [], str(exc)
+    if exe is None or _dcio.is_within(exe, _dcio.repo_root(root).resolve()):
+        return [], f"fast-tier check runner {argv[0]} is missing or inside the repository"
+    return [str(exe)] + list(argv[1:]), ""
 
 
 def start_step(root: Path, mid: str, cid: str = "") -> str:
@@ -1012,16 +1062,26 @@ def commit_step(root: Path, mid: str, cid: str = "", verified: bool = False,
     label = f"{mid}/{cid}" if cid else mid
     title = subject.strip() or f"Complete {label}: {goal}"
     clean_argv: list[str] = []
+    clean_cwd = "."
     if cfg["clean_tree"]:
-        clean_argv = (shlex.split(cfg["verify_cmd"]) if cfg["verify_cmd"]
-                      else _fast_verify_argv(root))
+        if cfg["verify_cmd"]:
+            clean_argv = split_cmd(cfg["verify_cmd"])
+            if clean_argv and _cmd_digest(root, clean_argv) not in _approved(home):
+                return ["NOT COMMITTED: the clean-tree command was not set on this machine; "
+                        "re-set it with config --verify-cmd to approve it"]
+        else:
+            clean_argv, clean_cwd = _fast_verify_argv(root)
+            if clean_argv:
+                clean_argv, why = _fast_clean_argv(root, clean_argv, clean_cwd)
+                if why:
+                    return [f"NOT COMMITTED: {why}"]
         if not clean_argv:
             return ["NOT COMMITTED: clean-tree check is on but there is no command "
                     "(set config --verify-cmd or a fast-tier DC:VERIFY entry)"]
     branch = f"dc/{slugify(root.name) or 'project'}-{mid}"
     lines = _dcio.auto_commit(root, paths, title, trailers, branch=branch,
                               review_required=cfg["review_required"],
-                              clean_argv=clean_argv, home=home)
+                              clean_argv=clean_argv, clean_cwd=clean_cwd, home=home)
     if lines[0].startswith("COMMITTED"):
         short = lines[0].split()[1]
 
@@ -1216,6 +1276,12 @@ def _pick_next(s: dict) -> str | None:
 FINAL = "INTAKE: final card - ok, or what to change (then: intake ok)"
 
 
+def _disc_list(s: dict) -> list[str]:
+    """Every item deferred to m0 discovery, in card order."""
+    return [_qtext(s["items"][k]) for k in _order(s)
+            if k in s["items"] and s["items"][k]["disc"]]
+
+
 def _finish(s: dict, capped: bool) -> list[str]:
     """Close the intake: unresolved Blocking -> m0 discovery, Shaping -> assumed defaults."""
     disc = []
@@ -1229,8 +1295,9 @@ def _finish(s: dict, capped: bool) -> list[str]:
                 disc.append(_qtext(it))
         elif it["cls"] == "shaping":
             it["ans"], it["src"] = it["rec"], "assumed"
-    s["cur"], s["done"], s["discovery"] = None, True, disc
-    head = [f"INTAKE: cap {INTAKE_CAPS[s['tier']]} reached; m0 " + intake_m0(disc)] if disc else []
+    s["cur"], s["done"], s["discovery"] = None, True, _disc_list(s)
+    head = ([f"INTAKE: cap {INTAKE_CAPS[s['tier']]} reached; m0 " + intake_m0(s["discovery"])]
+            if disc else [])
     return head + intake_card(s, FINAL)
 
 
@@ -1263,6 +1330,11 @@ def intake_record(s: dict, key: str, text: str, source: str) -> list[str]:
         raise DcError(f"unknown intake item {key}")
     it = s["items"][key]
     t = _s(text)
+    if t == "3" and source == "user" and it["cls"] == "blocking" and it["reasked"] >= 1:
+        it["ans"], it["src"], it["disc"] = None, None, True  # re-ask option 3: m0 discovery
+        if s["cur"] == key:
+            s["cur"] = None
+        return intake_turn(s)
     if t in ("1", "2") and source == "user":
         t = it["rec"] if t == "1" else it["alt"]
     elif t.lower().strip(" .!") in VAGUE and source == "user" and it["cls"] == "blocking":
@@ -1310,9 +1382,9 @@ def intake_add(s: dict, text: str, cls: str) -> list[str]:
 
 def intake_write(root: Path, agent: Path, s: dict, name: str = "") -> list[str]:
     """Write the answers through the charter schema; return the DC:DECISIONS lines."""
+    if _open(s, "blocking") or _pm_pending(s):
+        raise DcError("Blocking items are still open; run `intake next`, or `intake rest`")
     if not s["done"]:
-        if _open(s, "blocking") or _pm_pending(s):
-            raise DcError("Blocking items are still open; run `intake next`, or `intake rest`")
         _finish(s, False)
     path = agent / CHARTER_NAME
     raw_file = {}
@@ -1335,7 +1407,7 @@ def intake_write(root: Path, agent: Path, s: dict, name: str = "") -> list[str]:
         c["stakeholders"] = ans("2")
     if ans("3"):
         mvp, _, out = ans("3").partition("|")
-        if mvp.strip():
+        if mvp.strip() and mvp.strip() not in _s(c.get("milestones")).splitlines():
             c["milestones"] = (mvp.strip() + "\n" + _s(c.get("milestones"))).strip()
         if out.strip():
             c["out_of_scope"] = out.strip()
@@ -1348,18 +1420,21 @@ def intake_write(root: Path, agent: Path, s: dict, name: str = "") -> list[str]:
         c["acceptance"] = _s(c.get("acceptance")) or ans("6")
     risks = list(c.get("risks") or [])
     for k in ("7", "pm"):
-        if ans(k):
+        if ans(k) and not any(isinstance(r, dict) and r.get("risk") == ans(k) for r in risks):
             risks.append({"risk": ans(k), "likelihood": "Med", "impact": "Med",
                           "guardrail": "manual fallback" if k == "7" else ""})
     if risks:
         c["risks"] = risks
     extra = [f"{_short(v['q'], 80)} -> {v['ans']}" for k, v in it.items()
              if k.startswith("x") and v["src"] and v["ans"]]
+    have = _s(c.get("assumptions")).splitlines()
+    extra = [e for e in extra if e not in have]
     if extra:
-        c["assumptions"] = "\n".join(([_s(c.get("assumptions"))] if _s(c.get("assumptions")) else [])
-                                     + extra)
+        c["assumptions"] = "\n".join(have + extra)
     if s.get("discovery"):
-        c["milestones"] = (f"m0 {intake_m0(s['discovery'])}\n" + _s(c.get("milestones"))).strip()
+        kept = [ln for ln in _s(c.get("milestones")).splitlines()
+                if not ln.startswith("m0 discovery")]
+        c["milestones"] = "\n".join([f"m0 {intake_m0(s['discovery'])}"] + kept).strip()
     c["name"] = _s(c.get("name")) or _s(name) or root.name
     clean = clean_charter(c)
     _dcio.atomic_write(path, json.dumps(
@@ -1404,7 +1479,7 @@ def intake_command(root: Path, agent: Path, args) -> list[str]:
             v = s["items"].get(k)
             if v and not _resolved(v) and v["cls"] != "skip" and k != "pm":
                 v["ans"], v["src"] = v["rec"], "assumed"
-        s["cur"], s["done"], s["discovery"] = None, True, []
+        s["cur"], s["done"], s["discovery"] = None, True, _disc_list(s)
         out = intake_card(s, FINAL)
     elif op == "rec":
         key, _, text = words.partition(" ")
@@ -1601,6 +1676,8 @@ def main() -> int:
                 cfg["review_required"] = args.review_required == "on"
             if args.verify_cmd is not None:
                 cfg["verify_cmd"] = args.verify_cmd.strip()
+                if cfg["verify_cmd"]:
+                    approve_cmd(root, split_cmd(cfg["verify_cmd"]), args.home)
             data["autocommit"] = cfg
             return data
 

@@ -781,10 +781,14 @@ def dirty_files(root: Path) -> dict[str, str]:
         if len(entry) < 4:
             continue
         code, rel = entry[:2], entry[3:]
+        old = ""
         if code[0] in "RC":
+            old = parts[i] if i < len(parts) else ""
             i += 1  # the old name follows
         if not _in_agent_dir(rel, prefix):
             found[rel] = code
+        if code[0] == "R" and old and old.startswith(prefix) and not _in_agent_dir(old, prefix):
+            found.setdefault(old, "D ")  # the rename's deletion belongs with its new name
     return found
 
 
@@ -800,6 +804,13 @@ def _under(rel: str, targets: list[str]) -> bool:
     return any(rel == t or rel.startswith(t.rstrip("/") + "/") for t in targets)
 
 
+def _target_rel(target: str) -> str:
+    t = target.replace("\\", "/")
+    while t.startswith("./"):
+        t = t[2:]
+    return t
+
+
 def step_candidates(root: Path, snapshot: dict, targets: list[str] | None = None
                     ) -> tuple[list[str], int, list[str]]:
     """(paths to commit, pre-dirty files still dirty, new-dirty paths outside the targets).
@@ -810,7 +821,7 @@ def step_candidates(root: Path, snapshot: dict, targets: list[str] | None = None
     prefix = git_prefix(root)
     before = set(snapshot.get("files", {}))
     now = dirty_files(root)
-    wanted = [prefix + t.replace("\\", "/").lstrip("./") for t in (targets or [])]
+    wanted = [prefix + _target_rel(t) for t in (targets or [])]
     keep, outside = [], []
     for rel in sorted(now):
         if rel in before:
@@ -841,7 +852,8 @@ def _rmtree(path: Path) -> None:
     shutil.rmtree(path, onerror=onerror)
 
 
-def _clean_tree(top: Path, prefix: str, commit: str, argv: list[str], scratch: Path) -> str | None:
+def _clean_tree(top: Path, prefix: str, commit: str, argv: list[str], scratch: Path,
+                sub: str = ".") -> str | None:
     """Run `argv` in a temporary worktree at `commit`. None on pass, else the reason."""
     check_repo_argv(argv)
     hooks = scratch / "nohooks"
@@ -852,7 +864,10 @@ def _clean_tree(top: Path, prefix: str, commit: str, argv: list[str], scratch: P
     if rc != 0:
         return f"clean-tree worktree failed: {collapse(err)}"
     try:
-        cwd = wt / prefix if prefix else wt
+        base = wt / prefix if prefix else wt
+        cwd = (base / sub).resolve() if sub not in ("", ".") else base
+        if not is_within(cwd, wt.resolve()) or not cwd.is_dir():
+            return f"clean-tree cwd {sub} is not a folder in the new commit"
         try:
             proc = subprocess.run(argv, cwd=str(cwd), capture_output=True,
                                   timeout=CLEAN_TREE_TIMEOUT, stdin=subprocess.DEVNULL)
@@ -880,9 +895,9 @@ def _pii_hits(top: Path, paths: list[str], env: dict, message: str,
     allow = dc_pii.parse_allow(read_text(top / dc_pii.ALLOW_FILE))
     hits: list[dict] = []
     rc, head, _ = _git(top, "rev-parse", "--verify", "-q", "HEAD")
-    base = head.strip() if rc == 0 else EMPTY_TREE
+    base = [head.strip()] if rc == 0 else []  # unborn branch: --cached already diffs vs empty
     rc, diff, err = _git(top, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff",
-                         "--no-textconv", "-M", base, env=env)
+                         "--no-textconv", "-M", *base, env=env)
     if rc != 0:
         raise DcError(f"git diff failed: {collapse(err)}")
     files, binaries = dc_pii.added_by_file(diff)
@@ -902,7 +917,8 @@ def _pii_hits(top: Path, paths: list[str], env: dict, message: str,
 
 def auto_commit(root: Path, paths: list[str], subject: str, trailers: list[str] | None = None,
                 branch: str = "", review_required: bool | None = None,
-                clean_argv: list[str] | None = None, home: str | None = None) -> list[str]:
+                clean_argv: list[str] | None = None, clean_cwd: str = ".",
+                home: str | None = None) -> list[str]:
     """Commit exactly `paths` (repo-relative). See the block comment above for the guards."""
     def no(reason: str) -> list[str]:
         return [f"NOT COMMITTED: {reason}"]
@@ -971,6 +987,13 @@ def auto_commit(root: Path, paths: list[str], subject: str, trailers: list[str] 
         target = current
         if branch and _review_required(top, review_required) and current in _default_branch(top):
             target = branch
+        exists = False
+        if target != current:
+            rc_b, tip, _ = _git(top, "rev-parse", "--verify", "-q", f"refs/heads/{target}")
+            exists = rc_b == 0
+            if exists and (not has_head or tip.strip() != head.strip()):
+                return no(f"work branch {target} already exists at another commit; switch to it "
+                          f"(git switch {target}) and re-run, so the checked tree is the committed tree")
         if clean_argv:
             rc, tree, err = _git(top, "write-tree", env=env)
             cmt = ""
@@ -981,11 +1004,17 @@ def auto_commit(root: Path, paths: list[str], subject: str, trailers: list[str] 
                 rc, cmt, err = _git(top, *cargs)
             if rc != 0:
                 return no(f"could not build the candidate commit: {collapse(err)}")
-            why = _clean_tree(top, git_prefix(root), cmt.strip(), clean_argv, scratch)
+            why = _clean_tree(top, git_prefix(root), cmt.strip(), clean_argv, scratch, clean_cwd)
             if why:
                 return no(why)
+        env2 = {"GIT_INDEX_FILE": str(scratch / "index2")}  # re-stage: what is committed is what was scanned
+        rc, _, err = _git(top, "read-tree", "HEAD" if has_head else "--empty", env=env2)
+        if rc == 0:
+            rc, _, err = _git(top, "add", "--", *paths, env=env2)
+        scanned, now = _git(top, "write-tree", env=env), _git(top, "write-tree", env=env2)
+        if rc != 0 or scanned[0] != 0 or now[0] != 0 or scanned[1].strip() != now[1].strip():
+            return no("the step's files changed after the PII scan; re-run the commit")
         if target != current:
-            exists = _git(top, "rev-parse", "--verify", "-q", f"refs/heads/{target}")[0] == 0
             rc, _, err = _git(top, "checkout", *([] if exists else ["-b"]), target)
             if rc != 0:
                 return no(f"could not switch to work branch {target}: {collapse(err)}")
@@ -1005,6 +1034,10 @@ def auto_commit(root: Path, paths: list[str], subject: str, trailers: list[str] 
                 continue
             if new_paths:  # leave nothing of ours staged
                 _git(top, "restore", "--staged", "--", *new_paths)
+            if target != current:  # back to the start branch; same tip, tree untouched
+                _git(top, "symbolic-ref", "HEAD", f"refs/heads/{current}")
+                if not exists:
+                    _git(top, "branch", "-D", target)
             return no(f"git commit refused: {collapse(err) or 'no reason given'}")
         _, short, _ = _git(top, "rev-parse", "--short", "HEAD")
         _, names, _ = _git(top, "diff-tree", "--no-commit-id", "--name-only", "-r",

@@ -285,5 +285,241 @@ rc, out = proj(rh, "commit", "--milestone", "m1", "--verified")
 check("milestone without chunks commits", out.startswith("COMMITTED:")
       and "Complete m1: build" in out, out)
 
+def refuse_hook(root):
+    hook = root / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho blocked by hook >&2\nexit 1\n", encoding="ascii", newline="\n")
+    os.chmod(hook, 0o755)
+
+
+# -- r93: a refused commit on a review-required repo returns to the start branch
+r93 = make_repo("ac-r93", codeowners=True)
+add_chunk(r93)
+start(r93)
+write(r93, "a.py", "x = 2\n")
+refuse_hook(r93)
+rc, out = commit(r93, "--verified")
+check("(r93) hook refusal -> back on main, no work branch left",
+      out.startswith("NOT COMMITTED: git commit refused")
+      and git(r93, "branch", "--show-current") == "main"
+      and git(r93, "branch", "--list", "dc/ac-r93-m1") == "", out)
+
+# -- r92: an edit after the scan is never committed unscanned
+import _dcio  # noqa: E402
+r92 = make_repo("ac-r92")
+write(r92, "a.py", "x = 2\n")
+real_clean = _dcio._clean_tree
+
+
+def racing_clean(top, prefix, commit, argv, scratch, sub="."):
+    write(r92, "a.py", "x = 3  # edited after the scan\n")
+    return None
+
+
+_dcio._clean_tree = racing_clean
+try:
+    out92 = _dcio.auto_commit(r92, ["a.py"], "race", clean_argv=[PY, "-c", "pass"], home=str(home))
+finally:
+    _dcio._clean_tree = real_clean
+check("(r92) an edit after the scan blocks the commit",
+      out92[0].startswith("NOT COMMITTED: the step's files changed after the PII scan")
+      and git(r92, "rev-list", "--count", "HEAD") == "1", out92)
+
+# -- r108: an existing work branch at another commit is refused, main untouched
+r108 = make_repo("ac-r108", codeowners=True)
+git(r108, "checkout", "-q", "-b", "dc/ac-r108-m1")
+write(r108, "b.py", "y = 5\n")
+git(r108, "commit", "-q", "-am", "older branch work")
+git(r108, "checkout", "-q", "main")
+add_chunk(r108)
+start(r108)
+write(r108, "a.py", "x = 2\n")
+m108 = head(r108)
+rc, out = commit(r108, "--verified")
+check("(r108) work branch at another commit -> no commit",
+      out.startswith("NOT COMMITTED: work branch dc/ac-r108-m1 already exists")
+      and head(r108) == m108 and git(r108, "branch", "--show-current") == "main", out)
+
+# -- r105: a Windows backslash path in --verify-cmd survives
+if os.name == "nt":
+    r105 = make_repo("ac-r105", extra={"tools/chk.py": "import os, sys\nsys.exit(0 if os.path.isfile('a.py') else 1)\n"})
+    add_chunk(r105)
+    start(r105)
+    write(r105, "a.py", "x = 2\n")
+    proj(r105, "config", "--clean-tree", "on", "--verify-cmd", f'"{PY}" tools\\chk.py')
+    rc, out = commit(r105, "--verified")
+    check("(r105) backslash path in --verify-cmd runs as written", out.startswith("COMMITTED:"), out)
+else:
+    check("(r105) backslash path check is Windows-only (skipped)", True)
+
+EMPTY_VERIFY = "```json\n[]\n```"
+
+
+def set_verify(root, payload):
+    path = root / ".agent" / "drainclamp-state.md"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        EMPTY_VERIFY, "```json\n" + json.dumps(payload) + "\n```"), encoding="utf-8")
+
+
+# -- r110: the fast entry's cwd is kept and the clean-tree check runs there
+import _dcio  # noqa: E402
+import dc_project  # noqa: E402
+r110 = make_repo("ac-r110", extra={"web/marker": "m\n"})
+set_verify(r110, [{"id": "q", "argv": [PY, "-c", "print(1)"], "cwd": "web", "tier": "fast"}])
+got110 = dc_project._fast_verify_argv(r110)
+check("(r110) fast entry keeps its cwd", got110 == ([PY, "-c", "print(1)"], "web"), got110)
+probe = [sys.executable, "-c", "exit(0 if __import__('os').path.isfile('marker') else 1)"]
+why_web = _dcio._clean_tree(r110, "", head(r110), probe, Path(tempfile.mkdtemp(prefix="dcr110-")), "web")
+why_top = _dcio._clean_tree(r110, "", head(r110), probe, Path(tempfile.mkdtemp(prefix="dcr110-")), ".")
+check("(r110) clean-tree runs in the entry's cwd", why_web is None, why_web)
+check("(r110) and not at the root", (why_top or "").startswith("clean-tree check failed"), why_top)
+
+# -- r103: dot-leading targets keep their dot
+r103 = make_repo("ac-r103", extra={".github/workflows/ci.yml": "on: push\n"})
+add_chunk(r103, ".github/workflows/ci.yml;./a.py")
+start(r103)
+write(r103, ".github/workflows/ci.yml", "on: [push]\n")
+write(r103, "a.py", "x = 2\n")
+rc, out = commit(r103, "--verified")
+check("(r103) dot-leading and ./ targets are committed",
+      out.startswith("COMMITTED:") and "LEFT" not in out
+      and head_files(r103) == [".github/workflows/ci.yml", "a.py"], out)
+
+# -- r109: a staged rename commits both names
+r109 = make_repo("ac-r109", extra={"src/old.py": "o = 1\n"})
+add_chunk(r109, "src")
+start(r109)
+git(r109, "mv", "src/old.py", "src/new.py")
+rc, out = commit(r109, "--verified")
+check("(r109) rename commits the deletion too",
+      out.startswith("COMMITTED:") and head_files(r109) == ["src/new.py", "src/old.py"]
+      and git(r109, "status", "--porcelain") == "", out)
+
+# -- r95: clean-tree on with no command
+r95 = make_repo("ac-r95")
+proj(r95, "config", "--clean-tree", "on")
+add_chunk(r95)
+start(r95)
+write(r95, "a.py", "x = 2\n")
+h95 = head(r95)
+rc, out = commit(r95, "--verified")
+check("(r95) clean-tree on with no command -> no commit",
+      out.startswith("NOT COMMITTED: clean-tree check is on but there is no command")
+      and head(r95) == h95, out)
+
+# -- r91: a sidecar-only clean-tree command never runs; a non-allowlisted fast entry neither
+r91 = make_repo("ac-r91")
+add_chunk(r91)
+start(r91)
+write(r91, "a.py", "x = 2\n")
+sp = r91 / ".agent" / "drainclamp-project.json"
+sd = json.loads(sp.read_text(encoding="utf-8"))
+sd["autocommit"] = {"enabled": True, "clean_tree": True, "review_required": False,
+                    "verify_cmd": f'"{PY}" -c "import a"'}
+sp.write_text(json.dumps(sd), encoding="utf-8")
+rc, out = commit(r91, "--verified")
+check("(r91) sidecar-only command refused", out.startswith("NOT COMMITTED: the clean-tree command was not set"), out)
+proj(r91, "config", "--verify-cmd", f'"{PY}" -c "import a"')
+rc, out = commit(r91, "--verified")
+check("(r91) same command set with config commits", out.startswith("COMMITTED:"), out)
+r91b = make_repo("ac-r91b")
+set_verify(r91b, [{"id": "q", "argv": [PY, "-c", "import a"], "cwd": ".", "tier": "fast"}])
+proj(r91b, "config", "--clean-tree", "on")
+add_chunk(r91b)
+start(r91b)
+write(r91b, "a.py", "x = 2\n")
+rc, out = commit(r91b, "--verified")
+check("(r91) non-allowlisted fast entry refused", "not on the runner allowlist" in out, out)
+
+# -- r96: clean-tree not-found, timeout and worktree failure
+import _dcio  # noqa: E402
+r96 = make_repo("ac-r96")
+add_chunk(r96)
+start(r96)
+write(r96, "a.py", "x = 2\n")
+proj(r96, "config", "--clean-tree", "on", "--verify-cmd", "dc-no-such-tool-xyz --check")
+rc, out = commit(r96, "--verified")
+check("(r96) missing clean-tree command -> no commit",
+      out.startswith("NOT COMMITTED: clean-tree command not found: dc-no-such-tool-xyz"), out)
+saved_timeout = _dcio.CLEAN_TREE_TIMEOUT
+_dcio.CLEAN_TREE_TIMEOUT = 1
+try:
+    why = _dcio._clean_tree(r96, "", head(r96), [sys.executable, "-c", "__import__('time').sleep(10)"],
+                            Path(tempfile.mkdtemp(prefix="dcr96-")))
+finally:
+    _dcio.CLEAN_TREE_TIMEOUT = saved_timeout
+check("(r96) slow clean-tree check times out", why == "clean-tree check timed out", why)
+why = _dcio._clean_tree(r96, "", "0" * 40, [sys.executable, "-c", "pass"],
+                        Path(tempfile.mkdtemp(prefix="dcr96-")))
+check("(r96) bad commit -> worktree failure reported", (why or "").startswith("clean-tree worktree failed"), why)
+check("(r96) no worktree left behind", len(git(r96, "worktree", "list").splitlines()) == 1,
+      git(r96, "worktree", "list"))
+
+# -- r97: a held index.lock
+r97 = make_repo("ac-r97")
+add_chunk(r97)
+start(r97)
+write(r97, "a.py", "x = 2\n")
+h97 = head(r97)
+lock = r97 / ".git" / "index.lock"
+lock.write_text("", encoding="ascii")
+try:
+    rc, out = commit(r97, "--verified")
+finally:
+    lock.unlink()
+check("(r97) held index.lock -> no commit",
+      out.startswith("NOT COMMITTED: the git index is locked") and head(r97) == h97, out)
+
+# -- r98: a hook refusal is reported and leaves nothing of ours staged
+r98 = make_repo("ac-r98")
+add_chunk(r98)
+start(r98)
+write(r98, "a.py", "x = 2\n")
+write(r98, "new.py", "z = 1\n")
+refuse_hook(r98)
+h98 = head(r98)
+rc, out = commit(r98, "--verified")
+check("(r98) hook refusal -> NOT COMMITTED, new file unstaged",
+      out.startswith("NOT COMMITTED: git commit refused") and head(r98) == h98
+      and "new.py" not in git(r98, "diff", "--cached", "--name-only"), out)
+
+# -- r99: chunk start refuses an unknown milestone
+r99 = make_repo("ac-r99")
+rc, out = proj(r99, "chunk", "start", "--milestone", "m99")
+check("(r99) unknown milestone -> refused", rc != 0 and "m99 is not in DC:ROADMAP" in out, out)
+
+# -- r100: the first step of a repo with no commit yet
+r100 = tmp / "ac-r100"
+(r100 / ".agent").mkdir(parents=True, exist_ok=True)
+subprocess.run(["git", "init", "-q", "-b", "main", str(r100)], check=True)
+git(r100, "config", "user.name", "Builder")
+git(r100, "config", "user.email", "builder@example.com")
+git(r100, "config", "core.autocrlf", "false")
+(r100 / ".agent" / "drainclamp-state.md").write_text(dc_state.template_text().replace(
+    "<!-- DC:ROADMAP -->\n| id | goal | files | status |\n|---|---|---|---|\n",
+    "<!-- DC:ROADMAP -->\n| id | goal | files | status |\n|---|---|---|---|\n"
+    "| m1 | build | a.py | active |\n"), encoding="utf-8")
+write(r100, ".gitignore", ".agent/\n")
+add_chunk(r100)
+start(r100)
+write(r100, "a.py", "x = 1\n")
+write(r100, "new.py", "z = 1\n")
+rc, out = commit(r100, "--verified")
+check("(r100) no-HEAD repo: first step is the root commit",
+      out.startswith("COMMITTED:") and git(r100, "rev-list", "--count", "HEAD") == "1"
+      and sorted(git(r100, "show", "--name-only", "--format=", "HEAD").splitlines()) == ["a.py", "new.py"],
+      out)
+
+# -- r101: an existing work branch at HEAD is reused
+r101 = make_repo("ac-r101", codeowners=True)
+git(r101, "branch", "dc/ac-r101-m1")
+add_chunk(r101)
+start(r101)
+write(r101, "a.py", "x = 2\n")
+tip101 = head(r101)
+rc, out = commit(r101, "--verified")
+check("(r101) existing work branch at HEAD is checked out and committed to",
+      out.startswith("COMMITTED:") and git(r101, "branch", "--show-current") == "dc/ac-r101-m1"
+      and git(r101, "rev-parse", "main") == tip101, out)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

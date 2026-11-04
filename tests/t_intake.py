@@ -158,6 +158,7 @@ while out.startswith("Q") and n < 12:
     rc, out = run(r, "default")
 check("build tier stops at 8 questions", n == 8 and not out.startswith("Q"), f"n={n}")
 check("cap output names the m0 discovery milestone", "m0 discovery" in out and "cap 8" in out, out)
+run(r, "next")  # showing the final card again must keep the m0 questions
 rc, out = run(r, "ok")
 c = charter_of(r)
 check("m0 discovery is the first milestone line", c["milestones"].startswith("m0 discovery"), c["milestones"])
@@ -205,6 +206,30 @@ check("charter command unchanged", proc.stdout.startswith("CHARTER: Thin"), proc
 
 # 12. line discipline
 check("question turn stays within 3 lines", len(run(make("lines", THIN), "next")[1].splitlines()) <= 3)
+
+# 13. re-ask option 3 sends the item to m0 discovery
+r = make("disc3", THIN)
+run(r, "next")
+run(r, "answer", "4", "not sure")
+rc, out = run(r, "answer", "4", "3")
+check("re-ask option 3 moves on", out.startswith("Q2"), out)
+run(r, "rest")
+rc, out = run(r, "ok")
+c = charter_of(r)
+check("re-ask option 3 lands in m0 discovery, not as an answer",
+      c["milestones"].startswith("m0 discovery") and "Inputs" in c["milestones"]
+      and c.get("data") != ["3"] and "-> 3" not in out, (c.get("milestones"), out))
+rc, out = run(r, "ok")
+check("a second ok leaves the charter unchanged", rc == 0 and charter_of(r) == c, charter_of(r))
+
+# 14. a Blocking item flagged after the final card still blocks ok
+r = make("lateflag", {**FULL, "success": ""})
+run(r, "next")
+rc, out = run(r, "answer", "6", "totals match on the sample file")
+check("late flag: final card reached first", "final card" in out, out)
+run(r, "flag", "personal-data")
+rc, out = run(r, "ok")
+check("ok refused after a late Blocking flag", rc != 0 and "still open" in out, out)
 
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

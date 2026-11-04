@@ -56,11 +56,11 @@ or `NOT COMMITTED: <reason>`.
   already edited at `chunk start` is never committed; another session's staged files never ride along.
 - Not committed, with a one-line reason: verify failed or skipped, PII hit (kinds and paths only),
   merge, rebase, cherry-pick or bisect in progress, detached HEAD, locked index, a file over 5 MB or a
-  new binary (needs the user's go), opt-out (`--autocommit off`), no `chunk start` snapshot.
+  new binary (needs the user's go), opt-out (`--autocommit off`), no `chunk start` snapshot, a step file edited after the PII scan.
 - CODEOWNERS (root, `.github/`, `docs/`) or `--review-required on`, on the default branch: the commit
-  goes to `dc/<project>-<milestone>` and the output says `PR needed`.
+  goes to `dc/<project>-<milestone>` and the output says `PR needed`. If that branch already exists at another commit, nothing is committed: switch to it first.
 - `--clean-tree on`: the fast check runs in a temporary worktree at the candidate commit first, so a
-  pass cannot depend on an uncommitted file.
+  pass cannot depend on an uncommitted file. The command is `--verify-cmd` (approved on this machine when set; a sidecar-only value is refused) or the first fast-tier `DC:VERIFY` entry: an allowlisted runner outside the repo, run in its `cwd`.
 - Never pushes, tags, deploys, resets or skips hooks. A hook refusal is reported as is. Undo is `git revert`.
 
 ## Reading
