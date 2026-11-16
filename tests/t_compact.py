@@ -268,5 +268,63 @@ check("hook body silent when not safe", r.returncode == 0 and not r.stdout.strip
 r = py("dc_install.py", "--compact-hook", stdin="")
 check("hook body without a project is a quiet no-op", r.returncode == 0 and not r.stdout.strip())
 
+# --- m47: SessionStart(clear) resume hook --------------------------------------
+def resume_groups(data):
+    return [g for g in data.get("hooks", {}).get("SessionStart", [])
+            if "--resume-hook-run" in json.dumps(g)]
+
+
+foreign_start = {"matcher": "startup", "hooks": [{"type": "command", "command": "echo start"}]}
+cfg.write_text(json.dumps({"model": "x-model", "hooks": {"SessionStart": [foreign_start]}}), encoding="utf-8")
+inst("--compact-reminder", "on")
+r = inst("--resume-hook")
+data = json.loads(cfg.read_text(encoding="utf-8"))
+check("m47: --resume-hook installs one SessionStart(clear) group", r.returncode == 0
+      and len(resume_groups(data)) == 1 and resume_groups(data)[0]["matcher"] == "clear", r.stdout + r.stderr)
+check("m47: resume hook keeps foreign SessionStart and our Notification hook",
+      foreign_start in data["hooks"]["SessionStart"] and len(ours(data)) == 1)
+first = cfg.read_text(encoding="utf-8")
+r = inst("--resume-hook", "on")
+check("m47: resume hook on twice is idempotent",
+      cfg.read_text(encoding="utf-8") == first and "already on" in r.stdout, r.stdout)
+r = inst("--resume-hook", "off")
+data = json.loads(cfg.read_text(encoding="utf-8"))
+check("m47: resume hook off removes only ours", not resume_groups(data)
+      and data["hooks"]["SessionStart"] == [foreign_start] and len(ours(data)) == 1, r.stdout)
+r = inst("--resume-hook", "off")
+check("m47: resume hook off twice is idempotent", "already off" in r.stdout, r.stdout)
+r = inst("--resume-hook", "on", "--dry-run")
+check("m47: resume hook dry run writes nothing",
+      "DRY-RUN" in r.stdout and not resume_groups(json.loads(cfg.read_text(encoding="utf-8"))), r.stdout)
+
+repo = newrepo()
+st(repo, "--append-log", "baseline")
+hook_env = dict(TEST_ENV)
+hook_env.pop("CLAUDE_PROJECT_DIR", None)
+
+
+def run_hook(stdin):
+    return py("dc_install.py", "--resume-hook-run", stdin=stdin, env=hook_env)
+
+
+r = run_hook(json.dumps({"cwd": str(repo), "source": "clear"}))
+check("m47: no marker: hook prints nothing", r.returncode == 0 and not r.stdout.strip(), r.stdout + r.stderr)
+dc_state.mark_resume(repo)
+r = run_hook(json.dumps({"cwd": str(repo / ".agent"), "source": "clear"}))
+check("m47: fresh marker: hook prints the capsule and the resume prompt", r.returncode == 0
+      and "DRAINCLAMP NEXT:" in r.stdout and "Resume DrainClamp: run python" in r.stdout
+      and len(r.stdout) < 10000, r.stdout + r.stderr)
+check("m47: the marker is used once", not (repo / ".agent" / "drainclamp-resume.json").exists())
+r = run_hook(json.dumps({"cwd": str(repo), "source": "clear"}))
+check("m47: second /clear prints nothing", r.returncode == 0 and not r.stdout.strip(), r.stdout)
+(repo / ".agent" / "drainclamp-resume.json").write_text(
+    json.dumps({"schema": 1, "at": "2020-01-01T00:00:00+00:00", "root": "x"}), encoding="utf-8")
+r = run_hook(json.dumps({"cwd": str(repo), "source": "clear"}))
+check("m47: stale marker prints nothing", r.returncode == 0 and not r.stdout.strip(), r.stdout)
+for bad in ("", "{bad", json.dumps({"cwd": str(Path(tempfile.mkdtemp()))})):
+    r = run_hook(bad)
+    check(f"m47: hook quiet no-op on {bad[:12]!r}", r.returncode == 0 and not r.stdout.strip(),
+          r.stdout + r.stderr)
+
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

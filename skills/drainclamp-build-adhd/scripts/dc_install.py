@@ -826,19 +826,20 @@ def claude_settings_path(home: Path, explicit_home: bool) -> Path:
     return home / ".claude" / "settings.json"
 
 
-def _ours(group) -> bool:
+def _ours(group, mark: str = HOOK_MARK) -> bool:
     return isinstance(group, dict) and any(
-        isinstance(h, dict) and HOOK_MARK in str(h.get("command", ""))
+        isinstance(h, dict) and mark in str(h.get("command", ""))
         for h in group.get("hooks") or [])
 
 
-def hook_command() -> str:
+def hook_command(mark: str = HOOK_MARK) -> str:
     exe = Path(sys.executable).as_posix()
-    return f'"{exe}" "{Path(__file__).resolve().as_posix()}" {HOOK_MARK}'
+    return f'"{exe}" "{Path(__file__).resolve().as_posix()}" {mark}'
 
 
-def compact_reminder(path: Path, on: bool) -> tuple[str, str]:
-    """Add or remove our Notification hook. Idempotent; every other key is preserved."""
+def _toggle_hook(path: Path, event: str, matcher: str, mark: str, on: bool,
+                 label: str, note: str = "") -> tuple[str, str]:
+    """Add or remove one of our hook groups. Idempotent; every other key is preserved."""
     raw = _dcio.read_text(path)
     try:
         data = json.loads(raw) if raw and raw.strip() else {}
@@ -851,36 +852,84 @@ def compact_reminder(path: Path, on: bool) -> tuple[str, str]:
         hooks = {}
     if not isinstance(hooks, dict):
         raise DcError(f"{path} `hooks` is not an object; left untouched")
-    groups = hooks.get("Notification")
+    groups = hooks.get(event)
     if groups is None:
         groups = []
     if not isinstance(groups, list):
-        raise DcError(f"{path} `hooks.Notification` is not a list; left untouched")
-    others = [g for g in groups if not _ours(g)]
-    ours = [g for g in groups if _ours(g)]
+        raise DcError(f"{path} `hooks.{event}` is not a list; left untouched")
+    others = [g for g in groups if not _ours(g, mark)]
+    ours = [g for g in groups if _ours(g, mark)]
+    tail = f". {note}" if note else ""
     if on:
-        entry = {"matcher": "idle_prompt",
-                 "hooks": [{"type": "command", "command": hook_command()}]}
+        entry = {"matcher": matcher, "hooks": [{"type": "command", "command": hook_command(mark)}]}
         if ours == [entry]:
-            return "OK", f"compact reminder already on in {path}. {IDLE_DELAY_NOTE}"
-        hooks["Notification"] = others + [entry]
+            return "OK", f"{label} already on in {path}{tail}"
+        hooks[event] = others + [entry]
         data["hooks"] = hooks
-        message = f"compact reminder on in {path}. {IDLE_DELAY_NOTE}"
+        message = f"{label} on in {path}{tail}"
     else:
         if not ours:
-            return "OK", f"compact reminder already off in {path}"
+            return "OK", f"{label} already off in {path}"
         if others:
-            hooks["Notification"] = others
+            hooks[event] = others
         else:
-            hooks.pop("Notification", None)
+            hooks.pop(event, None)
         if hooks:
             data["hooks"] = hooks
         else:
             data.pop("hooks", None)
-        message = f"compact reminder off in {path}"
+        message = f"{label} off in {path}"
     path.parent.mkdir(parents=True, exist_ok=True)
     _dcio.atomic_write(path, json.dumps(data, indent=2) + chr(10))
     return "OK", message
+
+
+def compact_reminder(path: Path, on: bool) -> tuple[str, str]:
+    """Add or remove our Notification(idle_prompt) hook."""
+    return _toggle_hook(path, "Notification", "idle_prompt", HOOK_MARK, on,
+                        "compact reminder", IDLE_DELAY_NOTE)
+
+
+# Resume after /clear: an opt-in SessionStart hook (matcher `clear`). Claude Code adds a
+# SessionStart hook's plain stdout to the new context (hooks reference; 10,000 char cap).
+RESUME_HOOK_MARK = "--resume-hook-run"
+RESUME_HOOK_NOTE = ("it resumes only a project that printed a PURGE or Recommended line in the "
+                    "last 24 h, in a session started inside that project")
+
+
+def resume_hook(path: Path, on: bool) -> tuple[str, str]:
+    """Add or remove our SessionStart(clear) hook."""
+    return _toggle_hook(path, "SessionStart", "clear", RESUME_HOOK_MARK, on, "resume hook",
+                        RESUME_HOOK_NOTE)
+
+
+def resume_hook_run() -> int:
+    """Hook body: after /clear, print the resume capsule when the cwd project left a marker.
+
+    Silent on anything else (no project, no or stale marker, any error): a hook must never
+    disturb a session. The marker is one-shot, so a second /clear prints nothing.
+    """
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    except ValueError:
+        cwd = None
+    cwd = cwd or os.environ.get("CLAUDE_PROJECT_DIR")
+    if not cwd:
+        return _dcio.EXIT_OK
+    try:
+        import dc_state
+        import dc_project
+        root = _dcio.project_root(cwd)
+        if not dc_state.take_resume(root):
+            return _dcio.EXIT_OK
+        lines = dc_project.capsule(root, dc_project.load(root / _dcio.AGENT_DIR_NAME))
+        text = chr(10).join(["DrainClamp resume after /clear:", *lines,
+                             dc_state.resume_prompt(root)])
+    except Exception:
+        return _dcio.EXIT_OK
+    print(text[:9000])
+    return _dcio.EXIT_OK
 
 
 def compact_hook() -> int:
@@ -941,10 +990,26 @@ def main() -> int:
                              "Notification hook that says 'DrainClamp: safe to compact'")
     parser.add_argument(HOOK_MARK, dest="compact_hook", action="store_true",
                         help=argparse.SUPPRESS)
+    parser.add_argument("--resume-hook", nargs="?", const="on", choices=("on", "off"),
+                        help="opt-in: install (on) or remove (off) a Claude Code SessionStart "
+                             "hook that prints the resume capsule after /clear")
+    parser.add_argument(RESUME_HOOK_MARK, dest="resume_hook_run", action="store_true",
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.compact_hook:
         return compact_hook()
+    if args.resume_hook_run:
+        return resume_hook_run()
+    if args.resume_hook:
+        home = Path(args.home).expanduser().resolve() if args.home else Path.home()
+        path = claude_settings_path(home, bool(args.home))
+        if args.dry_run:
+            print(f"DRY-RUN: would turn resume hook {args.resume_hook} in {path}")
+            return _dcio.EXIT_OK
+        status, message = resume_hook(path, args.resume_hook == "on")
+        print(f"{status}: {message}")
+        return _dcio.EXIT_OK
     if args.compact_reminder:
         home = Path(args.home).expanduser().resolve() if args.home else Path.home()
         path = claude_settings_path(home, bool(args.home))

@@ -673,12 +673,20 @@ def purge_resume_line(root: Path, host: str | None = None) -> str:
     shell) gets `/clear` plus one prompt to paste into the cleared session; the prompt names
     this checkout's dc_session.py by absolute path so an older cached plugin is never run.
     Elsewhere a fresh session."""
-    path = str(root.resolve()).replace("\\", "/")
-    quoted = f'"{path}"' if " " in path else path
     if resume_host(host) == "claude":
-        script = (Path(__file__).resolve().parent / "dc_session.py").as_posix()
-        return f'Run /clear now, then paste: Resume DrainClamp: run python "{script}" --resume {quoted}'
-    return f"Start a fresh session and resume with dc_session.py --resume {quoted}."
+        return f"Run /clear now, then paste: {resume_prompt(root)}"
+    return f"Start a fresh session and resume with dc_session.py --resume {_quoted_root(root)}."
+
+
+def _quoted_root(root: Path) -> str:
+    path = str(root.resolve()).replace("\\", "/")
+    return f'"{path}"' if " " in path else path
+
+
+def resume_prompt(root: Path) -> str:
+    """One prompt for a cleared Claude Code session: this checkout's dc_session.py by path."""
+    script = (Path(__file__).resolve().parent / "dc_session.py").as_posix()
+    return f'Resume DrainClamp: run python "{script}" --resume {_quoted_root(root)}'
 
 
 RESUME_MARK = "drainclamp-resume.json"
