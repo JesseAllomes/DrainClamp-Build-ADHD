@@ -54,8 +54,8 @@ the one line `dc_state.py --compact-check` prints, verbatim (`Compact: Safe - Re
 replace it. Auto-commit prints `COMMITTED: ...` or `NOT COMMITTED: ...`; relay it.
 
 Gate 5 may recommend a purge but cannot invoke it. A PURGE verdict prints its whole message: the
-`DRAINCLAMP: ... Context purge recommended.` line, then `Run /compact now, then resume with dc_session.py --resume <root>.`
-on a host that documents compaction (pass `--host <h>`; Claude Code is detected), else
+`DRAINCLAMP: ... Context purge recommended.` line, then on Claude Code (`--host <h>`; detected from its shell)
+`Run /clear now, then paste: Resume DrainClamp: run python "<checkout>/scripts/dc_session.py" --resume <root>`, else
 `Start a fresh session and resume with dc_session.py --resume <root>.` Relay both lines as printed.
 
 ## Boundaries

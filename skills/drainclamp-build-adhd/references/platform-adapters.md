@@ -16,8 +16,8 @@ Read this **only when host capability is in question**.
 recommends it and prints the resume instruction; it never claims a purge occurred. Only a genuinely
 fresh session may say `Context reset confirmed`.
 
-Print the literal `/compact` instruction only for a host that documents that command — Claude Code
-does. For any host where you lack that evidence, recommend starting a fresh session instead. Naming
+Print the literal `/clear` instruction only for Claude Code, which documents it (and a
+`SessionStart` hook matcher `clear` that the opt-in resume hook uses). For any host where you lack that evidence, recommend starting a fresh session instead. Naming
 a command the host does not have is worse than the generic instruction.
 
 ## Subagents

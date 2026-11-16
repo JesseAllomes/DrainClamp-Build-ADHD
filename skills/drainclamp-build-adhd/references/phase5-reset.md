@@ -55,16 +55,21 @@ You cannot invoke `/clear` or `/compact`. No host exposes them to the model. Gat
 |---|---|
 | `COMPLETE`, host documents a clear command | run `dc_project.py --root <root> complete --note "<one line>"` first, while context is loaded; then the script line and `Run /clear now.` |
 | `COMPLETE`, host support unknown | run `dc_project.py --root <root> complete --note "<one line>"` first; then the script line and `Start a fresh session.` |
-| `PURGE`, host documents a compaction command | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.`<br>`Run /compact now, then resume with dc_session.py --resume <root>.` |
+| `PURGE`, Claude Code | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context purge recommended.`<br>`Run /clear now, then paste: Resume DrainClamp: run python "<checkout>/scripts/dc_session.py" --resume <root>` |
 | `PURGE`, host support unknown | first line, then `Start a fresh session and resume with dc_session.py --resume <root>.` |
 
 The script prints both PURGE lines (`--purge-check`, `--close`, and `chunk done` at a chunk boundary);
 relay them as printed. `--host <h>` picks the second line; Claude Code is detected from its shell.
+Claude Code gets `/clear`, not `/compact`: compacting reads the whole context to summarise it,
+clearing costs nothing, and the resume reads disk, not a summary. The prompt after `paste:` names
+this checkout's `dc_session.py` by absolute path, so a cleared session never runs an older cached
+copy, and it skips the Gate S menu. A Claude Code PURGE line (and a `Compact: Safe - Recommended`
+line) also writes the one-shot marker `.agent/drainclamp-resume.json` the resume hook reads.
 | `HOLD` | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context retained (overlap NN%).` |
 | `HOLD`, overlap unresolved | `DRAINCLAMP: State saved to .agent/drainclamp-state.md. Context retained (overlap unknown: <reason>).` |
 
-Print the `/compact` line **only** when the host documents that command. Claude Code does; check
-`platform-adapters.md` before assuming any other host does.
+Print the `/clear` line **only** for Claude Code; check `platform-adapters.md` before assuming any
+other host has it.
 
 Never use a `[SYSTEM: …]` prefix. That impersonates the host, and this is ordinary skill output.
 
@@ -97,7 +102,7 @@ chunk in the milestone. It compares their **targets** by path, so two symbols of
 
 | Output | Say |
 |---|---|
-| `PURGE (chunk overlap NN%)` or `PURGE (chunk context-high; ...)` | its `DRAINCLAMP:` line and the resume line after it, as printed (`--host <h>` picks `/compact` or a fresh session) |
+| `PURGE (chunk overlap NN%)` or `PURGE (chunk context-high; ...)` | its `DRAINCLAMP:` line and the resume line after it, as printed (`--host <h>` picks `/clear` or a fresh session) |
 | `HOLD (chunk ...)` | its `DRAINCLAMP:` line; continue with the next chunk |
 | `all chunks done` | close the milestone: section 1, then `--purge-check`. When the line names Gate 6, run Gate 3 milestone tier and Gate 6 first |
 
@@ -136,7 +141,9 @@ also says whether compacting is worth it, from the purge calculus at the current
 done chunk against the next open one, else the milestones): `Recommended` on PURGE, every milestone
 done, or `--context-high`; `Not required yet` on HOLD, with the verdict's reason. Safety checks, in
 order: state file saved at its current generation (no write or lock pending); the last `DC:LOG` entry
-or chunk tick (`chunk done`) is newer than the last edit of any changed file outside `.agent/` (`2 edited files not logged`); no
+or chunk tick (`chunk done`) is newer than the last edit of any changed file outside `.agent/` (`2 edited files not logged`); the
+last finished chunk has a note with text beyond its commit hash (`last finished chunk m1/c2 has no note`), since
+the resume reads that note; no
 open `dc_review.py` round and no uncommitted Gate 6 fix; no background work you started still
 running; no question to the user whose answer is not on disk. Relay the line as printed; never
 reword it or claim `Safe` without it.
@@ -151,7 +158,7 @@ dc_state.py --root R --pending-question set    # before asking the user somethin
 dc_state.py --root R --pending-question clear  # once the answer is written to state or a file
 ```
 
-You never run `/compact` yourself and never say you did; the user runs it.
+You never run `/clear` or `/compact` yourself and never say you did; the user runs it.
 
 ### Idle reminder (opt-in, off by default)
 
@@ -163,3 +170,13 @@ idle and `--compact-check` says safe, it shows "DrainClamp: safe to compact"; it
 Delay: Claude Code fires `idle_prompt` about 60 seconds after a reply and only if the user has not
 typed (Claude Code hooks reference). No setting or variable for that delay is documented, so the
 3 minute target cannot be set; the install output states the 60 seconds.
+
+### Resume after /clear (opt-in, off by default)
+
+`dc_install.py --resume-hook [on|off]` adds or removes a Claude Code `SessionStart` hook (matcher
+`clear`) in the same settings file. After `/clear` it reads the session's `cwd` (else
+`CLAUDE_PROJECT_DIR`); when that project holds a resume marker under 24 hours old, it prints
+`DrainClamp resume after /clear:`, the `dc_project.py next` capsule and the resume prompt, which Claude
+Code adds to the new context (hook stdout, 10,000 character cap). The marker is used once; no marker,
+a stale one, or any error prints nothing. A project driven with `--root` from another folder is not
+seen: start the session inside the project, or paste the prompt.
