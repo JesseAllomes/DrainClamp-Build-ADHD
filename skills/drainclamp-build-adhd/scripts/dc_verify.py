@@ -366,6 +366,53 @@ def save_record(agent: Path, entry_id: str, digest: str, status: str,
         _dcio.atomic_write(records_path(agent), json.dumps(records, indent=2) + "\n")
 
 
+STREAKS_NAME = "verify-streaks.json"
+STREAK_STATUSES = ("FAIL", "TIMEOUT")
+
+
+def update_streaks(agent: Path, rows: list[dict], tree: str | None) -> list[str]:
+    """Consecutive failures per check, for the advisor gate's problem trigger.
+
+    The key is the entry id plus its first failure line, so a different failing test in
+    the same entry starts a new streak. A rerun on an unchanged tree is not a new
+    attempt; a pass clears the streak. Kept apart from the verify records, which Gate 6
+    pins. Returns the lines to print.
+    """
+    out: list[str] = []
+    with _dcio.FileLock(agent):
+        path = agent / STREAKS_NAME
+        try:
+            data = json.loads(_dcio.read_text(path) or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        for row in rows:
+            rid, status = row["id"], row["status"]
+            was = data.get(rid) if isinstance(data.get(rid), dict) else None
+            if status == PASS:
+                if was and int(was.get("count") or 0) >= 2:
+                    out.append(f"STREAK CLEARED {rid} after {was['count']} failures: if a consult advised "
+                               "this attempt, record it (dc_review.py counsel --consult <V> --passed yes)")
+                data.pop(rid, None)
+                continue
+            if status not in STREAK_STATUSES:
+                continue
+            key = _dcio.collapse(row.get("detail") or status, 160)
+            if was and was.get("key") == key:
+                if tree is not None and was.get("tree") == tree:
+                    continue        # same tree, same failure: a rerun, not another attempt
+                was.update(count=int(was.get("count") or 0) + 1, tree=tree)
+            else:
+                was = {"key": key, "count": 1, "tree": tree}
+            data[rid] = was
+            if was["count"] >= 2:
+                out.append(f"ADVISE problem: check {rid} failed {was['count']} times on the same error "
+                           f"({key}): dc_review.py consult --kind problem --check {rid} "
+                           "--attempt \"<what you tried>: <result>\" (one per attempt)")
+        _dcio.atomic_write(path, json.dumps(data, indent=2) + "\n")
+    return out
+
+
 # --------------------------------------------------------------------------
 # Execution
 # --------------------------------------------------------------------------
@@ -767,6 +814,8 @@ def main() -> int:
     emit(args.tier, rows, changed, origin, source, notes)
     if any(row["status"] == APPROVAL for row in rows):
         print_approval(rows)
+    for line in update_streaks(agent, rows, tree_fingerprint(root)):
+        print(line)
     rc = exit_code_for(rows)
     if args.base is None:
         save_record(agent, TIER_RECORD_PREFIX + args.tier, verify_digest(root),

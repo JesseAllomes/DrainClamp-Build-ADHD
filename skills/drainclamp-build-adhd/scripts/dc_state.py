@@ -1391,6 +1391,10 @@ def main() -> int:
                 import dc_review  # lazy: dc_review -> dc_project -> dc_state
                 dc_review.guard_roadmap(root, parse_roadmap(state.sections["ROADMAP"]),
                                         parse_roadmap(content))
+            if args.section == "DECISIONS":
+                # Advisor gate: added lines name a source; a Claude-only pick carries its advice.
+                import dc_review  # lazy, as above
+                dc_review.guard_decisions(root, state.sections["DECISIONS"], content)
             state.sections[args.section] = content.strip("\n")
 
         gen = mutate(state_path, agent, apply_set, expect=args.expect)

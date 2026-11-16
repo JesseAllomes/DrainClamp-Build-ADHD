@@ -445,10 +445,18 @@ def apply_op(data: dict, root: Path, op: str, a: dict, now: datetime | None = No
     if op == "error.add":
         eid = _next_id(data["errors"], "e")
         fix = _text(a, "fix")
-        data["errors"].append({"id": eid, "at": stamp, "summary": _text(a, "summary", True),
+        summary = _text(a, "summary", True)
+        same = [e["id"] for e in data["errors"] if isinstance(e, dict)
+                and " ".join(str(e.get("summary") or "").split()).lower() == " ".join(summary.split()).lower()]
+        data["errors"].append({"id": eid, "at": stamp, "summary": summary,
                                "milestone": _text(a, "milestone"), "chunk": _text(a, "chunk"),
                                "cause": _text(a, "cause"), "fix": fix,
                                "status": "fixed" if fix else "open"})
+        if same:
+            # The advisor gate's problem trigger: the same error again means the last fix missed.
+            return (f"error {eid} logged\nADVISE problem: {eid} repeats {', '.join(same)}: dc_review.py "
+                    f"consult --kind problem --error {eid} --attempt \"<what you tried>: <result>\" "
+                    "(one per attempt)")
         return f"error {eid} logged"
     if op == "error.fix":
         e = _find(data["errors"], _text(a, "id", True), "error")
