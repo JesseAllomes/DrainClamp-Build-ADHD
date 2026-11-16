@@ -58,7 +58,14 @@ prevent.
 ## Recording
 
 Every material decision goes into `DC:DECISIONS`, one per line, in the form
-`<question> -> <answer> (<source: user | charter | repo convention>)`.
+`<question> -> <answer> (<source: user | charter | repo convention | assumed | Claude default>)`.
+
+`dc_state.py --set DECISIONS` checks only the lines a write adds. An added line with no source
+parenthetical is refused. A line whose only source is Claude (`Claude default`, `Claude`) is a
+direction you picked alone: consult first (`dc_review.py consult --kind direction`, see
+`phase4-implement.md`, "Advisor gate") and write `advice V<n>` in its parenthetical, or
+`advice skip: <reason>` when no consult can run. A line that names the user too, such as
+`(user + Claude)`, needs neither.
 
 This section is what makes a context purge recoverable: after a reset, the decisions survive even
 though the conversation does not. A decision not written down will be re-litigated.

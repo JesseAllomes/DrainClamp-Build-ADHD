@@ -34,6 +34,33 @@ them. Never load a skill the project has not marked.
 7. **Log problems where they happen.** `dc_project.py error add --summary ... --milestone <m>
    --chunk <c>` for a defect found, `error fix` when it is fixed, `todo add` for later work.
 
+## Advisor gate (direction and problem)
+
+`dca-advisor` is consulted at two moments only, never for a diff or a routine check (Gate 6 covers diffs):
+
+- **Direction:** before recording a decision you picked alone (source `Claude default`), including a
+  change of approach after a failure. `dc_review.py consult --kind direction --question "<q>" --option
+  "<a>" --option "<b>" [--lines path:a-b]`. List the options neutrally; the order is not a preference.
+- **Problem:** when a script prints `ADVISE problem:` (a `DC:VERIFY` check failed twice on the same
+  error on a changed tree, or `error add` logged a summary already logged). `dc_review.py consult
+  --kind problem --check <id> | --error <eN> --attempt "<what>: <result>"` (one per attempt so far).
+
+The script writes `.agent/review/V<n>/brief.md` (capped, line ranges only, own output contract) and
+prints the spawn line: `Consult brief: <rel>. Output JSON lines only.` Then record the reply with
+`dc_review.py counsel --consult V<n> --from-transcript <agent id> --tokens <total_tokens from the
+task notification>`. It prints one pick, or up to 3 hypotheses each with one discriminating check.
+After acting, record what came of it: `counsel --consult V<n> --accepted yes|no --changed yes|no`
+(problem: `--passed yes|no` after the next attempt). It never blocks `chunk done`.
+
+- Cap: 2 consults per chunk (per milestone before chunks exist); a third needs the user's words
+  (`--user-ok "<their words>"`). After 2 failed advised attempts on one problem, `STUCK:` says stop
+  and go to the user.
+- A host without subagents passes `--no-subagents`: it prints `CONSULT SKIP`; never advise yourself
+  inline. Record the decision with `advice skip: no subagents`.
+- Trial: the first 10 answered consults print a `TRIAL` line (accepted, changed, passed next attempt,
+  tokens per run). `TRIAL DONE` says switch off or tighten when under 1 in 5 is accepted or runs
+  average over 60k tokens. Off: `dc_review.py config --consult off` (sources are still required).
+
 Chunk notes stay in the sidecar. `DC:LOG` gets **one** line per milestone, at close, with the status flip in one guarded call:
 `dc_state.py --close <m> --log "<one sentence>"` (`--mark <m>=active|pending|done` for other flips).
 

@@ -168,6 +168,11 @@ cap: one `dca-advisor` run (Opus, high) per brief.
 Do the advisor's job yourself only on a host without subagents, labelled inline. The
 orchestrator built the code, which is exactly the bias the advisor exists to avoid.
 
+The same `dca-advisor` also answers consult briefs (`V<n>`) outside Gate 6: a direction pick or a
+problem's hypotheses (`phase4-implement.md`, "Advisor gate"). Those are separate from `A<n>`
+advice: no review pass needed, no ideas, review mode may be off, and they never count toward the
+round cap.
+
 ## Output contract
 
 Each step prints one script line; relay only verdicts and the step-7 table. The user sees one
