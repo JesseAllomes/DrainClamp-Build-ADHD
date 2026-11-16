@@ -9,6 +9,8 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-adhd" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+# m47: in-process mark_resume must never write a session marker into the real home
+os.environ.pop("CLAUDE_PID", None)
 import _dcio  # noqa: E402
 import dc_state  # noqa: E402
 

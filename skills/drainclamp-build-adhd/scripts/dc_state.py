@@ -692,33 +692,67 @@ def resume_prompt(root: Path) -> str:
 RESUME_MARK = "drainclamp-resume.json"
 
 
+def _session_marks() -> Path:
+    return dc_registry.home_dir() / "resume"
+
+
 def mark_resume(root: Path) -> None:
-    """Leave a one-shot marker for the opt-in SessionStart(clear) hook (dc_install.py)."""
+    """Leave a one-shot marker for the opt-in SessionStart(clear) hook (dc_install.py).
+
+    Two copies: one in the project's .agent/ (found from the session folder) and, inside
+    Claude Code, one under ~/.drainclamp/resume/<CLAUDE_PID>.json, so a project driven with
+    --root from another folder still resumes after /clear in the same Claude Code process.
+    """
     agent = root / _dcio.AGENT_DIR_NAME
     if not agent.is_dir():
         return
-    body = {"schema": 1, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "root": str(root.resolve()).replace("\\", "/")}
-    _dcio.atomic_write(agent / RESUME_MARK, json.dumps(body) + chr(10))
+    body = json.dumps({"schema": 1, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       "root": str(root.resolve()).replace("\\", "/")}) + chr(10)
+    _dcio.atomic_write(agent / RESUME_MARK, body)
+    pid = os.environ.get("CLAUDE_PID", "").strip()
+    if pid.isdigit():
+        try:
+            _session_marks().mkdir(parents=True, exist_ok=True)
+            _dcio.atomic_write(_session_marks() / f"{pid}.json", body)
+        except OSError:
+            pass
 
 
-def take_resume(root: Path, max_age_h: float = 24) -> bool:
-    """Consume the marker: True when it was fresh. A stale or unreadable one is dropped."""
-    mark = root / _dcio.AGENT_DIR_NAME / RESUME_MARK
+def _take(mark: Path, max_age_h: float) -> dict | None:
+    """Consume one marker file: its payload when fresh, else None. Always removed."""
     if not mark.is_file():
-        return False
-    fresh = False
+        return None
+    payload = None
     try:
-        at = datetime.fromisoformat(json.loads(mark.read_text(encoding="utf-8"))["at"])
+        data = json.loads(mark.read_text(encoding="utf-8"))
+        at = datetime.fromisoformat(data["at"])
         age = (datetime.now(timezone.utc) - at).total_seconds()
-        fresh = at.tzinfo is not None and 0 <= age <= max_age_h * 3600
+        if at.tzinfo is not None and 0 <= age <= max_age_h * 3600:
+            payload = data
     except (ValueError, KeyError, TypeError, OSError):
-        fresh = False
+        payload = None
     try:
         mark.unlink()
     except OSError:
-        return False
-    return fresh
+        return None
+    return payload
+
+
+def take_resume(root: Path, max_age_h: float = 24) -> bool:
+    """Consume the project marker: True when it was fresh. A stale or unreadable one is dropped."""
+    return _take(root / _dcio.AGENT_DIR_NAME / RESUME_MARK, max_age_h) is not None
+
+
+def take_session_resume(pids: list[str], max_age_h: float = 24) -> Path | None:
+    """Consume the first fresh session marker among `pids`; its project root, or None."""
+    for pid in pids:
+        if not str(pid).isdigit():
+            continue
+        data = _take(_session_marks() / f"{pid}.json", max_age_h)
+        root = data.get("root") if isinstance(data, dict) else None
+        if isinstance(root, str) and (Path(root) / _dcio.AGENT_DIR_NAME).is_dir():
+            return Path(root)
+    return None
 
 
 def print_purge_resume(root: Path, host: str | None = None) -> None:

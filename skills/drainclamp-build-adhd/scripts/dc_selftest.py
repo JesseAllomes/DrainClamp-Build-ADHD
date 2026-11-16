@@ -370,6 +370,7 @@ def run_suites(tests: Path, fixtures: Path, only: str | None) -> tuple[list[tupl
     registry_home = fixtures.parent / "registry-home"
     registry_home.mkdir(parents=True, exist_ok=True)
     env["DRAINCLAMP_HOME"] = str(registry_home)
+    env.pop("CLAUDE_PID", None)  # suites never write a resume marker for this session
     results: list[tuple[str, int, str]] = []
     failed = 0
     for script in sorted(tests.glob("t_*.py")):

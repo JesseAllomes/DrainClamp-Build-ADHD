@@ -174,9 +174,15 @@ typed (Claude Code hooks reference). No setting or variable for that delay is do
 ### Resume after /clear (opt-in, off by default)
 
 `dc_install.py --resume-hook [on|off]` adds or removes a Claude Code `SessionStart` hook (matcher
-`clear`) in the same settings file. After `/clear` it reads the session's `cwd` (else
-`CLAUDE_PROJECT_DIR`); when that project holds a resume marker under 24 hours old, it prints
-`DrainClamp resume after /clear:`, the `dc_project.py next` capsule and the resume prompt, which Claude
-Code adds to the new context (hook stdout, 10,000 character cap). The marker is used once; no marker,
-a stale one, or any error prints nothing. A project driven with `--root` from another folder is not
-seen: start the session inside the project, or paste the prompt.
+`clear`) in the same settings file. The user types `/clear`, then a short word (`go`, `next`).
+No interactive session can start a turn by itself (`initialUserMessage` works only with `-p`), so
+the hook prints `DrainClamp resume after /clear:`, the `dc_project.py next` capsule and an
+instruction to run the resume on that first word; Claude Code adds hook stdout to the new context
+(10,000 character cap).
+
+Which project: inside Claude Code, a PURGE or Recommended line also writes
+`~/.drainclamp/resume/<CLAUDE_PID>.json`, so `/clear` in the same Claude Code process resumes that
+project even when it was driven with `--root` from another folder. The hook matches `CLAUDE_PID`,
+else its parent pid; then it falls back to the project of the session's `cwd`. Markers are used once
+and expire after 24 hours; no match or any error prints nothing. The last run is logged to
+`~/.drainclamp/resume-hook.log` (pids, folder, match).

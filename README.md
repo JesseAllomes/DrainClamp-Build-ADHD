@@ -122,7 +122,7 @@ is unignored you get one warning and nothing else.
 | `dc_review.py` | Gate 6: review packet, citation check, dedupe, suppression, agent cap, fixer scope, roadmap guard |
 | `dc_verify.py` | Tiered verification, runner allowlist, approval handoff with digests tied to a tree fingerprint |
 | `dc_selftest.py` | Materialises `tests/fixtures/`, runs the whole suite matrix |
-| `dc_install.py` | Links the skill into each host, installs `dca-scout` and the Gate 6 roster, refuses to touch anything it does not own; `--compact-reminder on\|off` (off by default) adds an idle reminder hook: Claude Code fires it about 60 seconds after a reply, a delay it does not let you change; `--resume-hook on\|off` (off by default) adds a `SessionStart(clear)` hook that prints the resume capsule after `/clear` for a project that just recommended a purge |
+| `dc_install.py` | Links the skill into each host, installs `dca-scout` and the Gate 6 roster, refuses to touch anything it does not own; `--compact-reminder on\|off` (off by default) adds an idle reminder hook: Claude Code fires it about 60 seconds after a reply, a delay it does not let you change; `--resume-hook on\|off` (off by default) adds a `SessionStart(clear)` hook: after `/clear`, type `go` and the session resumes the project that just recommended a purge (matched by Claude Code process, else folder) |
 
 ### Measuring the overhead
 

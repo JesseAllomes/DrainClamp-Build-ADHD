@@ -11,6 +11,10 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "drainclamp-build-
 fails = []
 TEST_ENV = dict(os.environ)
 TEST_ENV["DRAINCLAMP_HOME"] = tempfile.mkdtemp(prefix="dccompact-registry-")
+# m47: in-process mark_resume must never write a session marker into the real home
+os.environ.pop("CLAUDE_PID", None)
+TEST_ENV.pop("CLAUDE_PID", None)
+os.environ["DRAINCLAMP_HOME"] = TEST_ENV["DRAINCLAMP_HOME"]
 
 
 def check(name, cond, detail=""):
@@ -311,9 +315,9 @@ r = run_hook(json.dumps({"cwd": str(repo), "source": "clear"}))
 check("m47: no marker: hook prints nothing", r.returncode == 0 and not r.stdout.strip(), r.stdout + r.stderr)
 dc_state.mark_resume(repo)
 r = run_hook(json.dumps({"cwd": str(repo / ".agent"), "source": "clear"}))
-check("m47: fresh marker: hook prints the capsule and the resume prompt", r.returncode == 0
-      and "DRAINCLAMP NEXT:" in r.stdout and "Resume DrainClamp: run python" in r.stdout
-      and len(r.stdout) < 10000, r.stdout + r.stderr)
+check("m47: fresh marker: hook prints the capsule and the resume instruction", r.returncode == 0
+      and "DRAINCLAMP NEXT:" in r.stdout and "On the user's first message" in r.stdout
+      and "dc_session.py\" --resume" in r.stdout and len(r.stdout) < 10000, r.stdout + r.stderr)
 check("m47: the marker is used once", not (repo / ".agent" / "drainclamp-resume.json").exists())
 r = run_hook(json.dumps({"cwd": str(repo), "source": "clear"}))
 check("m47: second /clear prints nothing", r.returncode == 0 and not r.stdout.strip(), r.stdout)
@@ -325,6 +329,37 @@ for bad in ("", "{bad", json.dumps({"cwd": str(Path(tempfile.mkdtemp()))})):
     r = run_hook(bad)
     check(f"m47: hook quiet no-op on {bad[:12]!r}", r.returncode == 0 and not r.stdout.strip(),
           r.stdout + r.stderr)
+
+# --- m47/c6: a session marker resumes a --root project from any folder -----------
+sess_home = Path(tempfile.mkdtemp(prefix="dcsess-"))
+far = newrepo()
+st(far, "--append-log", "baseline")
+pid_env = dict(TEST_ENV, DRAINCLAMP_HOME=str(sess_home), CLAUDE_PID="424242")
+pid_env.pop("CLAUDE_PROJECT_DIR", None)
+r = subprocess.run([sys.executable, "-B", "-c",
+                    "import sys, pathlib; sys.path.insert(0, sys.argv[1]); import dc_state; "
+                    "dc_state.mark_resume(pathlib.Path(sys.argv[2]))", str(SCRIPTS), str(far)],
+                   capture_output=True, text=True, env=pid_env)
+smark = sess_home / "resume" / "424242.json"
+check("c6: mark_resume under Claude Code also writes the session marker",
+      r.returncode == 0 and smark.is_file() and (far / ".agent" / "drainclamp-resume.json").is_file(),
+      r.stderr)
+elsewhere = Path(tempfile.mkdtemp(prefix="dcelse-"))
+other_env = dict(pid_env, CLAUDE_PID="777")
+r = py("dc_install.py", "--resume-hook-run", stdin=json.dumps({"cwd": str(elsewhere)}), env=other_env)
+check("c6: another Claude process does not pick up the marker",
+      r.returncode == 0 and not r.stdout.strip() and smark.is_file(), r.stdout + r.stderr)
+r = py("dc_install.py", "--resume-hook-run", stdin=json.dumps({"cwd": str(elsewhere)}), env=pid_env)
+check("c6: same Claude process resumes the marked project from another folder",
+      r.returncode == 0 and "DRAINCLAMP NEXT: " + far.name in r.stdout
+      and far.resolve().as_posix() in r.stdout, r.stdout + r.stderr)
+check("c6: both markers are used up", not smark.exists()
+      and not (far / ".agent" / "drainclamp-resume.json").exists())
+log = json.loads((sess_home / "resume-hook.log").read_text(encoding="utf-8"))
+check("c6: the hook logs its last match", log.get("matched") == "session" and "424242" in log.get("pids", []),
+      str(log))
+r = py("dc_install.py", "--resume-hook-run", stdin=json.dumps({"cwd": str(elsewhere)}), env=pid_env)
+check("c6: second /clear prints nothing", r.returncode == 0 and not r.stdout.strip(), r.stdout)
 
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

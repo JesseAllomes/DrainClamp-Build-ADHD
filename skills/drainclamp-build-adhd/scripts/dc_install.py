@@ -904,10 +904,12 @@ def resume_hook(path: Path, on: bool) -> tuple[str, str]:
 
 
 def resume_hook_run() -> int:
-    """Hook body: after /clear, print the resume capsule when the cwd project left a marker.
+    """Hook body: after /clear, hand the new session its resume when one is pending.
 
-    Silent on anything else (no project, no or stale marker, any error): a hook must never
-    disturb a session. The marker is one-shot, so a second /clear prints nothing.
+    Match order: the Claude Code process (CLAUDE_PID, else this hook's parent pid) against
+    ~/.drainclamp/resume/<pid>.json, then the session folder's project marker. Silent on
+    anything else; a hook must never disturb a session. Markers are one-shot. The last run
+    is logged to ~/.drainclamp/resume-hook.log (pids, folder, match) for the live check.
     """
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -915,20 +917,39 @@ def resume_hook_run() -> int:
     except ValueError:
         cwd = None
     cwd = cwd or os.environ.get("CLAUDE_PROJECT_DIR")
-    if not cwd:
-        return _dcio.EXIT_OK
+    pids = [os.environ.get("CLAUDE_PID", "").strip(), str(os.getppid())]
+    matched, text = "none", ""
     try:
         import dc_state
         import dc_project
-        root = _dcio.project_root(cwd)
-        if not dc_state.take_resume(root):
-            return _dcio.EXIT_OK
-        lines = dc_project.capsule(root, dc_project.load(root / _dcio.AGENT_DIR_NAME))
-        text = chr(10).join(["DrainClamp resume after /clear:", *lines,
-                             dc_state.resume_prompt(root)])
+        import dc_registry
+        root = dc_state.take_session_resume(pids)
+        if root is not None:
+            matched = "session"
+            dc_state.take_resume(root)
+        elif cwd:
+            folder = _dcio.project_root(cwd)
+            if dc_state.take_resume(folder):
+                root, matched = folder, "folder"
+        if root is not None:
+            lines = dc_project.capsule(root, dc_project.load(root / _dcio.AGENT_DIR_NAME))
+            text = chr(10).join([
+                "DrainClamp resume after /clear:", *lines,
+                "On the user's first message (a short word such as go, next or continue), "
+                "run this first and continue from its Next line: "
+                + dc_state.resume_prompt(root).split(": ", 1)[1]])
+        try:
+            log = dc_registry.home_dir() / "resume-hook.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            _dcio.atomic_write(log, json.dumps({
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "cwd": cwd, "pids": pids, "matched": matched}) + chr(10))
+        except OSError:
+            pass
     except Exception:
         return _dcio.EXIT_OK
-    print(text[:9000])
+    if text:
+        print(text[:9000])
     return _dcio.EXIT_OK
 
 
