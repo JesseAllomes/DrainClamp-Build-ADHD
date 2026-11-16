@@ -397,10 +397,10 @@ def update_streaks(agent: Path, rows: list[dict], tree: str | None) -> list[str]
                 continue
             if status not in STREAK_STATUSES:
                 continue
-            key = _dcio.collapse(row.get("detail") or status, 160)
+            key = status if status == "TIMEOUT" else _dcio.collapse(row.get("detail") or status, 160)
             if was and was.get("key") == key:
-                if tree is not None and was.get("tree") == tree:
-                    continue        # same tree, same failure: a rerun, not another attempt
+                if tree is None or was.get("tree") == tree:
+                    continue        # same tree (or no fingerprint to tell): a rerun, not another attempt
                 was.update(count=int(was.get("count") or 0) + 1, tree=tree)
             else:
                 was = {"key": key, "count": 1, "tree": tree}

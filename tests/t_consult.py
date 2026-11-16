@@ -202,6 +202,14 @@ rc, out = proj(trig, "error", "add", "--summary", "import fails  on BLANK row")
 check("same error again advises a problem consult", rc == 0 and "ADVISE problem: e2 repeats e1" in out
       and "--error e2" in out, out)
 
+import dc_state as _ds  # noqa: E402
+check("resume marker only for Claude", _ds.resume_host("codex") != "claude" and _ds.resume_host("claude") == "claude")
+slow = ag.parent / "slow"; slow.mkdir(); (slow / "x").write_text("")
+dc_verify.update_streaks(slow, [{"id": "it", "status": "TIMEOUT", "detail": "timed out after 60s"}], "s1")
+got = dc_verify.update_streaks(slow, [{"id": "it", "status": "TIMEOUT", "detail": "timed out after 61s"}], "s2")
+check("repeat timeouts with different durations advise", len(got) == 1 and "failed 2 times" in got[0], got)
+check("no fingerprint: a repeat failure is not counted", dc_verify.update_streaks(ag, fail, None) == []
+      and dc_verify.update_streaks(ag, fail, None) == [])
 # -- c4: DC:DECISIONS write gate -----------------------------------------------------
 def st(root, *args):
     p = subprocess.run([sys.executable, "-B", str(SCRIPTS / "dc_state.py"), "--root", str(root), *args],

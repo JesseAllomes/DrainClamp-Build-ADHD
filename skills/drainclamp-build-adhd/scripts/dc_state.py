@@ -1287,7 +1287,7 @@ def main() -> int:
         safe, why = compact_check(root)
         advice = compact_advice(root, args.context_high) if safe else None
         print(compact_line(safe, why, advice))
-        if advice and advice[0]:
+        if advice and advice[0] and resume_host(args.host) == "claude":
             mark_resume(root)
         return _dcio.EXIT_OK if safe else _dcio.EXIT_CHECK_FAILED
     if args.running or args.pending_question:

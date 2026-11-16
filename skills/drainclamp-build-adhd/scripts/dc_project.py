@@ -1837,7 +1837,7 @@ def main() -> int:
                       else dc_state.compact_advice(root, args.context_high))
             safe, why = dc_state.compact_check(root)
             print(dc_state.compact_line(safe, why, advice))
-            if safe and advice[0]:
+            if safe and advice[0] and dc_state.resume_host(args.host) == "claude":
                 dc_state.mark_resume(root)
     return _dcio.EXIT_OK
 
