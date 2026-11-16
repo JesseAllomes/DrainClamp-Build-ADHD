@@ -124,12 +124,42 @@ rc, out = verdict(repo)
 check("t17: edit after the log, no tick: not safe", rc != 0 and "not logged" in out, out)
 tick = datetime.fromtimestamp(time.time() + 10, timezone.utc).isoformat(timespec="seconds")
 (repo / ".agent" / "drainclamp-project.json").write_text(json.dumps(
-    {"chunks": {"m1": [{"id": "c1", "done": True, "done_at": tick}]}}), encoding="utf-8")
+    {"chunks": {"m1": [{"id": "c1", "done": True, "done_at": tick, "note": "step one"}]}}),
+    encoding="utf-8")
 rc, out = verdict(repo)
 check("t17: chunk ticked after the edit: safe", rc == 0, out)
 touch_future(repo / "a.txt", 20)
 rc, out = verdict(repo)
 check("t17: edit after the tick: not safe", rc != 0 and "not logged" in out, out)
+
+# --- m47: a safe verdict needs a note on the last finished chunk ----------------
+repo = newrepo()
+st(repo, "--append-log", "baseline")
+side = repo / ".agent" / "drainclamp-project.json"
+early = datetime.fromtimestamp(time.time() - 60, timezone.utc).isoformat(timespec="seconds")
+late = datetime.fromtimestamp(time.time() + 10, timezone.utc).isoformat(timespec="seconds")
+
+
+def last_note(note):
+    side.write_text(json.dumps({"chunks": {"m1": [
+        {"id": "c1", "done": True, "done_at": early, "note": "first"},
+        {"id": "c2", "done": True, "done_at": late, "note": note},
+        {"id": "c3", "done": False, "note": ""}]}}), encoding="utf-8")
+    return verdict(repo)
+
+
+rc, out = last_note("")
+check("m47: last finished chunk with no note: not safe",
+      rc != 0 and out == "Compact: not yet: last finished chunk m1/c2 has no note", out)
+rc, out = last_note("fc06e4f")
+check("m47: a commit hash alone is not a note", rc != 0 and "has no note" in out, out)
+rc, out = last_note("fc06e4f: ")
+check("m47: hash and separator alone is not a note", rc != 0 and "has no note" in out, out)
+rc, out = last_note("fc06e4f: parser split")
+check("m47: hash plus text is a note: safe", rc == 0, out)
+side.write_text(json.dumps({"chunks": {"m1": [{"id": "c1", "done": False}]}}), encoding="utf-8")
+rc, out = verdict(repo)
+check("m47: no finished chunk: rule skipped", rc == 0, out)
 
 # --- Gate 6 ------------------------------------------------------------------
 repo = newrepo()

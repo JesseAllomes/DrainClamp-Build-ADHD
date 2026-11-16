@@ -1057,6 +1057,10 @@ def _git_names(root: Path, *args: str) -> list[str]:
     return [l for l in out.stdout.splitlines() if l.strip()] if out.returncode == 0 else []
 
 
+HASH_PREFIX = re.compile(r"^\s*[0-9a-f]{7,40}(?![0-9A-Za-z_])[\s:;,.-]*")
+NOTE_TEXT = re.compile(r"\w")
+
+
 def compact_check(root: Path) -> tuple[bool, str]:
     """Is it safe to /compact now? Returns (safe, reason). Read-only."""
     agent = root / _dcio.AGENT_DIR_NAME
@@ -1089,7 +1093,8 @@ def compact_check(root: Path) -> tuple[bool, str]:
     except ValueError:
         data = {}
     chunks = data.get("chunks") if isinstance(data, dict) else None
-    for rows in (chunks.values() if isinstance(chunks, dict) else []):
+    last = None  # (tick, milestone, chunk): the latest finished chunk must carry a note
+    for mid, rows in (chunks.items() if isinstance(chunks, dict) else []):
         for c in rows if isinstance(rows, list) else []:
             done_at = c.get("done_at") if isinstance(c, dict) and c.get("done") else None
             try:
@@ -1098,6 +1103,8 @@ def compact_check(root: Path) -> tuple[bool, str]:
                 tick = None
             if tick is not None and tick.tzinfo is not None and (stamp is None or tick > stamp):
                 stamp = tick
+            if tick is not None and tick.tzinfo is not None and (last is None or tick > last[0]):
+                last = (tick, mid, c)
     changed = set(_git_names(root, "ls-files", "-m", "-o", "--exclude-standard"))
     changed |= set(_git_names(root, "diff", "--cached", "--name-only", "--relative"))
     if stamp is not None:
@@ -1115,6 +1122,9 @@ def compact_check(root: Path) -> tuple[bool, str]:
             unlogged += 1
     if unlogged:
         return False, f"{unlogged} edited file{'s' if unlogged != 1 else ''} not logged"
+    # The resume reads the last chunk's note; a bare commit hash says nothing.
+    if last is not None and not NOTE_TEXT.search(HASH_PREFIX.sub("", str(last[2].get("note") or ""))):
+        return False, f"last finished chunk {last[1]}/{last[2].get('id', '?')} has no note"
     # Gate 6.
     review = data.get("review") if isinstance(data, dict) else None
     if isinstance(review, dict):
