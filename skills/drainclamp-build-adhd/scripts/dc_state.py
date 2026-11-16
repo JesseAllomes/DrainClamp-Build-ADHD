@@ -662,16 +662,62 @@ def purge_check(state: State, root: Path, context_high: bool) -> tuple[str, str]
     )
 
 
-def purge_resume_line(root: Path, host: str | None = None) -> str:
-    """The second line of a PURGE message. `/compact` only where the host documents it
-    (Claude Code: --host claude, or its CLAUDECODE=1 shell); elsewhere a fresh session."""
+def resume_host(host: str | None) -> str:
     if host is None:
         host = "claude" if os.environ.get("CLAUDECODE") == "1" else ""
+    return host.lower()
+
+
+def purge_resume_line(root: Path, host: str | None = None) -> str:
+    """The second line of a PURGE message. Claude Code (--host claude, or its CLAUDECODE=1
+    shell) gets `/clear` plus one prompt to paste into the cleared session; the prompt names
+    this checkout's dc_session.py by absolute path so an older cached plugin is never run.
+    Elsewhere a fresh session."""
     path = str(root.resolve()).replace("\\", "/")
-    target = "dc_session.py --resume " + (f'"{path}"' if " " in path else path)
-    if host.lower() == "claude":
-        return f"Run /compact now, then resume with {target}."
-    return f"Start a fresh session and resume with {target}."
+    quoted = f'"{path}"' if " " in path else path
+    if resume_host(host) == "claude":
+        script = (Path(__file__).resolve().parent / "dc_session.py").as_posix()
+        return f'Run /clear now, then paste: Resume DrainClamp: run python "{script}" --resume {quoted}'
+    return f"Start a fresh session and resume with dc_session.py --resume {quoted}."
+
+
+RESUME_MARK = "drainclamp-resume.json"
+
+
+def mark_resume(root: Path) -> None:
+    """Leave a one-shot marker for the opt-in SessionStart(clear) hook (dc_install.py)."""
+    agent = root / _dcio.AGENT_DIR_NAME
+    if not agent.is_dir():
+        return
+    body = {"schema": 1, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "root": str(root.resolve()).replace("\\", "/")}
+    _dcio.atomic_write(agent / RESUME_MARK, json.dumps(body) + chr(10))
+
+
+def take_resume(root: Path, max_age_h: float = 24) -> bool:
+    """Consume the marker: True when it was fresh. A stale or unreadable one is dropped."""
+    mark = root / _dcio.AGENT_DIR_NAME / RESUME_MARK
+    if not mark.is_file():
+        return False
+    fresh = False
+    try:
+        at = datetime.fromisoformat(json.loads(mark.read_text(encoding="utf-8"))["at"])
+        age = (datetime.now(timezone.utc) - at).total_seconds()
+        fresh = at.tzinfo is not None and 0 <= age <= max_age_h * 3600
+    except (ValueError, KeyError, TypeError, OSError):
+        fresh = False
+    try:
+        mark.unlink()
+    except OSError:
+        return False
+    return fresh
+
+
+def print_purge_resume(root: Path, host: str | None = None) -> None:
+    """Print the resume line; a Claude Code line also leaves the resume marker."""
+    print(purge_resume_line(root, host))
+    if resume_host(host) == "claude":
+        mark_resume(root)
 
 
 def chunk_purge_check(done_targets: list[str], next_targets: list[str], root: Path,
@@ -1187,7 +1233,10 @@ def main() -> int:
     root = _dcio.project_root(args.root)
     if args.compact_check:
         safe, why = compact_check(root)
-        print(compact_line(safe, why, compact_advice(root, args.context_high) if safe else None))
+        advice = compact_advice(root, args.context_high) if safe else None
+        print(compact_line(safe, why, advice))
+        if advice and advice[0]:
+            mark_resume(root)
         return _dcio.EXIT_OK if safe else _dcio.EXIT_CHECK_FAILED
     if args.running or args.pending_question:
         if args.running and args.running[0] not in ("add", "done"):
@@ -1269,7 +1318,7 @@ def main() -> int:
             print(verdict)
             print(human)
             if verdict.startswith("PURGE"):
-                print(purge_resume_line(root, args.host))
+                print_purge_resume(root, args.host)
         return _dcio.EXIT_OK
 
     if args.section:
@@ -1323,7 +1372,7 @@ def main() -> int:
         print(verdict)
         print(human)
         if verdict.startswith("PURGE"):
-            print(purge_resume_line(root, args.host))
+            print_purge_resume(root, args.host)
         return _dcio.EXIT_OK
 
     if args.promote_to_agents:

@@ -1,4 +1,5 @@
 """Schema v1 conformance + purge calculus for dc_state.py (skeleton step 3)."""
+import json
 import os
 import subprocess
 import sys
@@ -402,11 +403,18 @@ run(pg, "--set", "ROADMAP", "--file", str(roadmap(pg, [("m1", "one", "a.py", "do
 pg_posix = str(pg.resolve()).replace("\\", "/")
 r = run(pg, "--purge-check", "--host", "claude")
 lines = r.stdout.splitlines()
-check("t21: PURGE prints the /compact line for Claude Code", len(lines) == 3 and lines[0].startswith("PURGE")
-      and lines[2] == f"Run /compact now, then resume with dc_session.py --resume {pg_posix}.", r.stdout + r.stderr)
+SESSION_PY = (SCRIPTS / "dc_session.py").resolve().as_posix()
+check("t21: PURGE prints the /clear prompt for Claude Code", len(lines) == 3 and lines[0].startswith("PURGE")
+      and lines[2] == f'Run /clear now, then paste: Resume DrainClamp: run python "{SESSION_PY}" --resume {pg_posix}',
+      r.stdout + r.stderr)
+marker = pg / ".agent" / "drainclamp-resume.json"
+check("m47: a Claude PURGE line leaves a resume marker",
+      marker.is_file() and json.loads(marker.read_text(encoding="utf-8")).get("schema") == 1, str(marker))
+marker.unlink(missing_ok=True)
 r = run(pg, "--purge-check", "--host", "other")
 check("t21: another host gets the fresh-session line",
       r.stdout.splitlines()[-1] == f"Start a fresh session and resume with dc_session.py --resume {pg_posix}.", r.stdout)
+check("m47: a non-Claude PURGE leaves no resume marker", not marker.exists(), str(marker))
 run(pg, "--set", "ROADMAP", "--file", str(roadmap(pg, [("m1", "one", "a.py", "done"), ("m2", "two", "a.py", "active")])))
 r = run(pg, "--purge-check", "--host", "claude")
 check("t21: HOLD prints no resume line", r.stdout.splitlines()[0].startswith("HOLD")
@@ -421,8 +429,24 @@ run(sp_root, "--set", "ROADMAP", "--file",
 r = run(sp_root, "--purge-check", "--host", "claude")
 sp_posix = str(sp_root.resolve()).replace("\\", "/")
 check("r116: a path with spaces is quoted in the resume line",
-      r.stdout.splitlines()[-1] == f'Run /compact now, then resume with dc_session.py --resume "{sp_posix}".',
+      r.stdout.splitlines()[-1]
+      == f'Run /clear now, then paste: Resume DrainClamp: run python "{SESSION_PY}" --resume "{sp_posix}"',
       r.stdout + r.stderr)
+
+
+tk = newrepo()
+(tk / ".agent").mkdir(exist_ok=True)
+check("m47: take_resume without a marker is False", dc_state.take_resume(tk) is False)
+dc_state.mark_resume(tk)
+check("m47: take_resume consumes a fresh marker", dc_state.take_resume(tk) is True
+      and not (tk / ".agent" / "drainclamp-resume.json").exists())
+(tk / ".agent" / "drainclamp-resume.json").write_text(
+    json.dumps({"schema": 1, "at": "2020-01-01T00:00:00+00:00", "root": "x"}), encoding="utf-8")
+check("m47: a stale marker is dropped, not resumed", dc_state.take_resume(tk) is False
+      and not (tk / ".agent" / "drainclamp-resume.json").exists())
+(tk / ".agent" / "drainclamp-resume.json").write_text("{bad", encoding="utf-8")
+check("m47: an unreadable marker is dropped", dc_state.take_resume(tk) is False
+      and not (tk / ".agent" / "drainclamp-resume.json").exists())
 
 # --- t23/i20: --close ticks the to-dos the row names, lists the rest ----------
 import dc_project  # noqa: E402

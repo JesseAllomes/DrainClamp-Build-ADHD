@@ -164,6 +164,18 @@ check("t21: chunk PURGE ends with the resume line",
       out.splitlines()[-1] == "Start a fresh session and resume with dc_session.py --resume "
       + str(bnd.resolve()).replace("\\", "/") + ".", out)
 check("PURGE boundary leaves targets to the resume", "Targets:" not in out, out)
+check("m47: non-Claude chunk PURGE leaves no resume marker",
+      not (bnd / ".agent" / "drainclamp-resume.json").exists(), out)
+clr = make_repo("boundary-clear", "| m1 | two steps | a.py;b.py | active |")
+proj(clr, "chunk", "add", "--milestone", "m1", "--goal", "one", "--targets", "a.py")
+proj(clr, "chunk", "add", "--milestone", "m1", "--goal", "two", "--targets", "b.py")
+rc, out = proj(clr, "chunk", "done", "--milestone", "m1", "--id", "c1", "--note", "a", "--host", "claude")
+check("m47: Claude chunk PURGE ends with the /clear prompt",
+      out.splitlines()[-1] == 'Run /clear now, then paste: Resume DrainClamp: run python "'
+      + (SCRIPTS / "dc_session.py").resolve().as_posix() + '" --resume '
+      + str(clr.resolve()).replace("\\", "/"), out)
+check("m47: Claude chunk PURGE leaves a resume marker",
+      (clr / ".agent" / "drainclamp-resume.json").is_file(), out)
 rc, out = proj(bnd, "chunk", "done", "--milestone", "m1", "--id", "c3")
 check("next chunk without targets is unknown, never PURGE",
       "HOLD (chunk overlap unknown: next chunk has no targets)" in out, out)

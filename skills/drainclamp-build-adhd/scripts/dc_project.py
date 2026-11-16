@@ -368,6 +368,8 @@ def boundary(data: dict, root: Path, mid: str, cid: str,
     # HOLD keeps the context, so hand over what to read next; a PURGE resume runs `next` anyway
     if verdict.startswith("HOLD"):
         return lines + target_lines(nxt, root)
+    if dc_state.resume_host(host) == "claude":
+        dc_state.mark_resume(root)
     return lines + [dc_state.purge_resume_line(root, host)]
 
 
@@ -1825,7 +1827,10 @@ def main() -> int:
             held = next((v for v in verdict if v.startswith("HOLD")), "")
             advice = (dc_state.advice_of(held) if held
                       else dc_state.compact_advice(root, args.context_high))
-            print(dc_state.compact_line(*dc_state.compact_check(root), advice))
+            safe, why = dc_state.compact_check(root)
+            print(dc_state.compact_line(safe, why, advice))
+            if safe and advice[0]:
+                dc_state.mark_resume(root)
     return _dcio.EXIT_OK
 
 
