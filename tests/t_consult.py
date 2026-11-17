@@ -251,5 +251,30 @@ check("consult off: Claude-only line passes", rc == 0, out)
 rc, out = set_decisions(gate, "- Batch window -> 5 min")
 check("consult off: a source is still required", rc != 0 and "no source" in out, out)
 
+rv(gate, "config", "--consult", "on")
+rc, out = set_decisions(gate, "- Queue depth -> 10 (Claude default, advice skip:    )")
+check("blank skip reason refused", rc != 0 and "without advice" in out, out)
+import dc_review as _dr  # noqa: E402
+check("explanation words are not sources", _dr.decision_sources("- A -> b (Claude default; no user input)") == {"claude"}
+      and _dr.decision_sources("- A -> b (Claude default: the repo is small)") == {"claude"}
+      and _dr.decision_sources("- A (see the user guide) -> b (Claude)") == {"claude"})
+check("real mixed sources kept", _dr.decision_sources("- A -> b (Claude, user approved)") == {"claude", "user"}
+      and _dr.decision_sources("- A (user, 2026-11-16) -> b") == {"user"})
+capr = make_repo("cap")
+rv(capr, "config", "--consult", "on")
+dc_project.mutate(capr / ".agent", lambda d: (d.setdefault("review", {}).setdefault("config", {})
+                                              .__setitem__("consult", {"brief_cap": 30}), d)[1])
+rc, out = direction(capr, "--lines", "a.py:1-40")
+cb = (capr / ".agent" / "review" / "V1" / "brief.md").read_text(encoding="utf-8")
+check("truncated brief stays within the cap", rc == 0 and "TRUNCATED brief at 30 lines" in cb
+      and cb.count("\n") <= 30, cb.count("\n"))
+import dc_review as _dr2  # noqa: E402
+vl = make_repo("vlog")
+(vl / ".agent" / "verify.log").write_text(
+    "== unit [FAIL] ['pytest'] (cwd .)\n== short test summary ==\nE assert 3 == 4\n\n== lint [PASS] ['ruff'] (cwd .)\n",
+    encoding="utf-8")
+sec = _dr2.verify_failure(vl / ".agent", "unit")
+check("output banner does not end the section", "E assert 3 == 4" in sec and not any("ruff" in x for x in sec), sec)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

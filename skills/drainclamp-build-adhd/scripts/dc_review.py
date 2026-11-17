@@ -1471,7 +1471,7 @@ def verify_failure(agent: Path, check: str) -> list[str]:
     body: list[str] = []
     inside = False
     for ln in text.splitlines():
-        if ln.startswith("== "):
+        if re.match(r"== \S+ \[[A-Z_-]+\] \[.*\(cwd .*\)$", ln):
             inside = ln.startswith(f"== {check} [")
             if inside:
                 body.append(ln)
@@ -1565,19 +1565,25 @@ def build_consult(root: Path, data: dict, vid: str, ms: dict, bucket: str, args)
     cap = int(consult_config(review_of(data))["brief_cap"])
     lines = head + body
     if len(lines) + len(tail) > cap:
-        lines = lines[:max(cap - len(tail) - 1, len(head))] + [f"TRUNCATED brief at {cap} lines", ""]
+        lines = lines[:max(cap - len(tail) - 2, len(head))] + [f"TRUNCATED brief at {cap} lines", ""]
     return "\n".join(lines + tail) + "\n", rec
 
 
 PAREN_RE = re.compile(r"\(([^()]*)\)")
 SOURCE_RE = re.compile(r"\b(user|charter|repo|assumed|claude)\b", re.I)
 ADVICE_RE = re.compile(r"\badvice (V\d+)\b")
-ADVICE_SKIP_RE = re.compile(r"\badvice skip:\s*([^)]{3,})")
+ADVICE_SKIP_RE = re.compile(r"\badvice skip:([^)]*)")
 
 
 def decision_sources(line: str) -> set[str]:
-    """Source words named in the line's parentheticals: user, charter, repo, assumed, claude."""
-    return {m.lower() for p in PAREN_RE.findall(line) for m in SOURCE_RE.findall(p)}
+    """Source words of the line's source parentheticals: one that starts with a source word,
+    read only up to its first ':' or ';' (what follows is explanation, not a source)."""
+    out: set[str] = set()
+    for p in PAREN_RE.findall(line):
+        head = re.split(r"[:;]", p, maxsplit=1)[0]
+        if SOURCE_RE.match(head.strip()):
+            out |= {m.lower() for m in SOURCE_RE.findall(head)}
+    return out
 
 
 def guard_decisions(root: Path, old: str, new: str) -> None:
@@ -1611,7 +1617,7 @@ def guard_decisions(root: Path, old: str, new: str) -> None:
             if rec is None or rec.get("kind") != "direction" or not rec.get("reply"):
                 errors.append(f"{m.group(1)} is not an answered direction consult: {short}")
             continue
-        if not ADVICE_SKIP_RE.search(ln):
+        if not any(len(m.strip()) >= 3 for m in ADVICE_SKIP_RE.findall(ln)):
             errors.append(f"Claude-only decision without advice: {short} -> run dc_review.py consult --kind "
                           "direction, then add `advice V<n>`; or `advice skip: <reason>`")
     if errors:
