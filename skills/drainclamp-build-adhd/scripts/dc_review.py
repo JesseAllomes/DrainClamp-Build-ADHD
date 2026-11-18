@@ -1528,6 +1528,14 @@ def build_consult(root: Path, data: dict, vid: str, ms: dict, bucket: str, args)
         body += ["## Question", question, "",
                  "## Options (listed as given; the order is not a preference)",
                  *[f"O{i}: {o}" for i, o in enumerate(options, 1)], ""]
+        # What the project is for and rules out, so no pick lands outside the charter. Only
+        # these three keys: objectives, scope rows and the README fallback would eat the line
+        # cap the code ranges need.
+        charter = dc_project.load_charter(root / _dcio.AGENT_DIR_NAME) or {}
+        bounds = [f"[charter {key}] {_clip(_norm(charter[key]), 200)}" for key in ("purpose", "out_of_scope", "never")
+                  if isinstance(charter.get(key), str) and _norm(charter[key])]
+        if bounds:
+            body += ["## What the project is for and rules out (charter)", *bounds, ""]
         related = related_decisions(root, question + " " + " ".join(options))
         body += ["## Standing decisions that may bound the answer",
                  *(related or ["none share this question's terms"]), ""]
