@@ -420,5 +420,33 @@ home_cfg.unlink()
 rc, out = rv(make_repo("nomachine"), "config")
 check("no config.json: default source", rc == 0 and "consult on (default)" in out, out)
 
+# -- m52/c2: trial report, this project and every registered project ----------------
+rc, out = rv(make_repo("notrial"), "trial")
+check("trial with no answered consults says so", rc == 0 and "TRIAL: no answered consults" in out, out)
+rc, out = rv(trial, "trial")
+check("trial on one project prints its line and verdict", rc == 0 and "TRIAL 10/10: accepted 1/10" in out
+      and "TRIAL DONE: switch" in out, out)
+all_home = Path(tempfile.mkdtemp(prefix="dcreg-all-"))  # own registry: exact counts
+for r in (trial, root, mach, make_repo("silent")):
+    dc_registry.touch(r, all_home)
+dc_registry.set_status(root, "complete", all_home)
+gone = make_repo("gone")
+dc_registry.touch(gone, all_home)
+(gone / ".agent" / "drainclamp-project.json").write_text("{bad", encoding="utf-8")
+outside = Path(tempfile.mkdtemp(prefix="dcnoproj-"))
+p = subprocess.run([sys.executable, "-B", str(SCRIPTS / "dc_review.py"), "trial", "--all"],
+                   capture_output=True, text=True, cwd=outside, env={**os.environ, "DRAINCLAMP_HOME": str(all_home)})
+out = p.stdout + p.stderr
+check("trial --all runs outside any project", p.returncode == 0, out)
+check("trial --all names each project with answered consults", "trial: TRIAL 10/10" in out
+      and "brief: TRIAL 3/10" in out, out)
+check("trial --all counts projects without consults, never lists them",
+      "2 project(s) with no answered consults" in out and "silent" not in out and "machine:" not in out, out)
+check("trial --all skips an unreadable sidecar by name", "skipped gone:" in out, out)
+pooled = [ln for ln in out.splitlines() if ln.startswith("TRIAL ALL")]
+check("trial --all prints one pooled line with a verdict", len(pooled) == 1 and "2 project(s)" in pooled[0]
+      and "13 run(s)" in pooled[0] and "TRIAL DONE:" in out.split("TRIAL ALL", 1)[1], out)
+check("trial --all is bounded", len(out.splitlines()) <= 40, len(out.splitlines()))
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

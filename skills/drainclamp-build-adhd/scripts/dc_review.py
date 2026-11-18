@@ -1506,6 +1506,7 @@ CONSULT_RANGE = 60          # lines per --lines range
 CONSULT_OUTPUT = 40         # trimmed failure output, last lines
 CONSULT_DECISIONS = 12      # related standing decisions shown in a direction brief
 HYPOTHESES = 3
+TRIAL_ALL_ROWS = 25         # project lines printed by trial --all
 SPAN_RE = re.compile(r"^(.+):(\d+)-(\d+)$")
 
 
@@ -1821,7 +1822,18 @@ def stuck(rv: dict, rec: dict) -> int:
 def trial_lines(rv: dict) -> list[str]:
     """The first `trial_runs` answered consults: accepted, changed, passed next attempt, tokens."""
     cfg = consult_config(rv)
-    runs = [c for c in rv["consults"] if c.get("reply")][:int(cfg["trial_runs"])]
+    runs = trial_runs(rv)
+    return judge_trial(runs, cfg, f"TRIAL {len(runs)}/{cfg['trial_runs']}", "dc_review.py config --consult off")
+
+
+def trial_runs(rv: dict) -> list[dict]:
+    """A project's trial: its first `trial_runs` answered consults."""
+    return [c for c in rv["consults"] if c.get("reply")][:int(consult_config(rv)["trial_runs"])]
+
+
+def judge_trial(runs: list[dict], cfg: dict, head: str, off: str) -> list[str]:
+    """`head: <summary>` over `runs`, plus a TRIAL DONE verdict (`off` switches it off) once
+    cfg['trial_runs'] runs are in."""
     if not runs:
         return []
     k = len(runs)
@@ -1831,7 +1843,7 @@ def trial_lines(rv: dict) -> list[str]:
     passed = sum(1 for c in probs if c.get("passed"))
     toks = [int((c.get("tokens") or {}).get("total") or 0) for c in runs if (c.get("tokens") or {}).get("total")]
     avg = sum(toks) // len(toks) if toks else 0
-    line = (f"TRIAL {k}/{cfg['trial_runs']}: accepted {acc}/{k}, changed {chg}/{k}, "
+    line = (f"{head}: accepted {acc}/{k}, changed {chg}/{k}, "
             f"passed next attempt {passed}/{len(probs)}, tokens/run {avg or 'not logged'}")
     out = [line]
     if k >= int(cfg["trial_runs"]):
@@ -1841,8 +1853,44 @@ def trial_lines(rv: dict) -> list[str]:
         if avg and avg > int(cfg.get("max_tokens") or CONSULT_MAX_TOKENS):
             why.append(f"{avg} tokens per run is over {int(cfg.get('max_tokens') or CONSULT_MAX_TOKENS)}")
         out.append("TRIAL DONE: " + ("switch the gate off or tighten it (" + "; ".join(why)
-                                     + "): dc_review.py config --consult off" if why else "keep it on"))
+                                     + f"): {off}" if why else "keep it on"))
     return out
+
+
+def trial_all(home=None) -> list[str]:
+    """The advisor-gate trial across every registered project (active and complete): one line per
+    project with answered consults, then the pooled trial judged on the machine-wide config."""
+    out: list[str] = []
+    pooled: list[dict] = []
+    quiet = skipped = 0
+    rows = dc_registry.listing("active", home) + dc_registry.listing("complete", home)
+    for entry in rows:
+        name = entry.get("name") or Path(entry["root"]).name
+        try:
+            rv = review_of(dc_project.load(Path(entry["root"]) / _dcio.AGENT_DIR_NAME))
+            runs = trial_runs(rv)
+        except (DcError, OSError, KeyError, TypeError, ValueError) as exc:
+            skipped += 1
+            if skipped <= TRIAL_ALL_ROWS:
+                out.append(f"skipped {name}: {str(exc)[:120]}")
+            continue
+        if not runs:
+            quiet += 1
+            continue
+        pooled.extend(runs)
+        if len(out) < TRIAL_ALL_ROWS:
+            out.extend(f"{name}: {ln}" for ln in trial_lines(rv)[:1])
+    shown = sum(1 for ln in out if not ln.startswith("skipped "))
+    projects = len(rows) - quiet - skipped
+    if projects > shown or skipped > TRIAL_ALL_ROWS:
+        out.append(f"TRUNCATED: SHOWING {shown}/{projects} project lines")
+    if quiet:
+        out.append(f"{quiet} project(s) with no answered consults")
+    if not pooled:
+        return out + ["TRIAL ALL: no answered consults in any registered project"]
+    cfg = consult_config({"config": {}}, home)
+    return out + judge_trial(pooled, cfg, f"TRIAL ALL ({projects} project(s), {len(pooled)} run(s))",
+                             "dc_review.py config --consult off --machine")
 
 
 # -- CLI -------------------------------------------------------------------------
@@ -1950,6 +1998,10 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--reason", required=True, help="the user's reason, as given")
     sk.add_argument("--base", help="change set relative to this ref")
 
+    tr = sub.add_parser("trial", help="advisor-gate trial report: this project, or --all registered projects")
+    tr.add_argument("--all", action="store_true", dest="all_projects",
+                    help="every registered project (active and complete) plus a pooled verdict")
+
     cs = sub.add_parser("consult", help="advisor gate: brief dca-advisor on a direction or a problem")
     cs.add_argument("--kind", choices=CONSULT_KINDS, required=True)
     cs.add_argument("--milestone")
@@ -1998,6 +2050,9 @@ def _parse_sets(values: list[str]) -> list[tuple[str, str, str]]:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.cmd == "trial" and args.all_projects:
+        print("\n".join(trial_all()))
+        return _dcio.EXIT_OK
     root = _dcio.project_root(args.root)
     agent = root / _dcio.AGENT_DIR_NAME
     out: list[str] = []
@@ -2010,6 +2065,11 @@ def main() -> int:
             _store(data, rv)
             return data
         return dc_project.mutate(agent, apply)
+
+    if args.cmd == "trial":
+        print("\n".join(trial_lines(review_of(dc_project.load(agent)))
+                        or ["TRIAL: no answered consults in this project"]))
+        return _dcio.EXIT_OK
 
     if args.cmd == "config":
         sets = {}
