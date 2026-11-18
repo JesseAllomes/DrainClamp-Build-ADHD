@@ -63,6 +63,10 @@ A direction brief also carries the charter's purpose, out_of_scope and never lin
 - Trial: the first 10 answered consults print a `TRIAL` line (accepted, changed, passed next attempt,
   tokens per run). `TRIAL DONE` says switch off or tighten when under 1 in 5 is accepted or runs
   average over 60k tokens. Off: `dc_review.py config --consult off` (sources are still required).
+  `dc_review.py trial` reprints this project's trial; `trial --all` adds one line per registered project
+  (active and complete) and a pooled `TRIAL ALL` verdict.
+- Machine-wide default: `dc_review.py config --consult on|off --machine` writes `consult` in
+  `~/.drainclamp/config.json`; a project's own `config --consult` still wins. `config` names the source.
 
 Chunk notes stay in the sidecar. `DC:LOG` gets **one** line per milestone, at close, with the status flip in one guarded call:
 `dc_state.py --close <m> --log "<one sentence>"` (`--mark <m>=active|pending|done` for other flips).
