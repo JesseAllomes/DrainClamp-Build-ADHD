@@ -389,6 +389,8 @@ check("(r157b) UTF-16 log: FAIL row with the fallback key, no exception",
 
 # -- m52/c1: machine-wide consult default ------------------------------------------
 import dc_registry  # noqa: E402
+# config.json tests get their own home: a pre-set DRAINCLAMP_HOME (line 11 setdefault) is never touched
+os.environ["DRAINCLAMP_HOME"] = tempfile.mkdtemp(prefix="dcreg-machine-")
 
 home_cfg = dc_registry.home_dir() / "config.json"
 home_cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -401,7 +403,9 @@ check("config --consult off --machine writes config.json, keeps other keys",
       and saved["consult"]["junk"] == 1, saved)
 check("--machine leaves the project sidecar alone",
       "consult" not in ((dc_project.load(mach / ".agent").get("review") or {}).get("config") or {}), out)
-check("config shows the machine source", "consult off (machine)" in out, out)
+check("--machine prints only the machine result", "REVIEW config" not in out, out)
+rc, out = rv(mach, "config")
+check("config shows the machine source", rc == 0 and "consult off (machine)" in out, out)
 rc, out = direction(mach)
 check("machine off: consult prints OFF in a project with no own setting", rc == 0 and out.startswith("CONSULT OFF"), out)
 rc, out = rv(mach, "config", "--consult", "on")
@@ -412,6 +416,23 @@ rc, out = rv(mach, "config", "--machine")
 check("--machine without --consult refused", rc != 0 and "--machine" in out, out)
 rc, out = rv(mach, "config", "--consult", "on", "--machine", "--mode", "final")
 check("--machine with project options refused", rc != 0 and "--machine" in out, out)
+home_cfg.write_bytes(json.dumps({"consult": {"on": False}}).encode("utf-16"))
+rc, out = rv(make_repo("utf16"), "config")
+check("(r169) UTF-16 config.json reads as no machine value, no traceback", rc == 0
+      and "consult on (default)" in out and "Traceback" not in out, out)
+rc, out = rv(make_repo("utf16b"), "config", "--consult", "off", "--machine")
+check("(r169) --machine refuses a UTF-16 config.json and leaves it", rc != 0 and "not valid JSON" in out
+      and home_cfg.read_bytes() == json.dumps({"consult": {"on": False}}).encode("utf-16"), out)
+home_cfg.write_text(json.dumps({"consult": {"on": "off", "trial_runs": "ten"}}), encoding="utf-8")
+rc, out = rv(make_repo("badtypes"), "config")
+check("(r170) wrong-type machine values are ignored", rc == 0 and "consult on (default)" in out, out)
+rc, out = rv(make_repo("badtypes2"), "trial")
+check("(r170) a string trial_runs never crashes trial", rc == 0 and "Traceback" not in out, out)
+bad_side = make_repo("badsidecar")
+(bad_side / ".agent" / "drainclamp-project.json").write_text("{bad", encoding="utf-8")
+rc, out = rv(bad_side, "config", "--consult", "off", "--machine")
+check("(r171) --machine exits 0 beside a malformed project sidecar", rc == 0
+      and "CONSULT machine default off" in out and "REVIEW config" not in out, out)
 home_cfg.write_text("{not json", encoding="utf-8")
 rc, out = rv(mach, "config", "--consult", "on", "--machine")
 check("malformed config.json left untouched", rc != 0 and "not valid JSON" in out

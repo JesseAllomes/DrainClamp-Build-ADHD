@@ -1513,7 +1513,10 @@ SPAN_RE = re.compile(r"^(.+):(\d+)-(\d+)$")
 def _home_config(home=None) -> tuple[Path, dict | None]:
     """~/.drainclamp/config.json as a dict; None when it is missing or not a JSON object."""
     path = dc_registry.home_dir(home) / dc_project.CONFIG_NAME
-    text = _dcio.read_text(path)
+    try:
+        text = _dcio.read_text(path)
+    except (OSError, UnicodeDecodeError):
+        return path, None  # unreadable or not UTF-8: treated as invalid, never a crash
     if text is None:
         return path, {}
     try:
@@ -1524,10 +1527,14 @@ def _home_config(home=None) -> tuple[Path, dict | None]:
 
 
 def machine_consult(home=None) -> dict:
-    """The machine-wide `consult` block in config.json, known keys only."""
+    """The machine-wide `consult` block in config.json: known keys of the right type only."""
     data = _home_config(home)[1] or {}
     given = data.get("consult")
-    return {k: v for k, v in given.items() if k in CONSULT_DEFAULTS} if isinstance(given, dict) else {}
+    if not isinstance(given, dict):
+        return {}
+    # a hand-edited value of the wrong type is ignored: "off" is truthy, "ten" is no count
+    return {k: v for k, v in given.items() if k in CONSULT_DEFAULTS
+            and (isinstance(v, bool) if k == "on" else isinstance(v, (int, float)) and not isinstance(v, bool))}
 
 
 def set_machine_consult(on: bool, home=None) -> Path:
@@ -2086,6 +2093,7 @@ def main() -> int:
                 raise DcError("--machine sets only --consult; set project options in a separate call")
             path = set_machine_consult(args.consult == "on")
             print(f"CONSULT machine default {args.consult}: {path}")
+            return _dcio.EXIT_OK
         if not args.machine and (any(v is not None for v in (args.mode, args.depth, args.max_agents,
                                                               args.max_findings, args.advisor, args.consult))
                                  or sets):
