@@ -210,6 +210,39 @@ got = dc_verify.update_streaks(slow, [{"id": "it", "status": "TIMEOUT", "detail"
 check("repeat timeouts with different durations advise", len(got) == 1 and "failed 2 times" in got[0], got)
 check("no fingerprint: a repeat failure is not counted", dc_verify.update_streaks(ag, fail, None) == []
       and dc_verify.update_streaks(ag, fail, None) == [])
+
+# -- m50/c2 (i21): a counted verify attempt settles the open problem consult ---------------
+settle = make_repo("settle")
+sag = settle / ".agent"
+dc_verify.update_streaks(sag, fail, "u1")
+dc_verify.update_streaks(sag, fail, "u2")
+rv(settle, "consult", "--kind", "problem", "--check", "unit", "--attempt", "first fix: still fails")
+check("an unanswered consult is not settled", not any("COUNSEL" in x for x in
+      dc_verify.update_streaks(sag, fail, "u3")) and consults(settle)[0]["passed"] is None)
+rv(settle, "counsel", "--consult", "V1", "--file", "-", stdin=hyps)
+check("a rerun on the same tree settles nothing", dc_verify.update_streaks(sag, fail, "u3") == []
+      and consults(settle)[0]["passed"] is None)
+got = dc_verify.update_streaks(sag, fail, "u4")
+check("a counted failure records passed no", "COUNSEL V1: passed no (from verify)" in got
+      and consults(settle)[0]["passed"] is False and consults(settle)[0]["passed_by"] == "verify", got)
+rv(settle, "consult", "--kind", "problem", "--check", "unit", "--attempt", "H1 from V1: still fails",
+   "--user-ok", "fixture")
+rv(settle, "counsel", "--consult", "V2", "--file", "-", stdin=hyps)
+got = dc_verify.update_streaks(sag, [{"id": "unit", "status": "PASS"}, {"id": "lint", "status": "PASS"}], "u5")
+check("a pass records passed yes on the newest open consult only", len(got) == 1
+      and got[0].startswith("STREAK CLEARED unit after 4 failures; COUNSEL V2: passed yes (from verify)")
+      and consults(settle)[1]["passed"] is True and consults(settle)[0]["passed"] is False, got)
+check("a settled consult is not settled again", dc_verify.update_streaks(sag, fail, "u6") == []
+      and consults(settle)[1]["passed"] is True)
+rv(settle, "consult", "--kind", "problem", "--check", "unit", "--attempt", "x: fails", "--user-ok", "fixture")
+rv(settle, "counsel", "--consult", "V3", "--file", "-", stdin=hyps)
+got = dc_verify.update_streaks(sag, fail, "u7")
+check("a second advised miss from verify says STUCK", any("COUNSEL V3: passed no (from verify)\nSTUCK: 2 advised"
+                                                           in x for x in got), got)
+bare = tmp / "bare-agent"; bare.mkdir()
+dc_verify.update_streaks(bare, [{"id": "unit", "status": "PASS"}], "b1")
+check("no sidecar: none is created", not dc_project.sidecar_path(bare).exists())
+
 # -- c4: DC:DECISIONS write gate -----------------------------------------------------
 def st(root, *args):
     p = subprocess.run([sys.executable, "-B", str(SCRIPTS / "dc_state.py"), "--root", str(root), *args],

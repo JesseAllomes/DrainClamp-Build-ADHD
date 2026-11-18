@@ -376,9 +376,13 @@ def update_streaks(agent: Path, rows: list[dict], tree: str | None) -> list[str]
     The key is the entry id plus its first failure line, so a different failing test in
     the same entry starts a new streak. A rerun on an unchanged tree is not a new
     attempt; a pass clears the streak. Kept apart from the verify records, which Gate 6
-    pins. Returns the lines to print.
+    pins. Each counted attempt also settles the newest answered problem consult on that
+    check (`passed`), so STUCK and the trial do not hang on the agent remembering to
+    report it. Returns the lines to print.
     """
     out: list[str] = []
+    attempts: dict[str, bool] = {}     # check id -> passed, for counted attempts only
+    cleared: dict[str, int] = {}       # check id -> index of its STREAK CLEARED line
     with _dcio.FileLock(agent):
         path = agent / STREAKS_NAME
         try:
@@ -390,7 +394,10 @@ def update_streaks(agent: Path, rows: list[dict], tree: str | None) -> list[str]
             rid, status = row["id"], row["status"]
             was = data.get(rid) if isinstance(data.get(rid), dict) else None
             if status == PASS:
+                if was:
+                    attempts[rid] = True
                 if was and int(was.get("count") or 0) >= 2:
+                    cleared[rid] = len(out)
                     out.append(f"STREAK CLEARED {rid} after {was['count']} failures: if a consult advised "
                                "this attempt, record it (dc_review.py counsel --consult <V> --passed yes)")
                 data.pop(rid, None)
@@ -405,12 +412,65 @@ def update_streaks(agent: Path, rows: list[dict], tree: str | None) -> list[str]
             else:
                 was = {"key": key, "count": 1, "tree": tree}
             data[rid] = was
+            attempts[rid] = False
             if was["count"] >= 2:
                 out.append(f"ADVISE problem: check {rid} failed {was['count']} times on the same error "
                            f"({key}): dc_review.py consult --kind problem --check {rid} "
                            "--attempt \"<what you tried>: <result>\" (one per attempt)")
         _dcio.atomic_write(path, json.dumps(data, indent=2) + "\n")
+    settled, note = settle_consults(agent, attempts)   # after the streak lock: the sidecar has its own
+    for rid, (vid, passed, held) in settled.items():
+        line = f"COUNSEL {vid}: passed {'yes' if passed else 'no'} (from verify)"
+        if held >= 2:
+            line += (f"\nSTUCK: {held} advised attempts on this problem did not pass: stop and go to the user "
+                     "(no third consult without them)")
+        if rid in cleared:
+            out[cleared[rid]] = out[cleared[rid]].split(":", 1)[0] + f"; {line}"
+        else:
+            out.append(line)
+    if note:
+        out.append(note)
     return out
+
+
+def settle_consults(agent: Path, attempts: dict[str, bool]) -> tuple[dict[str, tuple[str, bool, int]], str]:
+    """Set `passed` on the newest answered problem consult per check that is still open.
+
+    Returns ({check id: (consult id, passed, advised attempts that did not pass)}, note).
+    Never creates a sidecar and never fails the verify run: a sidecar it cannot write is
+    reported in the note.
+    """
+    if not attempts:
+        return {}, ""
+    import dc_project  # lazily: dc_review imports this module and dc_project
+    import dc_review
+
+    def open_consults(data: dict) -> dict[str, dict]:
+        rv = data.get("review") if isinstance(data.get("review"), dict) else {}
+        found: dict[str, dict] = {}
+        for c in rv.get("consults") or []:
+            if (isinstance(c, dict) and c.get("kind") == "problem" and c.get("check") in attempts
+                    and c.get("reply") and c.get("passed") is None):
+                found[c["check"]] = c       # later entries are newer
+        return found
+
+    try:
+        if not dc_project.sidecar_path(agent).is_file() or not open_consults(dc_project.load(agent)):
+            return {}, ""
+        settled: dict[str, tuple[str, bool, int]] = {}
+
+        def apply(data: dict) -> dict:
+            for rid, c in open_consults(data).items():
+                c["passed"] = attempts[rid]
+                c["passed_by"] = "verify"
+                held = 0 if attempts[rid] else dc_review.stuck({"consults": data["review"]["consults"]}, c)
+                settled[rid] = (c["id"], attempts[rid], held)
+            return data
+        dc_project.mutate(agent, apply)
+        return settled, ""
+    except DcError as exc:
+        return {}, f"COUNSEL: outcome not recorded ({_dcio.collapse(str(exc), 120)}); record it with " \
+                   "dc_review.py counsel --consult <V> --passed yes|no"
 
 
 # --------------------------------------------------------------------------
