@@ -211,6 +211,12 @@ check("bare markers are skipped for the next real line",
       ffl("FAIL\nfailures:\nerror: linker not found\n"))
 check("go build failure keys on the compile error",
       ffl("calc.go:3:2: undefined: foo\nFAIL\texample.com/calc [build failed]\n").startswith("calc.go:3:2"))
+check("fallback skips a bare go package summary",
+      ffl("2026/11/18 10:00:00 db down\nexit status 1\nFAIL\texample.com/calc\t0.003s\n") == "exit status 1",
+      ffl("2026/11/18 10:00:00 db down\nexit status 1\nFAIL\texample.com/calc\t0.003s\n"))
+check("only bare markers: go timing dropped",
+      ffl("FAIL\texample.com/calc\t0.003s\n") == ffl("FAIL\texample.com/calc\t0.004s\n") == "FAIL example.com/calc",
+      ffl("FAIL\texample.com/calc\t0.003s\n"))
 
 print()
 print("FAILURES:", fails if fails else "none")

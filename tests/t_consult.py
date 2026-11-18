@@ -95,6 +95,10 @@ check("charter purpose, out_of_scope and never shown above the decisions",
 never = next(ln for ln in cb.splitlines() if ln.startswith("[charter never]"))
 check("charter lines clipped to 200 characters, objectives left out",
       len(never) <= len("[charter never] ") + 200 and "OBJECTIVE_TEXT" not in cb, never)
+odd = make_repo("oddcharter")
+(odd / ".agent" / "charter.json").write_text(json.dumps({"charter": "draft"}), encoding="utf-8")
+rc, out = direction(odd)
+check("a non-object charter is ignored, not a crash", rc == 0 and "Traceback" not in out, out)
 
 rc, out = direction(root, "--lines", "a.py")
 check("whole file refused, range required", rc != 0 and "never a whole file" in out, out)
@@ -272,6 +276,18 @@ check("an unanswered consult is not awaiting a verdict", "Consult:" not in nxt()
 bare = tmp / "bare-agent"; bare.mkdir()
 dc_verify.update_streaks(bare, [{"id": "unit", "status": "PASS"}], "b1")
 check("no sidecar: none is created", not dc_project.sidecar_path(bare).exists())
+rv(settle, "consult", "--kind", "problem", "--check", "unit", "--attempt", "z: fails", "--user-ok", "fixture")
+rv(settle, "counsel", "--consult", "V5", "--file", "-", stdin=hyps)
+_orig_load = dc_project.load
+def _deny(agent):
+    raise PermissionError("sidecar locked by another process")
+dc_project.load = _deny
+try:
+    got = dc_verify.update_streaks(sag, fail, "u8")
+finally:
+    dc_project.load = _orig_load
+check("an unreadable sidecar is reported, never raised",
+      any(x.startswith("COUNSEL: outcome not recorded (sidecar locked") for x in got), got)
 
 # -- c4: DC:DECISIONS write gate -----------------------------------------------------
 def st(root, *args):

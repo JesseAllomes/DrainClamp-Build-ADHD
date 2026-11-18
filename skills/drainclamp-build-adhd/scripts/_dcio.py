@@ -490,13 +490,14 @@ def collapse(text: str, limit: int = MAX_LINE_CHARS) -> str:
 _GO_FAIL = re.compile(r"^\s*(--- FAIL: \S+)")
 _CARGO_FAIL = re.compile(r"^\s*(test \S+ \.\.\. FAILED)\s*$")
 _BARE_FAIL = re.compile(r"^(?i:fail(ed|ures?)?:?)$|^FAIL\s+\S+\s+(\d+(\.\d+)?s|\[[^\]]*\])$")
+_GO_TIMING = re.compile(r"\s+\d+(\.\d+)?s$")
 
 
 def first_failure_line(text: str) -> str:
     """The most useful single line from a failing run.
 
     Prefers a named failing test (go `--- FAIL: TestX`, cargo `test x ... FAILED`),
-    then an assertion or explicit error; falls back to the last non-empty line,
+    then an assertion or explicit error; falls back to the last non-empty line that is not a bare marker,
     which is where most runners put their summary. Bare markers (`FAIL`,
     `failures:`, go's `FAIL <pkg> 0.01s`) name no test, so they are never picked:
     the advisor gate keys failure streaks on this line.
@@ -516,7 +517,10 @@ def first_failure_line(text: str) -> str:
             return collapse(line)
         if re.match(r"^[^\s:]+:\d+:", line):  # path:line: diagnostic
             return collapse(line)
-    return collapse(lines[-1])
+    rest = [ln for ln in lines if not _BARE_FAIL.match(ln.strip())]
+    if rest:
+        return collapse(rest[-1])
+    return collapse(_GO_TIMING.sub("", lines[-1].strip()))  # only bare markers: drop go's run timing
 
 
 # --------------------------------------------------------------------------

@@ -1531,7 +1531,8 @@ def build_consult(root: Path, data: dict, vid: str, ms: dict, bucket: str, args)
         # What the project is for and rules out, so no pick lands outside the charter. Only
         # these three keys: objectives, scope rows and the README fallback would eat the line
         # cap the code ranges need.
-        charter = dc_project.load_charter(root / _dcio.AGENT_DIR_NAME) or {}
+        charter = dc_project.load_charter(root / _dcio.AGENT_DIR_NAME)
+        charter = charter if isinstance(charter, dict) else {}
         bounds = [f"[charter {key}] {_clip(_norm(charter[key]), 200)}" for key in ("purpose", "out_of_scope", "never")
                   if isinstance(charter.get(key), str) and _norm(charter[key])]
         if bounds:

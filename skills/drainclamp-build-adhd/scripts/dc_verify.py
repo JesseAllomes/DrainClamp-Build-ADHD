@@ -468,7 +468,7 @@ def settle_consults(agent: Path, attempts: dict[str, bool]) -> tuple[dict[str, t
             return data
         dc_project.mutate(agent, apply)
         return settled, ""
-    except DcError as exc:
+    except (DcError, OSError) as exc:
         return {}, f"COUNSEL: outcome not recorded ({_dcio.collapse(str(exc), 120)}); record it with " \
                    "dc_review.py counsel --consult <V> --passed yes|no"
 

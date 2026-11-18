@@ -50,7 +50,10 @@ prints the spawn line: `Consult brief: <rel>. Output JSON lines only.` Then reco
 `dc_review.py counsel --consult V<n> --from-transcript <agent id> --tokens <total_tokens from the
 task notification>`. It prints one pick, or up to 3 hypotheses each with one discriminating check.
 After acting, record what came of it: `counsel --consult V<n> --accepted yes|no --changed yes|no`
-(problem: `--passed yes|no` after the next attempt). It never blocks `chunk done`.
+(problem: the next counted `dc_verify.py` attempt on that check sets `passed` itself and prints
+`COUNSEL V<n>: passed yes|no (from verify)`; `--passed` is for a problem verify cannot see). It never
+blocks `chunk done`. Replied consults with no verdict show in `dc_project.py next` as `Consult: N await verdict`.
+A direction brief also carries the charter's purpose, out_of_scope and never lines.
 
 - Cap: 2 consults per chunk (per milestone before chunks exist); a third needs the user's words
   (`--user-ok "<their words>"`). After 2 failed advised attempts on one problem, `STUCK:` says stop
