@@ -387,5 +387,38 @@ check("(r157b) fixture has a tree fingerprint", tree157 is not None)
 check("(r157b) UTF-16 log: FAIL row with the fallback key, no exception",
       row157.get("status") == "FAIL" and row157.get("fail_key") == "host-approved failure", str(row157))
 
+# -- m52/c1: machine-wide consult default ------------------------------------------
+import dc_registry  # noqa: E402
+
+home_cfg = dc_registry.home_dir() / "config.json"
+home_cfg.parent.mkdir(parents=True, exist_ok=True)
+home_cfg.write_text(json.dumps({"project_roots": ["C:/x"], "consult": {"on": True, "junk": 1}}), encoding="utf-8")
+mach = make_repo("machine")
+rc, out = rv(mach, "config", "--consult", "off", "--machine")
+saved = json.loads(home_cfg.read_text(encoding="utf-8"))
+check("config --consult off --machine writes config.json, keeps other keys",
+      rc == 0 and saved["consult"]["on"] is False and saved["project_roots"] == ["C:/x"]
+      and saved["consult"]["junk"] == 1, saved)
+check("--machine leaves the project sidecar alone",
+      "consult" not in ((dc_project.load(mach / ".agent").get("review") or {}).get("config") or {}), out)
+check("config shows the machine source", "consult off (machine)" in out, out)
+rc, out = direction(mach)
+check("machine off: consult prints OFF in a project with no own setting", rc == 0 and out.startswith("CONSULT OFF"), out)
+rc, out = rv(mach, "config", "--consult", "on")
+check("project setting overrides the machine default", rc == 0 and "consult on (project)" in out, out)
+rc, out = direction(mach)
+check("project on beats machine off", rc == 0 and "CONSULT V1 direction" in out, out)
+rc, out = rv(mach, "config", "--machine")
+check("--machine without --consult refused", rc != 0 and "--machine" in out, out)
+rc, out = rv(mach, "config", "--consult", "on", "--machine", "--mode", "final")
+check("--machine with project options refused", rc != 0 and "--machine" in out, out)
+home_cfg.write_text("{not json", encoding="utf-8")
+rc, out = rv(mach, "config", "--consult", "on", "--machine")
+check("malformed config.json left untouched", rc != 0 and "not valid JSON" in out
+      and home_cfg.read_text(encoding="utf-8") == "{not json", out)
+home_cfg.unlink()
+rc, out = rv(make_repo("nomachine"), "config")
+check("no config.json: default source", rc == 0 and "consult on (default)" in out, out)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
