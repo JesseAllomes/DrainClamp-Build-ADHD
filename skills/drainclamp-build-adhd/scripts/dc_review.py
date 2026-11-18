@@ -1226,7 +1226,8 @@ def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
 
     Files and base come from the rounds, not the working tree: after a release the tree
     diff is empty. Each file is diffed against the base of the first round that named it.
-    Only the innermost symbol around a change is listed; files with no symbol map show
+    That base is the commit the round pinned at packet time (base_sha), so a round without --base or with a moving ref still diffs after a commit; a file with nothing left to diff is still named.
+    Each change is listed under the innermost symbol that holds it (an outer symbol too when its own lines changed); files with no symbol map show
     their changed line runs. Long files carry their line count. Over WHERE_CAP rows, each
     file folds into one row so every file stays named before any is cut.
     """
@@ -1236,7 +1237,8 @@ def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
             continue
         for rel in rd.get("files") or []:
             if isinstance(rel, str) and rel not in base_of:
-                base_of[rel] = rd.get("base") if isinstance(rd.get("base"), str) else None
+                pinned = rd.get("base_sha") if isinstance(rd.get("base_sha"), str) else rd.get("base")
+                base_of[rel] = pinned if isinstance(pinned, str) else None
     if not base_of:
         return []
     tracked = set((_git(root, "ls-files") or "").splitlines())
@@ -1248,18 +1250,25 @@ def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
             continue
         _, changed, _ = annotate(file_diff(root, rel, base, rel in tracked))
         if not changed:
+            per_file.append((rel, 0, [], set()))
             continue
         text = _source(root, rel)
         total = len(text.splitlines()) if text is not None else 0
         rec = records.get(rel)
         hit = [(n, s, e) for n, s, e in (rec[2] if rec and rec[1] == "OK" else [])
                if any(s <= c <= e for c in changed)]
-        inner = sorted(((n, s, e) for n, s, e in hit
-                        if not any((s2, e2) != (s, e) and s <= s2 and e2 <= e for _, s2, e2 in hit)),
-                       key=lambda x: x[1])
+        def own_change(s: int, e: int) -> bool:
+            """A changed line inside (s, e) that no smaller hit symbol holds."""
+            kids = [(s2, e2) for _, s2, e2 in hit if (s2, e2) != (s, e) and s <= s2 and e2 <= e]
+            return any(s <= c <= e and not any(s2 <= c <= e2 for s2, e2 in kids) for c in changed)
+
+        inner = sorted(((n, s, e) for n, s, e in hit if own_change(s, e)), key=lambda x: x[1])
         per_file.append((rel, total, inner, changed))
     rows: list[str] = []
     for rel, total, inner, changed in per_file:
+        if not changed:
+            rows.append(f"{rel}  no diff left against the round's base: see the round's packet")
+            continue
         if total >= WHERE_BIG:
             rows.append(f"{rel}  {total} lines: read the ranges below, not the whole file")
         rows.extend([f"{rel}:{s}-{e}  {n}" for n, s, e in inner] or [f"{rel}  changed at {_spans(changed)}"])
@@ -1267,7 +1276,10 @@ def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
         return rows
     folded = []
     for rel, total, inner, changed in per_file:
-        size = f" ({total} lines)" if total >= WHERE_BIG else ""
+        if not changed:
+            folded.append(f"{rel}: no diff left against the round's base")
+            continue
+        size =f" ({total} lines)" if total >= WHERE_BIG else ""
         what = "; ".join(f"{s}-{e} {n}" for n, s, e in inner) if inner else f"changed at {_spans(changed)}"
         folded.append(_clip(f"{rel}{size}: {what}", 240))
     if len(folded) > WHERE_CAP:
@@ -2036,6 +2048,8 @@ def main() -> int:
         def apply_round(rv2: dict) -> None:
             rv2["rounds"].append({
                 "id": rid, "milestone": ms["id"], "depth": depth, "base": args.base,
+                "base_sha": (_git(root, "rev-parse", "--verify", "--quiet",
+                                  (dc_verify.git_ref(args.base) if args.base else "HEAD") + "^{commit}") or "").strip() or None,
                 "at": _now(), "gate3": gate3, "files": files, "runs": [],
                 "coverage": meta["coverage"], "packet_lines": meta["lines"],
                 "left_out": meta["left_out"], "inventory": inventory, "packet_stamp": packet_stamp,

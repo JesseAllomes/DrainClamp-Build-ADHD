@@ -1,6 +1,7 @@
 """Gate 6 checks for dc_review.py: store, packet, ingest, scope, guard, verdicts."""
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -435,6 +436,26 @@ rows = dc_review.where_to_read(wr, rounds, "m1")
 check("over the cap each file folds into one row", len(rows) == 1 and rows[0].startswith(
     "long.py (500 lines): 1-2 f0; 3-4 f1;") and rows[0].endswith("..."), rows)
 check("no rounds for the milestone: no block", dc_review.where_to_read(wr, rounds, "m5") == [])
+check("a round pins the commit it reviewed",
+      bool(re.fullmatch(r"[0-9a-f]{40}", side(adv)["rounds"][0].get("base_sha") or "")), side(adv)["rounds"][0])
+pinned = {"rounds": [{"id": "R1", "milestone": "m1", "base": None, "base_sha": base_sha, "files": ["long.py"]},
+                     {"id": "R2", "milestone": "m2", "base": None, "files": ["a.py"]}], "findings": [], "ideas": []}
+rows = dc_review.where_to_read(wr, pinned, "m1")
+check("a round without --base still diffs its pinned commit after the work is committed",
+      len(rows) == 1 and rows[0].startswith("long.py (500 lines): "), rows)
+check("a file with no diff left is named, not dropped",
+      dc_review.where_to_read(wr, pinned, "m2") == ["a.py  no diff left against the round's base: see the round's packet"],
+      dc_review.where_to_read(wr, pinned, "m2"))
+cls = make_repo("where-cls")
+(cls / "k.py").write_text("class K:\n    A = 1\n\n    def m(self):\n        return 1\n", encoding="utf-8")
+git(cls, "add", "k.py")
+git(cls, "commit", "-qm", "k")
+cls_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cls, capture_output=True, text=True).stdout.strip()
+(cls / "k.py").write_text("class K:\n    A = 2\n\n    def m(self):\n        return 2\n", encoding="utf-8")
+krows = dc_review.where_to_read(cls, {"rounds": [{"id": "R1", "milestone": "m1", "base": cls_base, "files": ["k.py"]}],
+                                      "findings": [], "ideas": []}, "m1")
+check("an outer symbol's own change is named beside the inner one",
+      any(r.startswith("k.py:1-") and r.endswith("  K") for r in krows) and any(r.endswith("m") and "k.py:4-5" in r for r in krows), krows)
 
 
 def idea(title, size="S", purpose="P1", file="a.py", line=1, evidence="def parse(items):", kind="improve"):
