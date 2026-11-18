@@ -259,6 +259,15 @@ cfg.write_text("{broken", encoding="utf-8")
 r = inst("--compact-reminder", "on")
 check("invalid settings JSON refused, left as is",
       r.returncode != 0 and cfg.read_text(encoding="utf-8") == "{broken")
+for body146, why140 in (("[]", "is not a JSON object"),
+                        ('{"hooks": []}', "`hooks` is not an object"),
+                        ('{"hooks": {"Notification": {}}}', "`hooks.Notification` is not a list")):
+    cfg.write_text(body146, encoding="utf-8")
+    r = inst("--compact-reminder", "on")
+    check(f"(r140) refused, left as is: {body146}",
+          r.returncode != 0 and why140 in (r.stdout + r.stderr)
+          and cfg.read_text(encoding="utf-8") == body146, r.stdout + r.stderr)
+cfg.write_text("{broken", encoding="utf-8")
 
 # --- hook body ---------------------------------------------------------------
 repo = newrepo()
@@ -360,6 +369,44 @@ check("c6: the hook logs its last match", log.get("matched") == "session" and "4
       str(log))
 r = py("dc_install.py", "--resume-hook-run", stdin=json.dumps({"cwd": str(elsewhere)}), env=pid_env)
 check("c6: second /clear prints nothing", r.returncode == 0 and not r.stdout.strip(), r.stdout)
+
+# r146: a symlinked settings.json stays a link; the target gets the hook
+saved146 = cfg.read_text(encoding="utf-8") if cfg.exists() else None
+real146 = home / "dotfiles-settings.json"
+real146.write_text("{}", encoding="utf-8")
+if cfg.exists():
+    cfg.unlink()
+try:
+    os.symlink(real146, cfg)
+    linked = True
+except (OSError, NotImplementedError):
+    linked = False
+    print("SKIP  (r146) symlinks not available here")
+if linked:
+    inst("--compact-reminder", "on")
+    check("(r146) settings.json is still a symlink", cfg.is_symlink())
+    check("(r146) the link target got the hook", "--compact-hook" in real146.read_text(encoding="utf-8"))
+    cfg.unlink()
+if saved146 is not None:
+    cfg.write_text(saved146, encoding="utf-8")
+
+# r156: an unlogged deletion of a tracked file is not safe; a logged one is
+repo156 = newrepo()
+(repo156 / "sub").mkdir()
+(repo156 / "sub" / "gone.txt").write_text("g\n", encoding="utf-8")
+subprocess.run(["git", "add", "sub/gone.txt"], cwd=repo156, capture_output=True)
+subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init"],
+               cwd=repo156, capture_output=True)
+st(repo156, "--append-log", "baseline")
+(repo156 / "sub" / "gone.txt").unlink()
+touch_future(repo156 / "sub")
+rc, out = verdict(repo156)
+check("(r156) unlogged tracked deletion: not safe",
+      rc != 0 and out == "Compact: not yet: 1 edited file not logged", out)
+st(repo156, "--append-log", "logged the deletion")
+os.utime(repo156 / "sub", (time.time() - 60, time.time() - 60))
+rc, out = verdict(repo156)
+check("(r156) deletion older than the log: safe", rc == 0, out)
 
 print("FAILURES: " + (", ".join(fails) if fails else "none"))
 sys.exit(1 if fails else 0)

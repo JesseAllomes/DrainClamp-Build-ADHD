@@ -1570,7 +1570,7 @@ def build_consult(root: Path, data: dict, vid: str, ms: dict, bucket: str, args)
 
 
 PAREN_RE = re.compile(r"\(([^()]*)\)")
-SOURCE_RE = re.compile(r"\b(user|charter|repo|assumed|claude)\b", re.I)
+SOURCE_RE = re.compile(r"\b(user|charter|repo|assumed|claude)\b(?!-)", re.I)  # not "user-facing"
 ADVICE_RE = re.compile(r"\badvice (V\d+)\b")
 ADVICE_SKIP_RE = re.compile(r"\badvice skip:([^)]*)")
 

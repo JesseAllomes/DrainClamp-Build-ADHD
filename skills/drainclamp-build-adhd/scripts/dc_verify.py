@@ -397,7 +397,7 @@ def update_streaks(agent: Path, rows: list[dict], tree: str | None) -> list[str]
                 continue
             if status not in STREAK_STATUSES:
                 continue
-            key = status if status == "TIMEOUT" else _dcio.collapse(row.get("detail") or status, 160)
+            key = status if status == "TIMEOUT" else _dcio.collapse(row.get("fail_key") or row.get("detail") or status, 160)
             if was and was.get("key") == key:
                 if tree is None or was.get("tree") == tree:
                     continue        # same tree (or no fingerprint to tell): a rerun, not another attempt
@@ -486,6 +486,13 @@ def run_entry(entry: dict, root: Path, agent: Path) -> dict:
             if tree is not None and record.get("tree") == tree:
                 row.update(status=PASS if record.get("status") == "pass" else FAIL,
                            detail=f"host-approved record from {record.get('when', '?')}")
+                if record.get("status") != "pass":
+                    # The streak key is the failure, not the time it was recorded.
+                    try:
+                        text = _dcio.read_text(Path(record["log"])) if record.get("log") else ""
+                    except (OSError, UnicodeError):
+                        text = ""
+                    row["fail_key"] = _dcio.first_failure_line(text or "") or "host-approved failure"
                 return row
             row["stale"] = f"record from {record.get('when', '?')} is for a different tree"
         row.update(status=APPROVAL, detail=digest)

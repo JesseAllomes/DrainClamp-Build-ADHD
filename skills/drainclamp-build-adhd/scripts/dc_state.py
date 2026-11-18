@@ -270,7 +270,8 @@ def resume_view(state: "State") -> str:
     selected = [row for row in rows if row["status"] != "done" or row in last_done]
     logs = log_lines(state.sections["LOG"])
     decisions = [ln for ln in state.sections["DECISIONS"].split("\n") if ln.strip()]
-    standing = [ln for ln in decisions if not SUPERSEDED.search(ln.rstrip())]
+    standing = [f"D{n}: {ln}" for n, ln in enumerate(decisions, 1)
+                if not SUPERSEDED.search(ln.rstrip())]  # original numbers, as Gate 6 prints them
     lines = [f"# DrainClamp resume view (schema={state.schema} generation={state.generation})",
              f"ROADMAP: SHOWING {len(selected)}/{len(rows)} rows; LOG: SHOWING {min(5, len(logs))}/{len(logs)} lines; "
              f"DECISIONS: SHOWING {len(standing)}/{len(decisions)} ({len(decisions) - len(standing)} superseded)",
@@ -1159,7 +1160,14 @@ def compact_check(root: Path) -> tuple[bool, str]:
         try:
             mtime = datetime.fromtimestamp((root / rel).stat().st_mtime, timezone.utc)
         except OSError:
-            continue  # deleted
+            # Deleted: its nearest surviving folder changed at or after the deletion.
+            parent = (root / rel).parent
+            while not parent.exists() and parent != root and parent.parent != parent:
+                parent = parent.parent
+            try:
+                mtime = datetime.fromtimestamp(parent.stat().st_mtime, timezone.utc)
+            except OSError:
+                continue
         if stamp is None or mtime.replace(microsecond=0) > stamp:  # log stamps are whole seconds
             unlogged += 1
     if unlogged:

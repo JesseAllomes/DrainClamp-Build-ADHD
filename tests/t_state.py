@@ -469,6 +469,28 @@ r = run(td, "--close", "m2")
 check("t23: a named id with no sidecar to-do is reported, the close still lands",
       r.returncode == 0 and "TODOS ticked: t4" in r.stdout and "TODOS named but not in the sidecar: t7" in r.stdout and "DC:ROADMAP marked m2=done" in r.stdout, r.stdout + r.stderr)
 
+# --- r158: the resume view keeps each standing decision's original D number ----
+rv = run(sup, "--resume-view")
+check("(r158) resume-view numbers standing decisions as Gate 6 does",
+      "D2: - Rate? -> 90 (user)" in rv.stdout and "D3: - Host? -> none, board dropped (user)" in rv.stdout
+      and "D1:" not in rv.stdout, rv.stdout)
+
+# --- r150: a sidecar error during --close is reported, never raised ---------
+_orig_mutate = dc_project.mutate
+
+
+def _fail150(*a, **k):
+    raise _dcio.DcError("sidecar locked")
+dc_project.mutate = _fail150
+try:
+    st150 = dc_state.State.parse((td / ".agent" / "drainclamp-state.md").read_text(encoding="utf-8"))
+    got150 = dc_state.close_todos(td, td / ".agent", st150, ["m1"])
+finally:
+    dc_project.mutate = _orig_mutate
+check("(r150) sidecar error: one not-ticked line",
+      len(got150) == 1 and got150[0].startswith("TODOS: not ticked (") and "sidecar locked" in got150[0]
+      and "dc_project.py todo done" in got150[0], str(got150))
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

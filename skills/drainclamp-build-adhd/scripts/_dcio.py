@@ -10,9 +10,11 @@ repo-root and project-root resolution, the subprocess sandbox, and output normal
 from __future__ import annotations
 
 import errno
+import fnmatch
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -801,7 +803,17 @@ def dirty_snapshot(root: Path) -> dict:
 
 
 def _under(rel: str, targets: list[str]) -> bool:
-    return any(rel == t or rel.startswith(t.rstrip("/") + "/") for t in targets)
+    """`rel` is a target, under a target folder, or matches a target glob.
+    "." is the whole project; case-folded on Windows, as dc_state.normalise does."""
+    fold = sys.platform == "win32"
+    r = rel.lower() if fold else rel
+    for t in targets:
+        t = t.lower() if fold else t
+        if t == "." or r == t or r.startswith(t.rstrip("/") + "/"):
+            return True
+        if set("*?[") & set(t) and fnmatch.fnmatchcase(r, t):
+            return True
+    return False
 
 
 def _target_rel(target: str) -> str:
@@ -821,7 +833,7 @@ def step_candidates(root: Path, snapshot: dict, targets: list[str] | None = None
     prefix = git_prefix(root)
     before = set(snapshot.get("files", {}))
     now = dirty_files(root)
-    wanted = [prefix + _target_rel(t) for t in (targets or [])]
+    wanted = [posixpath.normpath(prefix + _target_rel(t)) for t in (targets or [])]
     keep, outside = [], []
     for rel in sorted(now):
         if rel in before:
@@ -831,7 +843,10 @@ def step_candidates(root: Path, snapshot: dict, targets: list[str] | None = None
 
 
 def _review_required(top: Path, forced: bool | None) -> bool:
-    return bool(forced) or any((top / p).is_file() for p in CODEOWNERS_PLACES)
+    if forced or any((top / p).is_file() for p in CODEOWNERS_PLACES):
+        return True
+    # A CODEOWNERS the step deletes still governs the branch it lands on.
+    return any(_git(top, "cat-file", "-e", f"HEAD:{p}")[0] == 0 for p in CODEOWNERS_PLACES)
 
 
 def _default_branch(top: Path) -> set[str]:
@@ -875,7 +890,10 @@ def _clean_tree(top: Path, prefix: str, commit: str, argv: list[str], scratch: P
             return f"clean-tree command not found: {argv[0]}"
         except subprocess.TimeoutExpired:
             return "clean-tree check timed out"
-        if proc.returncode != 0:
+        import dc_verify  # lazy: dc_verify imports this module
+        got = dc_verify.classify(argv)
+        listing = bool(got and got[1] == dc_verify.NON_EMPTY_STDOUT and proc.stdout.strip())
+        if proc.returncode != 0 or listing:
             text = (proc.stdout + b"\n" + proc.stderr).decode("utf-8", "replace")
             why = first_failure_line(text) or f"exit {proc.returncode}"
             return f"clean-tree check failed at the new commit: {why}"

@@ -257,7 +257,9 @@ def presence_cli(args) -> int:
     import dc_project
     if not args.root:
         raise DcError("--presence and --handoff need --root")
-    root = Path(args.root).expanduser().resolve()
+    root = _dcio.project_root(Path(args.root).expanduser())
+    if not dc_registry.state_file(root).is_file() and not (root / _dcio.PROJECT_MARKER).is_file():
+        raise DcError(f"not a DrainClamp project (no state or marker): {root}")
     if args.handoff:
         if not args.file or not args.what:
             raise DcError("--handoff needs --file and --what")

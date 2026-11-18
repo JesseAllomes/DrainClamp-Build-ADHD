@@ -110,6 +110,39 @@ check("no sidecar means no live session", rc == 0 and out == "HANDOFF: none (no 
 rc, out = run("dc_state.py", "--root", str(root), "--append-log", "plain")
 check("state write without presence leaves no sidecar", not SIDECAR.exists(), out[-200:])
 
+# 8. a garbled heartbeat is no live session
+import dc_registry  # noqa: E402
+bad = {"host": "claude", "session": "s-garbled", "heartbeat": "not-a-time"}
+check("garbled heartbeat has no age", dc_registry._presence_age(bad) is None)
+check("garbled heartbeat is not live", dc_registry.live_presence({dc_registry.PRESENCE_KEY: bad}) is None)
+
+# r153: --presence on a folder that is not a project is refused and writes nothing
+sub153 = root / "sub153"
+sub153.mkdir()
+rc, out = run("dc_session.py", "--home", str(home), "--root", str(sub153),
+              "--presence", "--host", "claude", "--session", "s-sub")
+check("(r153) non-project --root refused", rc != 0 and "not a DrainClamp project" in out, out)
+check("(r153) no stray .agent written", not (sub153 / ".agent").exists())
+
+# r151: presence refusals
+rc, out = sess("--presence", "--host", "claude")
+check("(r151) lone --host refused", rc != 0 and "--host and --session go together" in out, out)
+rc, out = sess("--presence", "--session", "s-lone")
+check("(r151) lone --session refused", rc != 0 and "--host and --session go together" in out, out)
+rc, out = run("dc_session.py", "--home", str(home), "--presence")
+check("(r151) --presence without --root refused", rc != 0 and "need --root" in out, out)
+
+# r152: --resume with --host/--session claims presence and shows IN USE to a second session
+import dc_registry  # noqa: E402
+dc_registry.touch(root, home)
+sess("--presence", "--host", "claude", "--session", "r152-a", "--force")
+rc, out = run("dc_session.py", "--home", str(home), "--resume", str(root),
+              "--host", "claude", "--session", "r152-b")
+check("(r152) resume as a second session prints IN USE", rc == 0 and "IN USE" in out and "r152-a" in out, out)
+rc, out = run("dc_session.py", "--home", str(home), "--resume", str(root),
+              "--host", "claude", "--session", "r152-a")
+check("(r152) resume as the holder prints no IN USE", rc == 0 and "IN USE" not in out, out)
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

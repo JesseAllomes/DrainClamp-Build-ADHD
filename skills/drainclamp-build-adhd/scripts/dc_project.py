@@ -1047,18 +1047,33 @@ def start_step(root: Path, mid: str, cid: str = "", sequential: str = "") -> str
     snap = _dcio.dirty_snapshot(root)
     snap["at"] = _iso(_now())
     gate: list[str] = []
+    kept: list[dict] = []
 
     def apply(data: dict) -> dict:
         if cid:
             chunk = _find(data["chunks"].get(mid, []), cid, f"chunk in {mid}")
             gate.extend(dc_plan.start_gate(data, root, mid, cid, sequential))
-            chunk["start"] = snap
+            old = chunk.get("start")
+            if isinstance(old, dict) and not chunk.get("done") and not chunk.get("commit"):
+                kept.append(old)  # re-run: the first snapshot still marks the step's edits
+            else:
+                chunk["start"] = snap
         else:
-            data.setdefault("milestone_start", {})[mid] = snap
+            starts = data.setdefault("milestone_start", {})
+            old = starts.get(mid)
+            if isinstance(old, dict) and mid not in (data.get("milestone_commit") or {}):
+                kept.append(old)
+            else:
+                starts[mid] = snap
         return data
 
     mutate(agent, apply)
     label = f"{mid}/{cid}" if cid else mid
+    if kept:
+        first = kept[0]
+        return "\n".join([f"step {label} already started at {first.get('at', '?')}: snapshot kept, "
+                          f"{len(first.get('files', {}))} file(s) edited before it, never auto-committed",
+                          *gate])
     return "\n".join([f"step {label} started: {len(snap['files'])} file(s) already edited, "
                       "never auto-committed", *gate])
 

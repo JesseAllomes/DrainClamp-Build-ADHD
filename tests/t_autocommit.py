@@ -621,5 +621,90 @@ record(r113, "pass", tier="milestone")
 rc, out = commit(r113)
 check("(r113) pass recorded under the new config: committed", out.startswith("COMMITTED:"), out)
 
+# -- r133: deleting CODEOWNERS still sends the commit to the work branch
+r133 = make_repo("ac-r133", codeowners=True)
+tip133 = head(r133)
+add_chunk(r133, "a.py;CODEOWNERS")
+start(r133)
+write(r133, "a.py", "x = 2\n")
+(r133 / "CODEOWNERS").unlink()
+rc, out = commit(r133, "--verified")
+check("(r133) CODEOWNERS deleted: committed to the work branch", out.startswith("COMMITTED:")
+      and git(r133, "branch", "--show-current") == "dc/ac-r133-m1", out)
+check("(r133) the default branch did not move", git(r133, "rev-parse", "main") == tip133)
+
+# -- r134: "." and glob targets commit the step's files; case folds on Windows
+r134 = make_repo("ac-r134")
+add_chunk(r134, ".")
+start(r134)
+write(r134, "a.py", "x = 2\n")
+rc, out = commit(r134, "--verified")
+check("(r134) '.' target commits the step's file", out.startswith("COMMITTED:")
+      and head_files(r134) == ["a.py"], out)
+r134b = make_repo("ac-r134b")
+add_chunk(r134b, "*.py")
+start(r134b)
+write(r134b, "b.py", "y = 2\n")
+rc, out = commit(r134b, "--verified")
+check("(r134) glob target commits a matching file", out.startswith("COMMITTED:")
+      and head_files(r134b) == ["b.py"], out)
+check("(r134) target case folds on Windows only",
+      _dcio._under("src/app.py", ["Src/App.py"]) == (sys.platform == "win32"))
+
+# -- r135: an output-sensitive runner fails on a listing even at exit 0
+import dc_verify  # noqa: E402
+_orig_classify = dc_verify.classify
+dc_verify.classify = lambda argv: ("gofmt -l", dc_verify.NON_EMPTY_STDOUT)
+try:
+    why135 = _dcio._clean_tree(r110, "", head(r110), [sys.executable, "-c", "print('bad.go')"],
+                               Path(tempfile.mkdtemp(prefix="dcr135-")), ".")
+    ok135 = _dcio._clean_tree(r110, "", head(r110), [sys.executable, "-c", "pass"],
+                              Path(tempfile.mkdtemp(prefix="dcr135-")), ".")
+finally:
+    dc_verify.classify = _orig_classify
+check("(r135) listing at exit 0 fails the clean-tree check",
+      (why135 or "").startswith("clean-tree check failed"), why135)
+check("(r135) no listing passes", ok135 is None, ok135)
+
+# -- r137: fast-tier runner inside the repo, missing, or unresolvable is refused
+import dc_verify  # noqa: E402
+_orig_resolve = dc_verify._resolved_executable
+try:
+    dc_verify._resolved_executable = lambda name, cwd: r110 / "pytest.exe"
+    got_in = dc_project._fast_clean_argv(r110, ["pytest", "-q"], ".")
+    dc_verify._resolved_executable = lambda name, cwd: None
+    got_none = dc_project._fast_clean_argv(r110, ["pytest", "-q"], ".")
+
+    def _boom(name, cwd):
+        raise _dcio.DcError("cwd escapes the repository")
+    dc_verify._resolved_executable = _boom
+    got_err = dc_project._fast_clean_argv(r110, ["pytest", "-q"], ".")
+finally:
+    dc_verify._resolved_executable = _orig_resolve
+check("(r137) runner inside the repo refused",
+      got_in[0] == [] and "missing or inside the repository" in got_in[1], got_in)
+check("(r137) missing runner refused",
+      got_none[0] == [] and "missing or inside the repository" in got_none[1], got_none)
+check("(r137) resolver error is the reason", got_err == ([], "cwd escapes the repository"), got_err)
+
+# -- r138: a clean-tree cwd that is not a folder in the new commit is refused
+why_gone = _dcio._clean_tree(r110, "", head(r110), [sys.executable, "-c", "pass"],
+                             Path(tempfile.mkdtemp(prefix="dcr138-")), "nope")
+why_file = _dcio._clean_tree(r110, "", head(r110), [sys.executable, "-c", "pass"],
+                             Path(tempfile.mkdtemp(prefix="dcr138-")), "web/marker")
+check("(r138) missing cwd refused", (why_gone or "").startswith("clean-tree cwd nope is not a folder"), why_gone)
+check("(r138) file as cwd refused", "is not a folder in the new commit" in (why_file or ""), why_file)
+
+# -- r147: re-running chunk start keeps the first snapshot
+r147 = make_repo("ac-r147")
+add_chunk(r147)
+start(r147)
+write(r147, "a.py", "x = 2\n")
+rc, out147 = start(r147)
+check("(r147) second start keeps the snapshot", "already started" in out147, out147)
+rc, out = commit(r147, "--verified")
+check("(r147) edits made before the re-start are committed", out.startswith("COMMITTED:")
+      and head_files(r147) == ["a.py"], out)
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

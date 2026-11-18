@@ -880,7 +880,7 @@ def _toggle_hook(path: Path, event: str, matcher: str, mark: str, on: bool,
             data.pop("hooks", None)
         message = f"{label} off in {path}"
     path.parent.mkdir(parents=True, exist_ok=True)
-    _dcio.atomic_write(path, json.dumps(data, indent=2) + chr(10))
+    _dcio.atomic_write(path.resolve(), json.dumps(data, indent=2) + chr(10))  # write through a symlink
     return "OK", message
 
 

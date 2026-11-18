@@ -276,5 +276,37 @@ vl = make_repo("vlog")
 sec = _dr2.verify_failure(vl / ".agent", "unit")
 check("output banner does not end the section", "E assert 3 == 4" in sec and not any("ruff" in x for x in sec), sec)
 
+# -- r157: host-approved failures streak on the failure, not the record time
+ag157 = make_repo("r157") / ".agent"
+f1 = [{"id": "unit", "status": "FAIL", "detail": "host-approved record from 2026-01-01T00:00:00+00:00",
+       "fail_key": "E assert 1 == 2"}]
+f2 = [{"id": "unit", "status": "FAIL", "detail": "host-approved record from 2026-01-01T00:05:00+00:00",
+       "fail_key": "E assert 1 == 2"}]
+check("(r157) first host-approved failure: no advise", dc_verify.update_streaks(ag157, f1, "tree1") == [])
+got157 = dc_verify.update_streaks(ag157, f2, "tree2")
+check("(r157) same failure recorded again: advise", len(got157) == 1 and "ADVISE problem" in got157[0], got157)
+
+# -- r159: a hyphenated word is not a source
+check("(r159) user-facing is not a user source",
+      _dr.decision_sources("- Use SQLite (user-facing data stays local) (Claude default)") == {"claude"},
+      _dr.decision_sources("- Use SQLite (user-facing data stays local) (Claude default)"))
+check("(r159) plain sources still read", _dr.decision_sources("- A -> b (Claude, user approved)") == {"claude", "user"})
+
+# -- r157b: a host-approved failure whose log is not UTF-8 never aborts the run
+rp157 = make_repo("r157b")
+log157 = Path(tempfile.mkdtemp(prefix="dcr157-")) / "unit.log"  # outside the repo: the tree stays put
+log157.write_bytes("E boom\n".encode("utf-16"))
+e157 = {"id": "unit", "argv": ["dc-unlisted-tool", "--check"], "cwd": ".", "tier": "fast"}
+tree157 = dc_verify.tree_fingerprint(rp157)
+dc_verify.save_record(rp157 / ".agent", "unit", dc_verify.digest_for(e157["argv"], "."), "fail",
+                      str(log157), tree=tree157)
+try:
+    row157 = dc_verify.run_entry(e157, rp157, rp157 / ".agent")
+except UnicodeError as exc:
+    row157 = {"error": repr(exc)}
+check("(r157b) fixture has a tree fingerprint", tree157 is not None)
+check("(r157b) UTF-16 log: FAIL row with the fallback key, no exception",
+      row157.get("status") == "FAIL" and row157.get("fail_key") == "host-approved failure", str(row157))
+
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
