@@ -149,12 +149,16 @@ runs when `config --advisor` says so: `final` (default) after the last milestone
 cap: one `dca-advisor` run (Opus, high) per brief.
 
 1. `dc_review.py brief [--milestone m]`. It refuses until the review passes. The brief holds the
-   purpose lines (charter first, then project summary, then README), architecture, roadmap,
-   decisions, log, to-dos, handled defects, and ideas already decided or shelved. Decisions are
+   purpose lines (charter first, then project summary, then README), a "Where to read" block,
+   architecture, roadmap, decisions, log, to-dos, handled defects, and ideas already decided or
+   shelved. "Where to read" lists the milestone's changed symbols as `path:a-b  symbol`, taken
+   from its review rounds' files and base (so it still works after a release), with the line
+   count of any file over 400 lines; over 30 rows each file folds into one row. Decisions are
    every standing one, no count cap; superseded ones are left out and the rest keep their D
    numbers (`SHOWING standing/all`). The review packet lists decisions the same way.
 2. Spawn once: `Advisor brief: .agent/review/A1/brief.md. Output JSON lines only.` Then
-   `dc_review.py suggest --advice A1 --model <m> --file -`. The script keeps at most 5. It
+   `dc_review.py suggest --advice A1 --model <m> --from-transcript <agent id>` (it records the
+   run's tokens); `--file -` only on a host with no transcript. The script keeps at most 5. It
    rejects an idea that names no purpose line or whose evidence is not in a file or the brief,
    drops ones already accepted or denied, and brings a shelved one back under its old id. The
    advisor may also flag open to-dos whose work is already done (`{"todo": "t<n>", ...}` lines,

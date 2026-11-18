@@ -84,6 +84,8 @@ IDEA_SIZES = ("S", "M", "L")
 IDEA_KINDS = ("improve", "expand")
 IDEA_TRIAGE = {"accept": "accepted", "deny": "denied", "shelve": "shelved", "propose": "proposed"}
 BRIEF_CAP = 260
+WHERE_CAP = 30      # 'Where to read' rows in the advisor brief, counted inside BRIEF_CAP
+WHERE_BIG = 400     # a file this long gets its line count, so the advisor reads it by range
 IDEA_TEXT = {"title": 90, "value": 240, "detail": 500, "evidence": 400}
 PACKET_CAP = {"quick": 600, "milestone": 900, "final": 1500}    # lines
 FILE_CAP = 250
@@ -1207,6 +1209,72 @@ def purpose_lines(root: Path, data: dict) -> list[str]:
     return [f"P{i}: {line}" for i, line in enumerate(out[:12], 1)]
 
 
+def _spans(lines: set[int], cap: int = 4) -> str:
+    """Sorted line numbers as `a-b, c` runs, at most `cap` runs."""
+    runs: list[list[int]] = []
+    for n in sorted(lines):
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    text = ", ".join(f"{a}-{b}" if a != b else f"{a}" for a, b in runs[:cap])
+    return text + (f" (+{len(runs) - cap} more)" if len(runs) > cap else "")
+
+
+def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
+    """The milestone's changed symbols as `path:a-b  symbol` rows, from its review rounds.
+
+    Files and base come from the rounds, not the working tree: after a release the tree
+    diff is empty. Each file is diffed against the base of the first round that named it.
+    Only the innermost symbol around a change is listed; files with no symbol map show
+    their changed line runs. Long files carry their line count. Over WHERE_CAP rows, each
+    file folds into one row so every file stays named before any is cut.
+    """
+    base_of: dict[str, str | None] = {}
+    for rd in rv["rounds"]:
+        if rd.get("milestone") != mid:
+            continue
+        for rel in rd.get("files") or []:
+            if isinstance(rel, str) and rel not in base_of:
+                base_of[rel] = rd.get("base") if isinstance(rd.get("base"), str) else None
+    if not base_of:
+        return []
+    tracked = set((_git(root, "ls-files") or "").splitlines())
+    records = dc_map.refresh(root)
+    per_file: list[tuple[str, int, list[tuple[str, int, int]], set[int]]] = []
+    for rel, base in base_of.items():
+        path = root / rel
+        if not _dcio.is_within(path, root) or not path.is_file():
+            continue
+        _, changed, _ = annotate(file_diff(root, rel, base, rel in tracked))
+        if not changed:
+            continue
+        text = _source(root, rel)
+        total = len(text.splitlines()) if text is not None else 0
+        rec = records.get(rel)
+        hit = [(n, s, e) for n, s, e in (rec[2] if rec and rec[1] == "OK" else [])
+               if any(s <= c <= e for c in changed)]
+        inner = sorted(((n, s, e) for n, s, e in hit
+                        if not any((s2, e2) != (s, e) and s <= s2 and e2 <= e for _, s2, e2 in hit)),
+                       key=lambda x: x[1])
+        per_file.append((rel, total, inner, changed))
+    rows: list[str] = []
+    for rel, total, inner, changed in per_file:
+        if total >= WHERE_BIG:
+            rows.append(f"{rel}  {total} lines: read the ranges below, not the whole file")
+        rows.extend([f"{rel}:{s}-{e}  {n}" for n, s, e in inner] or [f"{rel}  changed at {_spans(changed)}"])
+    if len(rows) <= WHERE_CAP:
+        return rows
+    folded = []
+    for rel, total, inner, changed in per_file:
+        size = f" ({total} lines)" if total >= WHERE_BIG else ""
+        what = "; ".join(f"{s}-{e} {n}" for n, s, e in inner) if inner else f"changed at {_spans(changed)}"
+        folded.append(_clip(f"{rel}{size}: {what}", 240))
+    if len(folded) > WHERE_CAP:
+        folded = folded[:WHERE_CAP] + [f"SHOWING {WHERE_CAP}/{len(per_file)} files"]
+    return folded
+
+
 def build_brief(root: Path, data: dict, aid: str, ms: dict) -> tuple[str, list[str]]:
     """The advisor's whole input: purpose, what exists, what was decided and found."""
     rv = review_of(data)
@@ -1220,6 +1288,7 @@ def build_brief(root: Path, data: dict, aid: str, ms: dict) -> tuple[str, list[s
     fixed = [f for f in rv["findings"] if f.get("status") in ("fixed", "waived")]
     decided = [i for i in rv["ideas"] if i.get("status") in ("accepted", "denied")]
     shelved = [i for i in rv["ideas"] if i.get("status") == "shelved"]
+    where = where_to_read(root, rv, ms["id"])
     lines = [
         f"# DrainClamp Gate 6 advisor brief {aid}",
         f"after: {ms['id']} - {ms['goal']}",
@@ -1229,6 +1298,8 @@ def build_brief(root: Path, data: dict, aid: str, ms: dict) -> tuple[str, list[s
         "## Purpose (cite one P<n> per idea)",
         *(purpose or ["none recorded: infer it from the roadmap and say so in every idea's value"]),
         "",
+        *(["## Where to read (what this milestone changed: read these ranges first, not whole files)",
+           *where, ""] if where else []),
         "## Architecture (DC:ARCH)",
         *([_clip(a, 200) for a in arch[:40]] or ["not recorded"]),
         *(["TRUNCATED architecture"] if len(arch) > 40 else []),
@@ -2519,7 +2590,8 @@ def main() -> int:
             print("PURPOSE: README only (no objectives, out_of_scope, never) - dc_project.py charter "
                   "fills them | COVERAGE: partial")
         print(f"spawn dca-advisor once: `Advisor brief: {rel}. Output JSON lines only.`, then "
-              f"dc_review.py suggest --advice {aid} --model <m> --file -")
+              f"dc_review.py suggest --advice {aid} --model <m> --from-transcript <agent id> "
+              "(--file - on a host with no transcript)")
         return _dcio.EXIT_OK
 
     if args.cmd == "suggest":

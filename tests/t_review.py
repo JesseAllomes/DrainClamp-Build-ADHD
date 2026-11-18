@@ -409,6 +409,32 @@ check("brief built after a passing review", rc == 0 and "ADVICE A1" in out and "
 brief = (adv / ".agent/review/A1/brief.md").read_text(encoding="utf-8")
 check("brief carries charter purpose and out-of-scope as P lines",
       "P1: [charter purpose] Sum parser totals" in brief and "P2: [charter out_of_scope]" in brief, brief[:300])
+check("the brief's next step ingests the advisor from its transcript",
+      "suggest --advice A1 --model <m> --from-transcript <agent id> (--file - on a host with no transcript)" in out, out)
+check("brief names where to read: the milestone's changed symbols by range",
+      "## Where to read" in brief and "a.py:1-5  parse" in brief and "a.py:8-9  caller" in brief
+      and brief.index("## Where to read") < brief.index("## Architecture"), brief[:900])
+
+# -- where to read: rounds' base, not the tree; long files; folding over the cap -----------------
+wr = make_repo("where")
+(wr / "long.py").write_text("".join(f"def f{i}():\n    return {i}\n" for i in range(250)), encoding="utf-8")
+git(wr, "add", "long.py", "a.py")
+git(wr, "commit", "-qm", "long")
+base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wr, capture_output=True, text=True).stdout.strip()
+(wr / "long.py").write_text("".join(f"def f{i}():\n    return {i + (1 if i == 7 else 0)}\n" for i in range(250)),
+                            encoding="utf-8")
+git(wr, "commit", "-qam", "release")   # released: the working tree diff is empty now
+rounds = {"rounds": [{"id": "R1", "milestone": "m1", "base": base_sha, "files": ["long.py", "gone.py", "../x.py"]},
+                     {"id": "R2", "milestone": "m9", "base": base_sha, "files": ["a.py"]}],
+          "findings": [], "ideas": []}
+rows = dc_review.where_to_read(wr, rounds, "m1")
+check("where to read diffs the round's base after a release, with the long file's size",
+      rows == ["long.py  500 lines: read the ranges below, not the whole file", "long.py:15-16  f7"], rows)
+(wr / "long.py").write_text("".join(f"def f{i}():\n    return {i + 1}\n" for i in range(250)), encoding="utf-8")
+rows = dc_review.where_to_read(wr, rounds, "m1")
+check("over the cap each file folds into one row", len(rows) == 1 and rows[0].startswith(
+    "long.py (500 lines): 1-2 f0; 3-4 f1;") and rows[0].endswith("..."), rows)
+check("no rounds for the milestone: no block", dc_review.where_to_read(wr, rounds, "m5") == [])
 
 
 def idea(title, size="S", purpose="P1", file="a.py", line=1, evidence="def parse(items):", kind="improve"):
