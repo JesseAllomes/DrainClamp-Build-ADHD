@@ -329,6 +329,13 @@ def capsule(root: Path, data: dict, home: str | None = None) -> list[str]:
     if ideas:
         lines.append(f"Advisor: {len(ideas)} idea(s) to triage ({' '.join(ideas[:6])}) "
                      "- waiting on you (dc_review.py status)")
+    # A replied consult with no verdict reads as a rejection in the trial: keep it in view across /clear.
+    waiting = [c["id"] for c in review.get("consults") or [] if isinstance(c, dict)
+               and c.get("reply") and c.get("accepted") is None and c.get("id")]
+    if waiting:
+        more = f" +{len(waiting) - 6} more" if len(waiting) > 6 else ""
+        lines.append(f"Consult: {len(waiting)} await verdict ({' '.join(waiting[:6])}{more}) - "
+                     "dc_review.py counsel --consult <V> --accepted yes|no --changed yes|no")
     import dc_plan  # imports this module lazily
     if plan := dc_plan.capsule_line(data, root, ms["id"]):
         lines.append(plan)

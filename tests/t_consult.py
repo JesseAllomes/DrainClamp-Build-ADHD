@@ -79,6 +79,23 @@ rec = consults(root)[0]
 check("record stored with nothing answered yet", rec["kind"] == "direction" and rec["reply"] is None
       and rec["options"] == ["JSON lines", "CSV rows"], rec)
 
+check("no charter: no charter section", "(charter)" not in brief, brief)
+
+# m50/c4 (i23): a direction brief carries the charter's purpose, out_of_scope and never lines
+chartered = make_repo("chartered")
+(chartered / ".agent" / "charter.json").write_text(json.dumps({"charter": {
+    "purpose": "Parse supplier files into totals", "objectives": "OBJECTIVE_TEXT",
+    "out_of_scope": "Writing back to the ledger", "never": "Never " + "x" * 400}}), encoding="utf-8")
+rc, out = direction(chartered)
+cb = (chartered / ".agent" / "review" / "V1" / "brief.md").read_text(encoding="utf-8")
+check("charter purpose, out_of_scope and never shown above the decisions",
+      rc == 0 and "[charter purpose] Parse supplier files into totals" in cb
+      and "[charter out_of_scope] Writing back to the ledger" in cb
+      and cb.index("(charter)") < cb.index("## Standing decisions"), cb)
+never = next(ln for ln in cb.splitlines() if ln.startswith("[charter never]"))
+check("charter lines clipped to 200 characters, objectives left out",
+      len(never) <= len("[charter never] ") + 200 and "OBJECTIVE_TEXT" not in cb, never)
+
 rc, out = direction(root, "--lines", "a.py")
 check("whole file refused, range required", rc != 0 and "never a whole file" in out, out)
 rc, out = rv(root, "consult", "--kind", "direction", "--question", "Which one?", "--option", "a", "--lines", "a.py:1-80")
@@ -239,6 +256,19 @@ rv(settle, "counsel", "--consult", "V3", "--file", "-", stdin=hyps)
 got = dc_verify.update_streaks(sag, fail, "u7")
 check("a second advised miss from verify says STUCK", any("COUNSEL V3: passed no (from verify)\nSTUCK: 2 advised"
                                                            in x for x in got), got)
+
+# -- m50/c3 (i22): the next capsule names replied consults still awaiting a verdict ---------
+nxt = lambda: subprocess.run([sys.executable, "-B", str(SCRIPTS / "dc_project.py"), "--root", str(settle), "next"],
+                             capture_output=True, text=True).stdout
+out = nxt()
+check("capsule names consults awaiting a verdict", "Consult: 3 await verdict (V1 V2 V3) - dc_review.py counsel"
+      in out, out)
+rv(settle, "counsel", "--consult", "V1", "--accepted", "yes", "--changed", "no")
+rv(settle, "counsel", "--consult", "V2", "--accepted", "no", "--changed", "no")
+rv(settle, "counsel", "--consult", "V3", "--accepted", "no", "--changed", "no")
+check("no line once every verdict is in", "Consult:" not in nxt(), nxt())
+rv(settle, "consult", "--kind", "problem", "--check", "unit", "--attempt", "y: fails", "--user-ok", "fixture")
+check("an unanswered consult is not awaiting a verdict", "Consult:" not in nxt())
 bare = tmp / "bare-agent"; bare.mkdir()
 dc_verify.update_streaks(bare, [{"id": "unit", "status": "PASS"}], "b1")
 check("no sidecar: none is created", not dc_project.sidecar_path(bare).exists())
