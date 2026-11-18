@@ -194,6 +194,24 @@ check("collapse flattens to one line",
 check("collapse caps length", len(_dcio.collapse("z" * 5000)) < 600)
 check("first_failure_line on empty input is empty", _dcio.first_failure_line("") == "")
 
+# r162: go and cargo key on the failing test, never a bare FAIL / failures: marker
+go_out = ("=== RUN   TestA\n    calc_test.go:10: want 1 got 2\n--- FAIL: TestA (0.00s)\n"
+          "FAIL\nexit status 1\nFAIL\texample.com/calc\t0.002s\n")
+ffl = _dcio.first_failure_line
+check("go: the failing test, timing left out", ffl(go_out) == "--- FAIL: TestA", ffl(go_out))
+check("go: a different failing test is a different key",
+      ffl(go_out.replace("TestA", "TestB").replace("0.00s", "0.01s")) == "--- FAIL: TestB")
+cargo_out = ("running 2 tests\ntest tests::a ... FAILED\ntest tests::b ... ok\n\nfailures:\n\n"
+             "---- tests::a stdout ----\nthread 'tests::a' panicked at src/lib.rs:5:9:\n"
+             "assertion `left == right` failed\n\nfailures:\n    tests::a\n\n"
+             "test result: FAILED. 1 passed; 1 failed\n")
+check("cargo: the failing test", ffl(cargo_out) == "test tests::a ... FAILED", ffl(cargo_out))
+check("bare markers are skipped for the next real line",
+      ffl("FAIL\nfailures:\nerror: linker not found\n") == "error: linker not found",
+      ffl("FAIL\nfailures:\nerror: linker not found\n"))
+check("go build failure keys on the compile error",
+      ffl("calc.go:3:2: undefined: foo\nFAIL\texample.com/calc [build failed]\n").startswith("calc.go:3:2"))
+
 print()
 print("FAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
