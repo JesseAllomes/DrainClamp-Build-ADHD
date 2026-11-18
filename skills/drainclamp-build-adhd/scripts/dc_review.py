@@ -34,6 +34,7 @@ import _dcio
 import dc_codex
 import dc_map
 import dc_project
+import dc_registry
 import dc_state
 import dc_tokens
 import dc_verify
@@ -1508,8 +1509,52 @@ HYPOTHESES = 3
 SPAN_RE = re.compile(r"^(.+):(\d+)-(\d+)$")
 
 
-def consult_config(rv: dict) -> dict:
+def _home_config(home=None) -> tuple[Path, dict | None]:
+    """~/.drainclamp/config.json as a dict; None when it is missing or not a JSON object."""
+    path = dc_registry.home_dir(home) / dc_project.CONFIG_NAME
+    text = _dcio.read_text(path)
+    if text is None:
+        return path, {}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return path, None
+    return path, data if isinstance(data, dict) else None
+
+
+def machine_consult(home=None) -> dict:
+    """The machine-wide `consult` block in config.json, known keys only."""
+    data = _home_config(home)[1] or {}
+    given = data.get("consult")
+    return {k: v for k, v in given.items() if k in CONSULT_DEFAULTS} if isinstance(given, dict) else {}
+
+
+def set_machine_consult(on: bool, home=None) -> Path:
+    """Write `consult.on` into config.json under its lock; other keys kept, a bad file never rewritten."""
+    path = dc_registry.home_dir(home) / dc_project.CONFIG_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _dcio.FileLock(path.parent):
+        data = _home_config(home)[1]
+        if data is None:
+            raise DcError(f"{path} is not valid JSON (an object); left untouched")
+        given = data.get("consult") if isinstance(data.get("consult"), dict) else {}
+        data["consult"] = {**given, "on": on}
+        _dcio.atomic_write(path, json.dumps(data, indent=2) + "\n")
+    return path
+
+
+def consult_source(rv: dict, home=None) -> str:
+    """Where `on` comes from: the project, else the machine, else the default."""
+    given = rv["config"].get("consult")
+    if isinstance(given, dict) and "on" in given:
+        return "project"
+    return "machine" if "on" in machine_consult(home) else "default"
+
+
+def consult_config(rv: dict, home=None) -> dict:
+    """CONSULT_DEFAULTS < config.json `consult` (machine-wide) < the project's review.config.consult."""
     cfg = dict(CONSULT_DEFAULTS)
+    cfg.update(machine_consult(home))
     given = rv["config"].get("consult")
     if isinstance(given, dict):
         cfg.update({k: v for k, v in given.items() if k in CONSULT_DEFAULTS})
@@ -1815,6 +1860,9 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--max-findings", type=int)
     c.add_argument("--advisor", choices=ADVISOR_MODES, help="when the advisor runs (default final)")
     c.add_argument("--consult", choices=("on", "off"), help="the advisor gate (consult/counsel; default on)")
+    c.add_argument("--machine", action="store_true",
+                   help="with --consult: set the machine-wide default in ~/.drainclamp/config.json "
+                        "(a project's own setting still wins)")
     c.add_argument("--model", action="append", default=[], help="role=model/effort")
     c.add_argument("--host", choices=HOSTS, default="claude",
                    help="whose roster --model sets (default claude)")
@@ -1970,8 +2018,17 @@ def main() -> int:
             if not role or not model:
                 raise DcError(f"--model expects role=model, got {raw!r}")
             sets[role.strip()] = model.strip()
-        if any(v is not None for v in (args.mode, args.depth, args.max_agents, args.max_findings,
-                                         args.advisor, args.consult)) or sets:
+        if args.machine:
+            if not args.consult:
+                raise DcError("--machine sets only the consult default: pass --consult on|off")
+            if any(v is not None for v in (args.mode, args.depth, args.max_agents, args.max_findings,
+                                             args.advisor)) or sets:
+                raise DcError("--machine sets only --consult; set project options in a separate call")
+            path = set_machine_consult(args.consult == "on")
+            print(f"CONSULT machine default {args.consult}: {path}")
+        if not args.machine and (any(v is not None for v in (args.mode, args.depth, args.max_agents,
+                                                              args.max_findings, args.advisor, args.consult))
+                                 or sets):
             def apply_cfg(rv: dict) -> None:
                 cfg = rv["config"]
                 if args.mode:
@@ -2001,7 +2058,8 @@ def main() -> int:
         cfg = review_of(data)["config"]
         print(f"REVIEW config: mode {cfg['mode']} | depth {cfg['depth']} | "
               f"max agents {cfg['max_agents']} | findings/agent {cfg['max_findings_per_agent']} | "
-              f"advisor {cfg['advisor']} | consult {'on' if consult_config(review_of(data))['on'] else 'off'}")
+              f"advisor {cfg['advisor']} | consult {'on' if consult_config(review_of(data))['on'] else 'off'} "
+              f"({consult_source(review_of(data))})")
         print("models: " + ", ".join(f"{k}={v}" for k, v in sorted(cfg["models"].items())))
         for host in HOSTS[1:]:
             print(f"models {host}: " + ", ".join(f"{k}={v}" for k, v in sorted(models_for(cfg, host).items())))
