@@ -263,8 +263,9 @@ def resume_text(state: "State", generation: int) -> str:
     )
 
 
-# A repository path in an ARCH line: no glob, not under ~ or a dot folder (runtime files).
-ARCH_PATH_RE = re.compile(r"(?<![\w./~*-])((?:[\w-][\w.-]*/)*[\w-][\w.-]*\.(?:py|js|cjs|mjs|ts|html|css|md|json|toml|ya?ml|sh|ps1))(?![\w*/-])")
+# A repository path in an ARCH line: at least one folder/ (a bare "Node.js" is a name, not a
+# path), no glob, not under ~ or a dot folder (runtime files), not part of a Windows \ path.
+ARCH_PATH_RE = re.compile(r"(?<![\w./~*\\-])((?:[\w-][\w.-]*/)+[\w-][\w.-]*\.(?:py|js|cjs|mjs|ts|html|css|md|json|toml|ya?ml|sh|ps1))(?![\w*/\\-])")
 ARCH_STALE_SHOWN = 8
 
 
@@ -272,15 +273,15 @@ def arch_stale(arch: str, root: Path) -> str | None:
     """`ARCH STALE: <paths> not on disk` for DC:ARCH paths that name no file under the root and no
     tracked file ending in them (ARCH paths are often relative to a sub-folder). Never edits."""
     try:
-        done = subprocess.run(["git", "ls-files"], cwd=str(root), capture_output=True, text=True, timeout=30)
+        done = subprocess.run(["git", "ls-files"], cwd=str(root), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=30)
         tracked = done.stdout.splitlines() if done.returncode == 0 else []
     except (OSError, subprocess.SubprocessError):
         tracked = []
-    names = set(tracked)
     stale: list[str] = []
     for rel in dict.fromkeys(m.group(1) for m in ARCH_PATH_RE.finditer(arch)):
-        if (rel in names or (root / rel).exists()
-                or any(t.endswith("/" + rel) for t in tracked)):
+        # the index only finds where a sub-folder path lives; the file must still be on disk
+        if (root / rel).exists() or any(t.endswith("/" + rel) and (root / t).exists() for t in tracked):
             continue
         stale.append(rel)
     if not stale:

@@ -341,6 +341,17 @@ rv = run(st_repo, "--resume-view")
 check("(t32) resume-view prints the stale line after DC:ARCH, state untouched",
       rv.returncode == 0 and "<!-- /DC:ARCH -->\n" + stale + "\n" in rv.stdout and st_path.read_bytes() == st_before,
       rv.stdout[:600] + rv.stderr)
+check("(r174) product names and Windows paths are not repo paths",
+      dc_state.arch_stale("- runs on Node.js 20; config in C:\\Users\\x\\.claude\\settings.json and C:\\a\\b/c.py", st_repo) is None)
+import inspect  # noqa: E402
+check("(r175) arch_stale decodes git output as UTF-8 with replacement, never the locale codepage",
+      'encoding="utf-8", errors="replace"' in inspect.getsource(dc_state.arch_stale))
+(st_repo / "pkg" / "scripts" / "dc_gone.py").write_text("x = 1\n", encoding="utf-8")
+subprocess.run(["git", "add", "-A"], cwd=st_repo, capture_output=True)
+(st_repo / "pkg" / "scripts" / "dc_gone.py").unlink()
+check("(r177) a tracked file deleted but not staged is stale",
+      dc_state.arch_stale("- scripts/dc_gone.py -> deleted, deletion not staged", st_repo)
+      == "ARCH STALE: scripts/dc_gone.py not on disk: prune these DC:ARCH lines")
 absent = newrepo()
 rv = run(absent, "--resume-view")
 check("resume-view absent state is explicit and read-only", rv.returncode == 0 and "ABSENT" in rv.stdout and not (absent / ".agent").exists())
