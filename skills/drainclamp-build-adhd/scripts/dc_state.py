@@ -20,6 +20,7 @@ import json
 import os
 import posixpath
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -262,8 +263,36 @@ def resume_text(state: "State", generation: int) -> str:
     )
 
 
-def resume_view(state: "State") -> str:
-    """Project saved state without loading completed-row history or old logs."""
+# A repository path in an ARCH line: no glob, not under ~ or a dot folder (runtime files).
+ARCH_PATH_RE = re.compile(r"(?<![\w./~*-])((?:[\w-][\w.-]*/)*[\w-][\w.-]*\.(?:py|js|cjs|mjs|ts|html|css|md|json|toml|ya?ml|sh|ps1))(?![\w*/-])")
+ARCH_STALE_SHOWN = 8
+
+
+def arch_stale(arch: str, root: Path) -> str | None:
+    """`ARCH STALE: <paths> not on disk` for DC:ARCH paths that name no file under the root and no
+    tracked file ending in them (ARCH paths are often relative to a sub-folder). Never edits."""
+    try:
+        done = subprocess.run(["git", "ls-files"], cwd=str(root), capture_output=True, text=True, timeout=30)
+        tracked = done.stdout.splitlines() if done.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        tracked = []
+    names = set(tracked)
+    stale: list[str] = []
+    for rel in dict.fromkeys(m.group(1) for m in ARCH_PATH_RE.finditer(arch)):
+        if (rel in names or (root / rel).exists()
+                or any(t.endswith("/" + rel) for t in tracked)):
+            continue
+        stale.append(rel)
+    if not stale:
+        return None
+    more = f" (+{len(stale) - ARCH_STALE_SHOWN} more)" if len(stale) > ARCH_STALE_SHOWN else ""
+    return (f"ARCH STALE: {', '.join(stale[:ARCH_STALE_SHOWN])}{more} not on disk: "
+            "prune these DC:ARCH lines")
+
+
+def resume_view(state: "State", root: Path | None = None) -> str:
+    """Project saved state without loading completed-row history or old logs. With `root`, an
+    `ARCH STALE` line names architecture paths no longer on disk."""
     rows = parse_roadmap(state.sections["ROADMAP"])
     done = [row for row in rows if row["status"] == "done"]
     last_done = done[-1:]  # Roadmap order, as in the existing purge calculus.
@@ -279,6 +308,9 @@ def resume_view(state: "State") -> str:
     for section in ("ARCH", "DECISIONS", "VERIFY"):
         body = "\n".join(standing) if section == "DECISIONS" else state.sections[section]
         lines.extend([f"<!-- DC:{section} -->", body, f"<!-- /DC:{section} -->"])
+        stale = arch_stale(body, root) if section == "ARCH" and root is not None else None
+        if stale:
+            lines.append(stale)
     lines.extend(["<!-- DC:ROADMAP -->", "| id | goal | files | status | deps |",
                   "|---|---|---|---|---|"])
     for row in selected:
@@ -1314,7 +1346,7 @@ def main() -> int:
         if raw is None:
             print(f"state: ABSENT ({path.name} does not exist)")
         else:
-            print(resume_view(State.parse(raw)), end="")
+            print(resume_view(State.parse(raw), root), end="")
         return _dcio.EXIT_OK
     agent = _dcio.agent_dir(root)
     state_path = agent / _dcio.STATE_NAME

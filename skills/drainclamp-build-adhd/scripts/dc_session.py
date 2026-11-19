@@ -246,7 +246,7 @@ def resume(home: str | None, choice: str, host: str | None = None,
     raw = _dcio.read_text(dc_registry.state_file(root))
     if raw is not None:
         # The bounded view too, so one call is the whole after-gap resume.
-        print(dc_state.resume_view(dc_state.State.parse(raw)), end="")
+        print(dc_state.resume_view(dc_state.State.parse(raw), root), end="")
     dc_project.mutate(agent, dc_project.touch_time)
     dc_registry.touch(root, home)
     return _dcio.EXIT_OK

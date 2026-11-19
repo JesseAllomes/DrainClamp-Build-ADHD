@@ -87,6 +87,7 @@ IDEA_TRIAGE = {"accept": "accepted", "deny": "denied", "shelve": "shelved", "pro
 BRIEF_CAP = 260
 WHERE_CAP = 30      # 'Where to read' rows in the advisor brief, counted inside BRIEF_CAP
 WHERE_BIG = 400     # a file this long gets its line count, so the advisor reads it by range
+WHERE_LONG = 80     # a symbol this long also names the changed lines inside it
 IDEA_TEXT = {"title": 90, "value": 240, "detail": 500, "evidence": 400}
 PACKET_CAP = {"quick": 600, "milestone": 900, "final": 1500}    # lines
 FILE_CAP = 250
@@ -670,13 +671,32 @@ def standing_decisions(decisions: list[str]) -> list[tuple[int, str]]:
     return [(i, d) for i, d in enumerate(decisions, 1) if not dc_state.SUPERSEDED.search(d.rstrip())]
 
 
+TAIL_TAG_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
+TAG_MAX = 80        # a clipped decision keeps at most this much of its source tag
+
+
+def clip_decision(text: str, cap: int = 200) -> str:
+    """`_clip`, except a trailing source parenthetical (user, Claude default, ...) survives the
+    clip: the body is cut instead, so readers can still tell user-locked lines from defaults."""
+    text = _norm(text)
+    if len(text) <= cap:
+        return text
+    m = TAIL_TAG_RE.search(text)
+    if not m or not SOURCE_RE.match(re.split(r"[:;]", m.group(1), maxsplit=1)[0].strip()):
+        return _clip(text, cap)
+    tag = f"({m.group(1).strip()})"
+    if len(tag) > TAG_MAX:
+        tag = tag[:TAG_MAX - 4] + "...)"
+    return _clip(text[:m.start()].rstrip(), cap - len(tag) - 1) + " " + tag
+
+
 def decision_block(decisions: list[str]) -> list[str]:
     """Every standing decision, no count cap, under a SHOWING standing/all header."""
     standing = standing_decisions(decisions)
     gone = len(decisions) - len(standing)
     return [f"SHOWING {len(standing)}/{len(decisions)} decisions"
             + (f" ({gone} superseded, left out; D numbers kept)" if gone else ""),
-            *[f"D{i}: {_clip(d, 200)}" for i, d in standing]]
+            *[f"D{i}: {clip_decision(d, 200)}" for i, d in standing]]
 
 
 def _callers(root: Path, records: dict, name: str, home: str, span: tuple[int, int]) -> list[str]:
@@ -1265,6 +1285,10 @@ def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
 
         inner = sorted(((n, s, e) for n, s, e in hit if own_change(s, e)), key=lambda x: x[1])
         per_file.append((rel, total, inner, changed))
+    def at(s: int, e: int, changed: set[int]) -> str:
+        """` (changed at a-b)` for a symbol over WHERE_LONG lines: read those, not the whole body."""
+        return f" (changed at {_spans({c for c in changed if s <= c <= e})})" if e - s + 1 > WHERE_LONG else ""
+
     rows: list[str] = []
     for rel, total, inner, changed in per_file:
         if not changed:
@@ -1272,7 +1296,7 @@ def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
             continue
         if total >= WHERE_BIG:
             rows.append(f"{rel}  {total} lines: read the ranges below, not the whole file")
-        rows.extend([f"{rel}:{s}-{e}  {n}" for n, s, e in inner] or [f"{rel}  changed at {_spans(changed)}"])
+        rows.extend([f"{rel}:{s}-{e}  {n}{at(s, e, changed)}" for n, s, e in inner] or [f"{rel}  changed at {_spans(changed)}"])
     if len(rows) <= WHERE_CAP:
         return rows
     folded = []
@@ -1281,7 +1305,7 @@ def where_to_read(root: Path, rv: dict, mid: str) -> list[str]:
             folded.append(f"{rel}: no diff left against the round's base")
             continue
         size =f" ({total} lines)" if total >= WHERE_BIG else ""
-        what = "; ".join(f"{s}-{e} {n}" for n, s, e in inner) if inner else f"changed at {_spans(changed)}"
+        what = "; ".join(f"{s}-{e} {n}{at(s, e, changed)}" for n, s, e in inner) if inner else f"changed at {_spans(changed)}"
         folded.append(_clip(f"{rel}{size}: {what}", 240))
     if len(folded) > WHERE_CAP:
         folded = folded[:WHERE_CAP] + [f"SHOWING {WHERE_CAP}/{len(per_file)} files"]
@@ -1316,6 +1340,7 @@ def build_brief(root: Path, data: dict, aid: str, ms: dict) -> tuple[str, list[s
         "## Architecture (DC:ARCH)",
         *([_clip(a, 200) for a in arch[:40]] or ["not recorded"]),
         *(["TRUNCATED architecture"] if len(arch) > 40 else []),
+        *([stale] if (stale := dc_state.arch_stale("\n".join(arch), root)) else []),
         "",
         "## Roadmap",
         *[f"{r['id']} [{r['status']}] {_clip(r['goal'], 160)}" for r in rows[-30:]],

@@ -312,6 +312,35 @@ check("resume-view keeps last done and every open row with files and deps",
 check("resume-view summarizes all done ids", "Done: m1, m2, m3, m4" in rv.stdout)
 check("resume-view trims logs to last five", "- log entry 3" in rv.stdout and "- log entry 7" in rv.stdout and "- log entry 2" not in rv.stdout)
 check("resume-view leaves state bytes and directory untouched", view_path.read_bytes() == before and set(view_path.parent.iterdir()) == {view_path})
+check("(t32) no stale line when ARCH names no file", "ARCH STALE" not in rv.stdout, rv.stdout[:300])
+
+# t32 (i28): ARCH lines naming files no longer on disk are flagged, never edited
+st_repo = newrepo()
+(st_repo / "pkg" / "scripts").mkdir(parents=True)
+(st_repo / "pkg" / "scripts" / "dc_live.py").write_text("x = 1\n", encoding="utf-8")
+(st_repo / "README.md").write_text("r\n", encoding="utf-8")
+subprocess.run(["git", "add", "-A"], cwd=st_repo, capture_output=True)
+arch = "\n".join([
+    "- scripts/dc_live.py -> lives under pkg/ (suffix match on git ls-files)",
+    "- NEW scripts/dc_board.py -> localhost server",
+    "- NEW scripts/board.html -> single-file UI",
+    "- tests/t_*.py -> glob, skipped",
+    "- docs: README.md scripts table, ~/.drainclamp/projects.json and .agent/charter.json are runtime paths",
+])
+stale = dc_state.arch_stale(arch, st_repo)
+check("(t32) stale ARCH paths named once, live ones, globs, home and dot paths skipped",
+      stale == "ARCH STALE: scripts/dc_board.py, scripts/board.html not on disk: prune these DC:ARCH lines", stale)
+check("(t32) nothing stale: no line", dc_state.arch_stale("- scripts/dc_live.py -> x", st_repo) is None)
+st_state = dc_state.State.parse(dc_state.template_text())
+st_state.sections["ARCH"] = arch
+(st_repo / ".agent").mkdir()
+st_path = st_repo / ".agent/drainclamp-state.md"
+st_path.write_text(st_state.render(3), encoding="utf-8")
+st_before = st_path.read_bytes()
+rv = run(st_repo, "--resume-view")
+check("(t32) resume-view prints the stale line after DC:ARCH, state untouched",
+      rv.returncode == 0 and "<!-- /DC:ARCH -->\n" + stale + "\n" in rv.stdout and st_path.read_bytes() == st_before,
+      rv.stdout[:600] + rv.stderr)
 absent = newrepo()
 rv = run(absent, "--resume-view")
 check("resume-view absent state is explicit and read-only", rv.returncode == 0 and "ABSENT" in rv.stdout and not (absent / ".agent").exists())

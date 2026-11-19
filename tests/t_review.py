@@ -405,6 +405,10 @@ check("brief refused before the review passes", rc == 6 and "ADVICE NOT-RUN" in 
 rv(adv, "run", "--round", "R1", "--role", "critic-a", "--model", "sonnet")
 rv(adv, "ingest", "--round", "R1", "--role", "critic-a", "--file", "-", stdin="NO FINDINGS\n")
 rv(adv, "finish", "--round", "R1")
+adv_state = adv / ".agent/drainclamp-state.md"
+adv_state.write_text(adv_state.read_text(encoding="utf-8").replace(
+    "<!-- DC:ARCH -->\n", "<!-- DC:ARCH -->\n- scripts/gone_tool.py -> removed long ago; a.py -> parser\n", 1),
+    encoding="utf-8", newline="\n")
 rc, out = rv(adv, "brief", "--milestone", "m1")
 check("brief built after a passing review", rc == 0 and "ADVICE A1" in out and "purpose lines 2" in out, out)
 brief = (adv / ".agent/review/A1/brief.md").read_text(encoding="utf-8")
@@ -415,6 +419,9 @@ check("the brief's next step ingests the advisor from its transcript",
 check("brief names where to read: the milestone's changed symbols by range",
       "## Where to read" in brief and "a.py:1-5  parse" in brief and "a.py:8-9  caller" in brief
       and brief.index("## Where to read") < brief.index("## Architecture"), brief[:900])
+check("(t32) the brief's Architecture block flags ARCH paths not on disk",
+      "ARCH STALE: scripts/gone_tool.py not on disk" in brief and "a.py" not in brief.split("ARCH STALE", 1)[1].split("\n")[0],
+      brief[brief.find("## Architecture"):][:400])
 
 # -- where to read: rounds' base, not the tree; long files; folding over the cap -----------------
 wr = make_repo("where")
@@ -456,6 +463,27 @@ krows = dc_review.where_to_read(cls, {"rounds": [{"id": "R1", "milestone": "m1",
                                       "findings": [], "ideas": []}, "m1")
 check("an outer symbol's own change is named beside the inner one",
       any(r.startswith("k.py:1-") and r.endswith("  K") for r in krows) and any(r.endswith("m") and "k.py:4-5" in r for r in krows), krows)
+# t31 (i27): a symbol over WHERE_LONG lines names the changed lines inside it
+big = make_repo("where-big")
+body = "".join(f"    x{i} = {i}\n" for i in range(120))
+(big / "b.py").write_text("def main():\n" + body + "    return 0\n", encoding="utf-8")
+git(big, "add", "b.py")
+git(big, "commit", "-qm", "b")
+big_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=big, capture_output=True, text=True).stdout.strip()
+(big / "b.py").write_text("def main():\n" + body.replace("    x60 = 60\n", "    x60 = 61\n") + "    return 0\n",
+                          encoding="utf-8")
+brows = dc_review.where_to_read(big, {"rounds": [{"id": "R1", "milestone": "m1", "base": big_base, "files": ["b.py"]}],
+                                      "findings": [], "ideas": []}, "m1")
+check("(t31) a long symbol names its changed lines", brows == ["b.py:1-122  main (changed at 62)"], brows)
+check("(t31) a short symbol stays unannotated", "changed at" not in "".join(krows), krows)
+(big / "b.py").write_text("def main():\n" + body.replace("    x60 = 60\n", "    x60 = 61\n") + "    return 0\n"
+                          + "\n\ndef g():\n    return 2\n", encoding="utf-8")
+saved_cap = dc_review.WHERE_CAP
+dc_review.WHERE_CAP = 1
+brows = dc_review.where_to_read(big, {"rounds": [{"id": "R1", "milestone": "m1", "base": big_base, "files": ["b.py"]}],
+                                      "findings": [], "ideas": []}, "m1")
+dc_review.WHERE_CAP = saved_cap
+check("(t31) the folded row keeps the changed lines", brows == ["b.py: 1-122 main (changed at 62); 125-126 g"], brows)
 
 
 def idea(title, size="S", purpose="P1", file="a.py", line=1, evidence="def parse(items):", kind="improve"):
@@ -529,6 +557,22 @@ check("decision block: no count cap, header SHOWING standing/all",
       and blk[-1].startswith("D45: ") and not any(b.startswith("D2: ") for b in blk), blk[:3])
 check("by_design ignores a superseded decision named by a finder",
       dc_review.by_design("x", [d.lstrip("- ") for d in many], "D2") == [], "")
+# t33 (i29): a clipped decision keeps its source tag inside the same 200-char budget
+tagged = dc_review.decision_block([
+    "Long rule -> " + "word " * 60 + "(user, 2026-11-16)",
+    "Pick -> a (Claude default, advice skip: " + "r" * 250 + ")",
+    "Untagged -> " + "y " * 120,
+    "Mid paren (user) -> " + "z " * 120,
+])
+check("(t33) a clipped line keeps its trailing source tag",
+      tagged[1].endswith("... (user, 2026-11-16)") and tagged[1].startswith("D1: Long rule -> word")
+      and len(tagged[1]) <= len("D1: ") + 200, tagged[1])
+check("(t33) an over-long tag is clipped inside its parenthesis, source word kept",
+      tagged[2].startswith("D2: Pick -> a") and "(Claude default, advice skip: rrr" in tagged[2]
+      and tagged[2].endswith("...)") and len(tagged[2]) <= len("D2: ") + 200, tagged[2])
+check("(t33) a line without a trailing tag clips as before",
+      tagged[3].endswith("...") and len(tagged[3]) == len("D3: ") + 200, tagged[3])
+check("(t33) a non-trailing source parenthetical is not moved", tagged[4].endswith("..."), tagged[4])
 dec = make_repo("decisions")
 text = (dec / ".agent/drainclamp-state.md").read_text(encoding="utf-8")
 (dec / ".agent/drainclamp-state.md").write_text(
